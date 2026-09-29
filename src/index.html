@@ -25,6 +25,38 @@
     background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
   }
 
+  /* ---------- Shared animations ---------- */
+  @keyframes cellIn {
+    from { opacity: 0; transform: translateY(18px) scale(.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes dockIn {
+    from { opacity: 0; transform: rotateY(-55deg) translateX(20px) scale(.9); }
+  }
+  @keyframes overlayFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes panelPopIn {
+    from { opacity: 0; transform: translateY(24px) scale(.95); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes slideUpIn {
+    from { opacity: 0; transform: translateY(28px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes cardIn {
+    from { opacity: 0; transform: translateY(14px) scale(.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+
   /* ---------- Top bar ---------- */
   #topbar {
     height: 76px;
@@ -40,12 +72,14 @@
     font-size: 16px; font-weight: 600; color: var(--muted);
     padding: 10px 4px; cursor: pointer;
     border-bottom: 2px solid transparent;
+    transition: color .2s ease, border-color .2s ease, box-shadow .25s cubic-bezier(.2,.8,.2,1), transform .2s cubic-bezier(.2,.8,.2,1);
   }
   #topbar .nav-item.active { color: var(--text); border-color: var(--accent); }
   #topbar .nav-item.focused, #search-pill.focused {
     color: var(--text); border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(59,109,255,0.25);
     border-radius: 8px;
+    transform: translateY(-1px);
   }
   #search-pill {
     margin-left: auto;
@@ -55,6 +89,7 @@
     border-radius: 999px;
     padding: 10px 20px;
     font-size: 14px; color: var(--muted); font-weight: 600;
+    transition: box-shadow .25s cubic-bezier(.2,.8,.2,1), transform .2s cubic-bezier(.2,.8,.2,1);
   }
 
   /* ---------- Main layout ---------- */
@@ -67,9 +102,9 @@
 
   /* Poster carousel */
   #carousel {
-    display: flex; gap: 16px;
+    display: flex;
     flex: 1;
-    align-items: stretch;
+    align-items: center; justify-content: center;
   }
   .poster {
     flex: 1;
@@ -84,6 +119,124 @@
   .poster.focused {
     box-shadow: 0 0 0 4px var(--accent), 0 20px 50px rgba(20,20,40,0.12);
   }
+
+  /* Shortcut grid (replaces the third carousel card) */
+  .poster-grid-host {
+    animation: none; /* no Ken Burns on this one -- it's not a background image */
+    background: none;
+    padding: 0;
+    display: flex; align-items: stretch; justify-content: center;
+  }
+  #shortcut-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 14px;
+    width: 100%;
+    height: 100%;
+  }
+  .grid-cell {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 6px 16px rgba(20,20,40,0.08);
+    transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s cubic-bezier(.2,.8,.2,1);
+    animation: cellIn .5s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .grid-cell:hover { transform: scale(1.015); box-shadow: 0 10px 22px rgba(20,20,40,0.12); }
+  .grid-cell.focused {
+    box-shadow: 0 0 0 3px var(--accent), 0 10px 24px rgba(59,109,255,0.25);
+    transform: scale(1.03);
+  }
+  .grid-cell:nth-child(1) { animation-delay: .03s; }
+  .grid-cell:nth-child(2) { animation-delay: .08s; }
+  .grid-cell:nth-child(3) { animation-delay: .13s; }
+  .grid-cell:nth-child(4) { animation-delay: .18s; }
+  .grid-cell:nth-child(5) { animation-delay: .09s; }
+  .grid-cell:nth-child(6) { animation-delay: .14s; }
+  .grid-icon { font-size: 26px; }
+  .grid-label { font-size: 13px; font-weight: 700; color: var(--text); text-align: center; padding: 0 4px; line-height: 1.2; }
+
+  /* Tile 4: shows the random movie's cover as its full background, nothing else. */
+  .grid-cell-cover {
+    background-size: cover; background-position: center;
+    background-color: #eceef4;
+  }
+  .grid-cell-cover.loaded { animation: coverFadeIn .4s ease both; }
+  @keyframes coverFadeIn { from { filter: brightness(0.85) saturate(0.8); } to { filter: brightness(1) saturate(1); } }
+
+  .grid-cell-placeholder { cursor: default; }
+  .grid-number {
+    font-size: 36px; font-weight: 800; color: var(--muted);
+  }
+
+  /* Weather cell: same live video background as before, just repositioned */
+  .grid-cell-weather { padding: 0; }
+  #poster-weather-video {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    z-index: 0;
+    opacity: 0;
+    transition: opacity .6s ease;
+  }
+  #poster-weather-video.loaded { opacity: 1; }
+  #poster-weather-overlay {
+    position: absolute; inset: 0;
+    z-index: 1;
+    background: linear-gradient(to top, rgba(0,0,0,0.45), transparent 55%);
+  }
+  #poster-weather-temp-row {
+    position: absolute; top: 68%; left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex; align-items: baseline; gap: 8px;
+    white-space: nowrap;
+  }
+  #poster-weather-temp {
+    font-size: 30px; font-weight: 800; color: #fff;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+  }
+  #poster-weather-feels {
+    font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.85);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  #poster-weather-city {
+    position: absolute; top: calc(68% + 24px); left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.85);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+
+  /* Inline news cell -- shows real headlines directly, not a launcher icon */
+  .grid-cell-news {
+    align-items: stretch; justify-content: flex-start;
+    padding: 18px 20px; cursor: pointer;
+    text-align: left;
+  }
+  .news-cell-label {
+    font-size: 11px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px;
+  }
+  #news-cell-list { list-style: none; margin: 0; padding: 0; overflow: hidden; }
+  #news-cell-list li {
+    font-size: 13px; font-weight: 600; line-height: 1.35;
+    margin-bottom: 10px; padding-left: 14px; position: relative;
+    animation: slideUpIn .4s cubic-bezier(.2,.8,.2,1) both;
+  }
+  #news-cell-list li:nth-child(1) { animation-delay: .04s; }
+  #news-cell-list li:nth-child(2) { animation-delay: .09s; }
+  #news-cell-list li:nth-child(3) { animation-delay: .14s; }
+  #news-cell-list li:nth-child(4) { animation-delay: .19s; }
+  #news-cell-list li::before {
+    content: ''; position: absolute; left: 0; top: 6px;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  }
+
   #news-panel {
     padding: 26px 24px;
     display: flex; flex-direction: column;
@@ -148,8 +301,15 @@
     transform-origin: left center;
     transform: rotateY(-35deg) scale(0.92);
     opacity: 0.8;
-    transition: transform .3s cubic-bezier(.2,.8,.2,1), opacity .3s, box-shadow .2s;
+    transition: transform .3s cubic-bezier(.2,.8,.2,1), opacity .3s, box-shadow .3s cubic-bezier(.2,.8,.2,1);
+    animation: dockIn .5s cubic-bezier(.2,.8,.2,1) both;
   }
+  .dock-icon:nth-child(1) { animation-delay: .12s; }
+  .dock-icon:nth-child(2) { animation-delay: .17s; }
+  .dock-icon:nth-child(3) { animation-delay: .22s; }
+  .dock-icon:nth-child(4) { animation-delay: .27s; }
+  .dock-icon:nth-child(5) { animation-delay: .32s; }
+  .dock-icon:nth-child(6) { animation-delay: .37s; }
   .dock-icon .card-face {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
@@ -183,8 +343,11 @@
     border: 1px solid var(--border);
     display: flex; align-items: center; justify-content: center;
     cursor: pointer; color: var(--text);
+    transition: box-shadow .2s cubic-bezier(.2,.8,.2,1), transform .2s cubic-bezier(.2,.8,.2,1);
   }
   .pill-btn svg { width: 20px; height: 20px; }
+  .pill-btn:hover { transform: scale(1.06); }
+  .pill-btn:active { transform: scale(0.94); }
   .pill-btn.focused {
     box-shadow: 0 0 0 3px var(--accent);
   }
@@ -206,7 +369,7 @@
     align-items: center; justify-content: center;
     z-index: 50;
   }
-  #settings-overlay.active { display: flex; }
+  #settings-overlay.active { display: flex; animation: overlayFadeIn .22s ease; }
   #settings-panel {
     width: 520px;
     background: var(--panel-solid);
@@ -214,6 +377,7 @@
     border-radius: 24px;
     padding: 36px 40px;
     box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+    animation: panelPopIn .3s cubic-bezier(.2,.8,.2,1);
   }
   #settings-panel h2 { margin: 0 0 16px; font-size: 24px; font-weight: 800; }
   .settings-section-label {
@@ -229,6 +393,9 @@
   }
   .setting-row .setting-label { font-size: 16px; font-weight: 700; }
   .setting-row .setting-sub { font-size: 13px; color: var(--muted); margin-top: 3px; }
+  .settings-nav {
+    transition: background-color .2s ease, box-shadow .2s cubic-bezier(.2,.8,.2,1);
+  }
   .settings-nav.focused {
     background: rgba(59,109,255,0.10);
     box-shadow: 0 0 0 2px var(--accent);
@@ -267,6 +434,195 @@
     font-size: 14px;
   }
 
+  /* ---------- Art mode (idle screensaver) ---------- */
+  #artmode-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: #000;
+    z-index: 100;
+  }
+  #artmode-overlay.active { display: block; animation: overlayFadeIn .8s ease; }
+  #artmode-video { width: 100%; height: 100%; object-fit: cover; }
+
+  /* ---------- Library (rich Mediathek home) ---------- */
+  #library-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: linear-gradient(160deg, #ffffff, #f2f3f8);
+    z-index: 60;
+    flex-direction: column;
+  }
+  #library-overlay.active { display: flex; animation: overlayFadeIn .25s ease; }
+
+  #library-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 44px 56px 20px;
+  }
+  #library-header h1 { margin: 0; font-size: 36px; font-weight: 800; letter-spacing: -0.5px; }
+  #library-header-actions { display: flex; gap: 12px; }
+  .lib-btn {
+    padding: 12px 20px; border-radius: 12px; border: 1px solid var(--border);
+    background: #fff; color: var(--text); font-family: inherit; font-weight: 700; font-size: 14px;
+    cursor: pointer;
+    transition: box-shadow .2s cubic-bezier(.2,.8,.2,1), transform .2s cubic-bezier(.2,.8,.2,1);
+  }
+  .lib-btn:hover { transform: translateY(-1px); }
+  .lib-btn.focused { box-shadow: 0 0 0 3px var(--accent); }
+  .lib-btn-close { background: var(--accent); color: #fff; border-color: transparent; }
+
+  #library-body { padding: 10px 56px 40px; overflow-y: auto; flex: 1; }
+  .lib-row { margin-bottom: 40px; }
+  .lib-row h2 { font-size: 20px; font-weight: 800; margin: 0 0 18px; }
+  .lib-cards { display: flex; gap: 20px; flex-wrap: wrap; }
+
+  .lib-card {
+    width: 160px; cursor: pointer;
+    transition: transform .25s cubic-bezier(.2,.8,.2,1);
+    animation: cardIn .4s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .lib-card:hover { transform: translateY(-4px); }
+  .lib-card.focused { transform: translateY(-6px); }
+  .lib-card-poster {
+    width: 160px; height: 284px; border-radius: 16px;
+    position: relative; overflow: hidden;
+    background-size: cover; background-position: center;
+    box-shadow: 0 14px 34px rgba(20,20,40,0.16);
+    transition: box-shadow .25s cubic-bezier(.2,.8,.2,1);
+  }
+  .lib-card.focused .lib-card-poster { box-shadow: 0 0 0 3px var(--accent), 0 18px 40px rgba(59,109,255,0.3); }
+  .lib-card-badge {
+    position: absolute; left: 10px; bottom: 10px;
+    font-size: 11px; font-weight: 800; color: #fff;
+    padding: 4px 10px; border-radius: 999px;
+  }
+  .lib-card-duration {
+    position: absolute; right: 10px; bottom: 10px;
+    font-size: 11px; font-weight: 700; color: #fff;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+  .lib-card-title { margin-top: 10px; font-size: 15px; font-weight: 700; }
+  .lib-cards .lib-card:nth-child(1) { animation-delay: .02s; }
+  .lib-cards .lib-card:nth-child(2) { animation-delay: .06s; }
+  .lib-cards .lib-card:nth-child(3) { animation-delay: .10s; }
+  .lib-cards .lib-card:nth-child(4) { animation-delay: .14s; }
+  .lib-cards .lib-card:nth-child(5) { animation-delay: .18s; }
+  .lib-cards .lib-card:nth-child(6) { animation-delay: .22s; }
+  .lib-cards .lib-card:nth-child(7) { animation-delay: .26s; }
+  .lib-cards .lib-card:nth-child(8) { animation-delay: .30s; }
+
+  /* ---------- Library detail tab ---------- */
+  #library-detail-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(10,10,16,0.5);
+    backdrop-filter: blur(8px);
+    align-items: center; justify-content: center;
+    z-index: 70;
+  }
+  #library-detail-overlay.active { display: flex; animation: overlayFadeIn .2s ease; }
+  #library-detail-panel {
+    width: 720px; max-height: 85vh; overflow-y: auto;
+    background: #fff; border-radius: 28px;
+    box-shadow: 0 40px 100px rgba(0,0,0,0.4);
+    position: relative;
+    animation: panelPopIn .3s cubic-bezier(.2,.8,.2,1);
+  }
+  #library-detail-close {
+    position: absolute; top: 18px; right: 18px; z-index: 5;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(20,20,30,0.55); color: #fff; border: none;
+    font-size: 16px; cursor: pointer;
+    transition: transform .18s cubic-bezier(.2,.8,.2,1), background-color .18s ease;
+  }
+  #library-detail-close:hover { transform: scale(1.1); background: rgba(20,20,30,0.75); }
+  #library-detail-hero {
+    height: 260px; border-radius: 28px 28px 0 0;
+  }
+  #library-detail-body { padding: 32px 40px 40px; }
+  #library-detail-title { margin: 0 0 12px; font-size: 30px; font-weight: 800; }
+  #library-detail-badges { display: flex; gap: 8px; margin-bottom: 18px; }
+  #library-detail-badges span {
+    font-size: 12px; font-weight: 800; color: #fff;
+    padding: 5px 12px; border-radius: 999px;
+  }
+  #library-detail-info { font-size: 15px; line-height: 1.6; color: var(--text); margin: 0 0 24px; }
+  #library-detail-meta { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+  #library-detail-meta .meta-label { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 2px; }
+  #library-detail-meta > div span:last-child { font-size: 14px; font-weight: 600; }
+  #library-detail-play {
+    width: 100%; padding: 18px; border-radius: 14px; border: none;
+    background: var(--accent); color: #fff;
+    font-family: inherit; font-size: 17px; font-weight: 800;
+    cursor: pointer;
+    transition: box-shadow .2s cubic-bezier(.2,.8,.2,1), transform .15s cubic-bezier(.2,.8,.2,1);
+  }
+  #library-detail-play:hover { transform: translateY(-1px); }
+  #library-detail-play:active { transform: scale(0.98); }
+  #library-detail-play.focused { box-shadow: 0 0 0 3px rgba(0,0,0,0.2); }
+
+  /* ---------- Mediathek overlay ---------- */
+  #mediathek-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(20,20,30,0.35);
+    backdrop-filter: blur(6px);
+    align-items: center; justify-content: center;
+    z-index: 50;
+  }
+  #mediathek-overlay.active { display: flex; animation: overlayFadeIn .22s ease; }
+  #mediathek-panel {
+    width: 560px; max-height: 70vh;
+    display: flex; flex-direction: column;
+    background: var(--panel-solid);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 36px 40px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+    animation: panelPopIn .3s cubic-bezier(.2,.8,.2,1);
+  }
+  #mediathek-panel h2 { margin: 0 0 10px; font-size: 24px; font-weight: 800; }
+  #mediathek-breadcrumb {
+    font-family: monospace; font-size: 13px;
+    background: rgba(20,20,30,0.06); padding: 6px 10px; border-radius: 8px;
+    margin-bottom: 14px; color: var(--muted);
+  }
+  #mediathek-list {
+    list-style: none; margin: 0 0 16px; padding: 0;
+    overflow-y: auto; flex: 1;
+  }
+  .media-item {
+    padding: 14px 12px; border-radius: 12px;
+    font-size: 15px; font-weight: 600;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .media-item .media-item-icon { width: 18px; text-align: center; opacity: 0.7; }
+  .media-item .media-item-progress {
+    margin-left: auto; font-size: 12px; font-weight: 600; color: var(--accent);
+  }
+  .media-item {
+    transition: background-color .18s ease, box-shadow .18s cubic-bezier(.2,.8,.2,1);
+  }
+  .media-item.focused {
+    background: rgba(59,109,255,0.10);
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .media-item-empty { color: var(--muted); font-weight: 500; padding: 14px 12px; }
+  .mediathek-nav[data-kind] {
+    margin-top: 8px;
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    border: none;
+    background: rgba(20,20,30,0.06);
+    color: var(--text);
+    font-family: inherit; font-size: 14px; font-weight: 700;
+    cursor: pointer;
+    transition: box-shadow .18s cubic-bezier(.2,.8,.2,1);
+  }
+  #mediathek-close[data-kind] { background: var(--accent); color: #fff; }
+  .mediathek-nav.focused { box-shadow: 0 0 0 3px var(--accent); }
+
   /* ---------- Live TV overlay ---------- */
   #livetv-overlay {
     display: none;
@@ -276,7 +632,7 @@
     align-items: center; justify-content: center;
     z-index: 50;
   }
-  #livetv-overlay.active { display: flex; }
+  #livetv-overlay.active { display: flex; animation: overlayFadeIn .22s ease; }
   #livetv-panel {
     width: 480px;
     background: var(--panel-solid);
@@ -284,6 +640,7 @@
     border-radius: 24px;
     padding: 36px 40px;
     box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+    animation: panelPopIn .3s cubic-bezier(.2,.8,.2,1);
   }
   #livetv-panel h2 { margin: 0 0 4px; font-size: 24px; font-weight: 800; }
   .channel-grid { display: flex; gap: 16px; margin-bottom: 20px; }
@@ -295,7 +652,9 @@
     cursor: pointer;
     color: #fff; font-weight: 800; font-size: 17px;
     box-shadow: 0 10px 26px rgba(20,20,40,0.14);
+    transition: transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .22s cubic-bezier(.2,.8,.2,1);
   }
+  .channel-card:hover { transform: scale(1.02); }
   .channel-card.focused {
     box-shadow: 0 0 0 3px var(--accent), 0 14px 34px rgba(59,109,255,0.35);
     transform: scale(1.04);
@@ -315,7 +674,10 @@
     font-family: inherit;
     font-size: 15px; font-weight: 700;
     cursor: pointer;
+    transition: transform .15s cubic-bezier(.2,.8,.2,1), box-shadow .2s cubic-bezier(.2,.8,.2,1);
   }
+  #settings-close:hover, #livetv-close:hover { transform: translateY(-1px); }
+  #settings-close:active, #livetv-close:active { transform: scale(0.98); }
 </style>
 </head>
 <body>
@@ -332,40 +694,56 @@
   </div>
 
   <div id="topbar-nav">
-    <div class="nav-item active" id="nav-artmode" data-nav-right="nav-livetv" data-nav-down="poster-0">Art mode</div>
-    <div class="nav-item" id="nav-livetv" data-action="livetv" data-nav-left="nav-artmode" data-nav-right="nav-favoriten" data-nav-down="poster-0">Live TV</div>
-    <div class="nav-item" id="nav-favoriten" data-nav-left="nav-livetv" data-nav-right="nav-browser" data-nav-down="poster-1">Favoriten</div>
-    <div class="nav-item" id="nav-browser" data-action="browser" data-nav-left="nav-favoriten" data-nav-right="search-pill" data-nav-down="poster-1">www.</div>
+    <div class="nav-item active" id="nav-artmode" data-nav-right="nav-livetv" data-nav-down="grid-1">Art mode</div>
+    <div class="nav-item" id="nav-livetv" data-action="livetv" data-nav-left="nav-artmode" data-nav-right="nav-favoriten" data-nav-down="grid-1">Live TV</div>
+    <div class="nav-item" id="nav-favoriten" data-nav-left="nav-livetv" data-nav-right="nav-browser" data-nav-down="grid-3">Favoriten</div>
+    <div class="nav-item" id="nav-browser" data-action="browser" data-nav-left="nav-favoriten" data-nav-right="search-pill" data-nav-down="grid-3">www.</div>
   </div>
 
-  <div id="search-pill" data-nav-left="nav-browser" data-nav-down="poster-2">
+  <div id="search-pill" data-nav-left="nav-browser" data-nav-down="grid-4">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     Suche
   </div>
 </div>
 
 <div id="main">
-  <div id="carousel">
-    <div class="poster" id="poster-0" style="background-image: linear-gradient(160deg,#f7c948,#e07a1f); align-items: stretch;"
-      data-nav-up="nav-artmode" data-nav-right="poster-1" data-nav-down="btn-wifi">
-      <div id="news-panel">
-        <h2>Empfohlen für dich</h2>
-        <ul id="news-list"><li>Lade News…</li></ul>
+  <div id="carousel" class="poster-grid-host">
+    <div id="shortcut-grid">
+      <div class="grid-cell grid-cell-placeholder" id="grid-1" tabindex="-1"
+        style="grid-column: 1; grid-row: 1;"
+        data-nav-up="nav-artmode" data-nav-right="grid-2" data-nav-down="grid-5"><div class="grid-number">1</div></div>
+      <div class="grid-cell grid-cell-placeholder" id="grid-2" tabindex="-1"
+        style="grid-column: 2; grid-row: 1;"
+        data-nav-up="nav-livetv" data-nav-left="grid-1" data-nav-right="grid-3" data-nav-down="grid-6"><div class="grid-number">2</div></div>
+      <div class="grid-cell grid-cell-placeholder" id="grid-3" tabindex="-1"
+        style="grid-column: 3; grid-row: 1;"
+        data-nav-up="nav-favoriten" data-nav-left="grid-2" data-nav-right="grid-4" data-nav-down="grid-6"><div class="grid-number">3</div></div>
+      <div class="grid-cell grid-cell-cover" id="grid-4" data-action="randommovie" tabindex="-1"
+        style="grid-column: 4; grid-row: 1 / 3;"
+        data-nav-up="nav-browser" data-nav-left="grid-3" data-nav-right="dock-netflix" data-nav-down="btn-settings"></div>
+      <div class="grid-cell grid-cell-weather" id="grid-5" tabindex="-1"
+        style="grid-column: 1; grid-row: 2;"
+        data-nav-up="grid-1" data-nav-right="grid-6" data-nav-down="btn-settings">
+        <video id="poster-weather-video" autoplay muted loop playsinline></video>
+        <div id="poster-weather-overlay"></div>
+        <div id="poster-weather-temp-row">
+          <span id="poster-weather-temp">–°</span>
+          <span id="poster-weather-feels"></span>
+        </div>
+        <div id="poster-weather-city">Murr</div>
       </div>
-    </div>
-    <div class="poster" id="poster-1" style="background-image: linear-gradient(160deg,#2f80c4,#1a3d6b);"
-      data-nav-up="nav-favoriten" data-nav-left="poster-0" data-nav-right="poster-2" data-nav-down="btn-wifi">
-      <div class="poster-label">Planet Erde</div>
-    </div>
-    <div class="poster" id="poster-2" style="background-image: linear-gradient(160deg,#5a5a6a,#1c1c26);"
-      data-nav-up="nav-browser" data-nav-left="poster-1" data-nav-right="dock-netflix" data-nav-down="btn-settings">
-      <div class="poster-label">The Mandalorian</div>
+      <div class="grid-cell grid-cell-news" id="grid-6" data-action="news" tabindex="-1"
+        style="grid-column: 2 / 4; grid-row: 2;"
+        data-nav-up="grid-2" data-nav-left="grid-5" data-nav-right="grid-4" data-nav-down="btn-settings">
+        <div class="news-cell-label">Nachrichten</div>
+        <ul id="news-cell-list"></ul>
+      </div>
     </div>
   </div>
 
   <div id="dock">
     <div class="dock-icon" id="dock-netflix" data-action="netflix" style="background:#ffffff;"
-      data-nav-left="poster-2" data-nav-down="dock-prime">
+      data-nav-left="grid-4" data-nav-down="dock-prime">
       <div class="card-face">
         <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
           <text x="100" y="38" text-anchor="middle" font-family="Arial, sans-serif" font-weight="800" font-size="26" fill="#E50914" letter-spacing="1">NETFLIX</text>
@@ -374,7 +752,7 @@
     </div>
 
     <div class="dock-icon" id="dock-prime" data-action="primevideo" style="background:linear-gradient(135deg,#1a2a4a,#00A8E1);"
-      data-nav-left="poster-2" data-nav-up="dock-netflix" data-nav-down="dock-disney">
+      data-nav-left="grid-4" data-nav-up="dock-netflix" data-nav-down="dock-disney">
       <div class="card-face">
         <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
           <text x="100" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="19" fill="#ffffff">prime video</text>
@@ -384,7 +762,7 @@
     </div>
 
     <div class="dock-icon" id="dock-disney" data-action="disneyplus" style="background:linear-gradient(135deg,#0b1d5c,#1b3fa8);"
-      data-nav-left="poster-2" data-nav-up="dock-prime" data-nav-down="dock-youtube">
+      data-nav-left="grid-4" data-nav-up="dock-prime" data-nav-down="dock-youtube">
       <div class="card-face">
         <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
           <text x="88" y="38" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-weight="700" font-size="24" fill="#ffffff">Disney</text>
@@ -394,21 +772,21 @@
     </div>
 
     <div class="dock-icon" id="dock-youtube" data-action="youtube"
-      data-nav-left="poster-2" data-nav-up="dock-disney" data-nav-down="dock-browser">
+      data-nav-left="grid-4" data-nav-up="dock-disney" data-nav-down="dock-browser">
       <div class="card-face" style="padding:0;">
         <img src="assets/youtube.jpg" alt="YouTube" style="width:100%; height:100%; object-fit:cover;">
       </div>
     </div>
 
     <div class="dock-icon" id="dock-browser" data-action="browser" style="background:#ffffff;"
-      data-nav-left="poster-2" data-nav-up="dock-youtube" data-nav-down="dock-livetv">
+      data-nav-left="grid-4" data-nav-up="dock-youtube" data-nav-down="dock-livetv">
       <div class="card-face">
         <img src="assets/chrome.webp" alt="Browser" style="width:46px; height:46px; object-fit:contain;">
       </div>
     </div>
 
     <div class="dock-icon" id="dock-livetv" data-action="livetv" style="background:linear-gradient(135deg,#2b2f3a,#111319);"
-      data-nav-left="poster-2" data-nav-up="dock-browser" data-nav-down="dock-spotify">
+      data-nav-left="grid-4" data-nav-up="dock-browser" data-nav-down="dock-spotify">
       <div class="card-face">
         <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
           <rect x="34" y="18" width="30" height="22" rx="4" stroke="#fff" stroke-width="2" fill="none"/>
@@ -419,12 +797,23 @@
     </div>
 
     <div class="dock-icon" id="dock-spotify" data-action="spotify" style="background:#1ED760;"
-      data-nav-left="poster-2" data-nav-up="dock-livetv" data-nav-down="btn-settings">
+      data-nav-left="grid-4" data-nav-up="dock-livetv" data-nav-down="dock-mediathek">
       <div class="card-face">
         <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
           <circle cx="52" cy="30" r="20" fill="#000"/>
           <path d="M43 26c7-2 15-1 20 3M42 32c6-1.5 12-1 16 2M42 37c5-1 9-0.5 12 1.5" stroke="#1ED760" stroke-width="2.4" fill="none" stroke-linecap="round"/>
           <text x="130" y="38" text-anchor="middle" font-family="Arial, sans-serif" font-weight="800" font-size="18" fill="#000">Spotify</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="dock-icon" id="dock-mediathek" data-action="mediathek" style="background:linear-gradient(135deg,#3a2f6e,#7b5fd4);"
+      data-nav-left="grid-4" data-nav-up="dock-spotify" data-nav-down="btn-settings">
+      <div class="card-face">
+        <svg viewBox="0 0 200 60" xmlns="http://www.w3.org/2000/svg">
+          <rect x="34" y="16" width="28" height="28" rx="5" fill="#fff" opacity="0.9"/>
+          <path d="M44 24v12l10-6-10-6z" fill="#3a2f6e"/>
+          <text x="132" y="38" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="17" fill="#ffffff">Mediathek</text>
         </svg>
       </div>
     </div>
@@ -440,7 +829,7 @@
       <svg viewBox="0 0 24 24" fill="none"><path d="M2 8.5a16 16 0 0 1 20 0M5.5 12a11 11 0 0 1 13 0M9 15.5a6 6 0 0 1 6 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="12" cy="19" r="1.2" fill="currentColor"/></svg>
     </div>
     <div class="pill-btn" id="btn-settings" title="Einstellungen"
-      data-nav-up="dock-spotify" data-nav-left="btn-wifi">
+      data-nav-up="dock-mediathek" data-nav-left="btn-wifi">
       <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M19.4 13.5a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V19.4a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H4.6a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H10.7a1.65 1.65 0 0 0 1-1.51V4.6a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10.7a1.65 1.65 0 0 0 1.51 1H19.4a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
     </div>
   </div>
@@ -448,6 +837,54 @@
   <div id="bottom-clock">
     <div id="clock-time">--:--</div>
     <div class="sub" id="clock-ampm"></div>
+  </div>
+</div>
+
+<div id="library-overlay">
+  <div id="library-header">
+    <h1>Deine Mediathek</h1>
+    <div id="library-header-actions">
+      <button class="lib-btn" id="library-browse-folders">Ordner durchsuchen</button>
+      <button class="lib-btn lib-btn-close" id="library-close">Schließen</button>
+    </div>
+  </div>
+  <div id="library-body">
+    <section class="lib-row" id="lib-row-continue" style="display:none;">
+      <h2>Weiterschauen</h2>
+      <div class="lib-cards" id="lib-cards-continue"></div>
+    </section>
+    <section class="lib-row">
+      <h2>Empfohlen für dich</h2>
+      <div class="lib-cards" id="lib-cards-all"></div>
+    </section>
+  </div>
+</div>
+
+<div id="library-detail-overlay">
+  <div id="library-detail-panel">
+    <button id="library-detail-close">✕</button>
+    <div id="library-detail-hero"></div>
+    <div id="library-detail-body">
+      <h2 id="library-detail-title"></h2>
+      <div id="library-detail-badges"></div>
+      <p id="library-detail-info"></p>
+      <div id="library-detail-meta">
+        <div><span class="meta-label">Besetzung</span><span id="library-detail-cast"></span></div>
+        <div><span class="meta-label">Produktion</span><span id="library-detail-crew"></span></div>
+      </div>
+      <button id="library-detail-play">▶ Abspielen</button>
+    </div>
+  </div>
+</div>
+
+<div id="mediathek-overlay">
+  <div id="mediathek-panel">
+    <h2>Mediathek</h2>
+    <div id="mediathek-breadcrumb">data/media</div>
+    <ul id="mediathek-list"></ul>
+    <button class="mediathek-nav" tabindex="-1" id="mediathek-open-folder" data-kind="open-folder">Ordner im Explorer öffnen</button>
+    <button class="mediathek-nav" tabindex="-1" id="mediathek-close" data-kind="close">Schließen</button>
+    <div class="settings-hint">↑↓ navigieren · Enter öffnen · Backspace zurück · Esc schließen</div>
   </div>
 </div>
 
@@ -498,10 +935,38 @@
       <select class="setting-select" id="display-select"></select>
     </div>
 
+    <div class="settings-section-label">Art Mode</div>
+    <div class="setting-row settings-nav" tabindex="-1" data-kind="select" data-target="artmode-timeout-select">
+      <div>
+        <div class="setting-label">Inaktivitäts-Timer</div>
+        <div class="setting-sub">Startet Art Mode nach dieser Pause</div>
+      </div>
+      <select class="setting-select" id="artmode-timeout-select">
+        <option value="15">15s</option>
+        <option value="30">30s</option>
+        <option value="60">60s</option>
+        <option value="120">2 min</option>
+        <option value="300">5 min</option>
+      </select>
+    </div>
+
+    <div class="settings-section-label">Mediathek</div>
+    <div class="setting-row settings-nav" tabindex="-1" data-kind="action" data-target="scaffold-media" id="scaffold-media-row">
+      <div>
+        <div class="setting-label">Ordnerstruktur anlegen</div>
+        <div class="setting-sub">Erstellt Filme/Serien/Nach Schauspieler/… als leere Ordner zum Einsortieren</div>
+      </div>
+      <span id="scaffold-media-status" style="font-size:13px; color: var(--muted);">Enter</span>
+    </div>
+
     <button class="settings-nav" tabindex="-1" id="settings-close" data-kind="close">Schließen</button>
 
     <div class="settings-hint">↑↓ navigieren · Enter bestätigen · Esc schließen</div>
   </div>
+</div>
+
+<div id="artmode-overlay">
+  <video id="artmode-video" muted="false"></video>
 </div>
 
 <script src="renderer.js"></script>
