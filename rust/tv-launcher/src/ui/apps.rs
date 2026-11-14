@@ -23,8 +23,7 @@ const APPS: [(&str, &str, &str); 6] = [
         "settings",
     ),
 ];
-const APP_CARD_W: f32 = 356.0;
-const APP_CARD_H: f32 = 188.0;
+const APP_ROW_H: f32 = 188.0;
 
 pub struct Apps {
     focus: usize,
@@ -76,25 +75,28 @@ impl Apps {
     }
 
     fn move_focus(&mut self, key: Key) {
-        self.focus = match key {
-            Key::Left => {
-                if self.focus % 3 > 0 {
-                    self.focus - 1
-                } else {
-                    self.focus
-                }
-            }
-            Key::Right => {
-                if self.focus % 3 < 2 && self.focus + 1 < APPS.len() {
-                    self.focus + 1
-                } else {
-                    self.focus
-                }
-            }
-            Key::Up => self.focus.saturating_sub(3),
-            Key::Down => (self.focus + 3).min(APPS.len() - 1),
-            _ => self.focus,
-        };
+        let (x, y, w, _) = app_card_rect(self.focus);
+        let center = x + w * 0.5;
+        let row = usize::from(y > 140.0);
+        let candidate = (0..APPS.len())
+            .filter(|&i| i != self.focus)
+            .filter_map(|i| {
+                let (nx, ny, nw, _) = app_card_rect(i);
+                let nrow = usize::from(ny > 140.0);
+                let nc = nx + nw * 0.5;
+                let valid = match key {
+                    Key::Left => nrow == row && nc < center,
+                    Key::Right => nrow == row && nc > center,
+                    Key::Up => row == 1 && nrow == 0,
+                    Key::Down => row == 0 && nrow == 1,
+                    _ => false,
+                };
+                valid.then_some((i, (nc - center).abs()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((next, _)) = candidate {
+            self.focus = next;
+        }
     }
 }
 
@@ -209,8 +211,8 @@ impl Screen for Apps {
         // The same time-based glide as Home; only its edge spans are rasterized
         // between key presses, keeping the animation cheap on Pi 3.
         let ring_started = std::time::Instant::now();
-        let (x, y) = app_card_origin(self.focus);
-        let bounds = self.frame.move_to(x, y, APP_CARD_W, APP_CARD_H, true);
+        let (x, y, w, h) = app_card_rect(self.focus);
+        let bounds = self.frame.move_to(x, y, w, h, true);
         super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
         c.finish_pending_region(
             bounds.0 - 10.0,
@@ -240,41 +242,45 @@ fn restore_app_focus(c: &mut Canvas, base: &Image, x: f32, y: f32, w: f32, h: f3
     c.restore_rect(base, x + w - IN, y + IN, edge, (h - IN * 2.0).max(0.0));
 }
 
-fn app_card_origin(index: usize) -> (f32, f32) {
-    (
-        PAD + (index % 3) as f32 * 376.0,
-        140.0 + (index / 3) as f32 * 218.0,
-    )
+fn app_card_rect(index: usize) -> (f32, f32, f32, f32) {
+    let y = if index < 3 { 140.0 } else { 352.0 };
+    let (x, w) = match index {
+        0 => (64.0, 564.0),
+        1 => (652.0, 270.0),
+        2 => (946.0, 270.0),
+        3 => (64.0, 270.0),
+        4 => (358.0, 564.0),
+        _ => (946.0, 270.0),
+    };
+    (x, y, w, APP_ROW_H)
 }
 
 fn draw_app_card(c: &mut Canvas, index: usize) {
     let (title, detail, _) = APPS[index];
-    let (x, y) = app_card_origin(index);
+    let (x, y, w, h) = app_card_rect(index);
+    let wide = w > 400.0;
     let fill = if index == 2 {
         Rgba(25, 27, 33, 185)
     } else {
         Rgba(31, 34, 43, 238)
     };
-    c.rect(x, y, APP_CARD_W, APP_CARD_H, 22.0, fill);
-    c.stroke_rect(
-        x,
-        y,
-        APP_CARD_W,
-        APP_CARD_H,
-        22.0,
-        1.0,
-        Rgba(255, 255, 255, 24),
-    );
+    c.rect(x, y, w, h, 22.0, fill);
+    c.stroke_rect(x, y, w, h, 22.0, 1.0, Rgba(255, 255, 255, 24));
     let accent = app_accent(index);
     c.rect(
         x + 1.0,
-        y + 62.0,
+        y + 58.0,
         4.0,
         72.0,
         2.0,
         Rgba(accent.0, accent.1, accent.2, 220),
     );
-    draw_badge(c, index, x + 24.0, y + 22.0);
+    draw_badge(
+        c,
+        index,
+        x + if wide { 24.0 } else { 18.0 },
+        y + if wide { 22.0 } else { 18.0 },
+    );
     let category = match index {
         0 | 1 | 2 => "STREAMING",
         3 | 4 => "LIVE-TV",
@@ -282,7 +288,7 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     };
     c.text(
         category,
-        x + 102.0,
+        x + if wide { 102.0 } else { 98.0 },
         y + 27.0,
         11,
         Weight::Bold,
@@ -296,21 +302,21 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     };
     c.text(
         title,
-        x + 24.0,
-        y + 101.0,
-        23,
+        x + if wide { 102.0 } else { 20.0 },
+        y + if wide { 76.0 } else { 100.0 },
+        22,
         Weight::Bold,
         ink,
         Align::Left,
     );
     c.text_fit(
         detail,
-        x + 24.0,
-        y + 132.0,
+        x + if wide { 102.0 } else { 20.0 },
+        y + if wide { 110.0 } else { 129.0 },
         14,
         Weight::Regular,
         color::MUTED,
-        308.0,
+        w - if wide { 126.0 } else { 40.0 },
     );
     let status = match index {
         0 | 1 => {
@@ -329,11 +335,12 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
         3 | 4 => Rgba::hex(0x8dd5b0),
         _ => Rgba::hex(0x91baff),
     };
-    c.circle(x + 29.0, y + 169.0, 3.0, status_color);
+    let status_x = if wide { x + 106.0 } else { x + 24.0 };
+    c.circle(status_x, y + 165.0, 3.0, status_color);
     c.text(
         status,
-        x + 40.0,
-        y + 161.0,
+        status_x + 11.0,
+        y + 157.0,
         11,
         Weight::Bold,
         status_color,
