@@ -858,6 +858,13 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         .unwrap_or(6000);
     settle(app, wait);
     shot(app, "01-home");
+    if std::env::var_os("SHOT_HOME_APP_WHEEL_FOCUS").is_some() {
+        app.key(Key::Down);
+        app.key(Key::Down);
+        settle(app, 250);
+        shot(app, "02-home-app-wheel-focused");
+        return;
+    }
     if std::env::var_os("SHOT_HOME_ONLY").is_some() {
         return;
     }
@@ -1162,15 +1169,14 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         return;
     }
     if std::env::var_os("SHOT_APPS_ONLY").is_some() {
-        let mut apps = ui::apps::Apps::new(&app.cx.cfg.last_app_id);
+        let mut apps = if std::env::var_os("SHOT_APPS_WHEEL_ONLY").is_some() {
+            ui::apps::Apps::wheel(&app.cx.cfg.last_app_id)
+        } else {
+            ui::apps::Apps::new(&app.cx.cfg.last_app_id)
+        };
         if std::env::var_os("SHOT_APPS_FOCUS_PRIME").is_some() {
             app.cx.now = Instant::now();
             let _ = apps.key(Key::Down, &mut app.cx);
-        }
-        if std::env::var_os("SHOT_APPS_WHEEL_ONLY").is_some() {
-            let _ = apps.key(Key::Down, &mut app.cx);
-            let _ = apps.key(Key::Down, &mut app.cx);
-            let _ = apps.key(Key::Ok, &mut app.cx);
         }
         app.stack.push(Box::new(apps));
         settle(app, 0);

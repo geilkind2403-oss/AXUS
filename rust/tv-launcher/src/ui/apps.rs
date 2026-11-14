@@ -26,7 +26,6 @@ const APPS: [(&str, &str, &str); 6] = [
 pub struct Apps {
     focus: usize,
     wheel: bool,
-    down_button: bool,
     grid_focus: Focus,
     wheel_rotation: Anim,
     icons: [Option<Image>; 5],
@@ -34,6 +33,14 @@ pub struct Apps {
 
 impl Apps {
     pub fn new(last_app_id: &str) -> Self {
+        Self::with_mode(last_app_id, false)
+    }
+
+    pub fn wheel(last_app_id: &str) -> Self {
+        Self::with_mode(last_app_id, true)
+    }
+
+    fn with_mode(last_app_id: &str, wheel: bool) -> Self {
         let focus = APPS
             .iter()
             .position(|app| app.2 == last_app_id)
@@ -52,8 +59,7 @@ impl Apps {
             icon_bytes.map(|bytes| bytes.and_then(|b| crate::gfx::decode_image(b, 128, 128)));
         Self {
             focus,
-            wheel: false,
-            down_button: false,
+            wheel,
             grid_focus: Focus::default(),
             wheel_rotation,
             icons,
@@ -114,26 +120,15 @@ impl Screen for Apps {
                         self.wheel_rotation.target + std::f32::consts::TAU / APPS.len() as f32,
                     );
                 }
-                Key::Up | Key::Back => self.wheel = false,
+                Key::Up | Key::Back => return Nav::Pop,
                 Key::Ok => return self.open(cx),
                 Key::Home => return Nav::Pop,
                 _ => {}
             }
             return Nav::None;
         }
-        if self.down_button {
-            match key {
-                Key::Ok => self.wheel = true,
-                Key::Up => self.down_button = false,
-                Key::Left | Key::Right => self.down_button = false,
-                Key::Back | Key::Home => return Nav::Pop,
-                _ => {}
-            }
-            return Nav::None;
-        }
         match key {
             Key::Up | Key::Left | Key::Right => self.move_focus(key),
-            Key::Down if self.focus >= 3 => self.down_button = true,
             Key::Down => self.move_focus(key),
             Key::Ok if self.focus == 2 => {
                 cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus")
@@ -163,24 +158,12 @@ impl Screen for Apps {
             let rotation = self.wheel_rotation.step();
             draw_wheel(c, self.focus, rotation, &self.icons);
         } else {
-            draw_app_grid(
-                c,
-                self.focus,
-                self.down_button,
-                &mut self.grid_focus,
-                &self.icons,
-            );
+            draw_app_grid(c, self.focus, &mut self.grid_focus, &self.icons);
         }
     }
 }
 
-fn draw_app_grid(
-    c: &mut Canvas,
-    focus: usize,
-    down_button: bool,
-    grid_focus: &mut Focus,
-    icons: &[Option<Image>; 5],
-) {
+fn draw_app_grid(c: &mut Canvas, focus: usize, grid_focus: &mut Focus, icons: &[Option<Image>; 5]) {
     c.text(
         "Apps",
         PAD,
@@ -191,7 +174,7 @@ fn draw_app_grid(
         Align::Left,
     );
     c.text(
-        "Wähle eine App oder öffne den App-Kreis",
+        "Wähle eine App zum Öffnen",
         PAD,
         86.0,
         17,
@@ -215,11 +198,7 @@ fn draw_app_grid(
             240.0,
         );
     }
-    let (fx, fy) = if down_button {
-        (640.0, 625.0)
-    } else {
-        (xs[focus % 3], ys[focus / 3])
-    };
+    let (fx, fy) = (xs[focus % 3], ys[focus / 3]);
     let (fx, fy, fw, fh) = grid_focus.move_to(fx - 62.0, fy - 62.0, 124.0, 124.0, true);
     let glow = app_accent(focus);
     c.circle(
@@ -234,9 +213,7 @@ fn draw_app_grid(
         fw * 0.5 - 7.0,
         Rgba(18, 22, 31, 255),
     );
-    if !down_button {
-        draw_app_icon(c, icons, focus, fx + fw * 0.5, fy + fh * 0.5, 72.0);
-    }
+    draw_app_icon(c, icons, focus, fx + fw * 0.5, fy + fh * 0.5, 72.0);
     let (detail, detail_color) = app_details(focus);
     c.text_fit(
         detail,
@@ -247,42 +224,8 @@ fn draw_app_grid(
         detail_color,
         820.0,
     );
-    c.rect(
-        570.0,
-        596.0,
-        140.0,
-        58.0,
-        29.0,
-        if down_button {
-            Rgba::hex(0x526fb1)
-        } else {
-            Rgba::hex(0x252a36)
-        },
-    );
-    c.stroke_rect(
-        570.0,
-        596.0,
-        140.0,
-        58.0,
-        29.0,
-        1.5,
-        Rgba(178, 202, 255, 115),
-    );
     c.text(
-        "APP-KREIS",
-        640.0,
-        611.0,
-        11,
-        Weight::Bold,
-        color::TEXT,
-        Align::Center,
-    );
-    c.polygon(
-        &[(629.0, 630.0), (651.0, 630.0), (640.0, 642.0)],
-        color::WHITE,
-    );
-    c.text(
-        "Pfeile wählen · OK öffnen · ↓ App-Kreis",
+        "Pfeile wählen · OK öffnen · Zurück zum Hauptmenü",
         PAD,
         681.0,
         14,
@@ -312,11 +255,33 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         Align::Left,
     );
     let (cx, cy, radius) = (640.0f32, 372.0f32, 218.0f32);
-    c.circle(cx, cy, radius + 5.0, Rgba(99, 137, 215, 22));
-    c.circle(cx, cy, radius, Rgba(76, 103, 159, 90));
-    c.circle(cx, cy, radius - 3.0, Rgba(15, 19, 28, 255));
-    c.circle(cx, cy, 112.0, Rgba(37, 47, 69, 230));
-    c.circle(cx, cy, 110.0, Rgba(255, 255, 255, 18));
+    // Ball-bearing silhouette: a thick outer race, a grooved inner race and
+    // a floating set of six rollers around a solid central hub.
+    c.circle(cx, cy, radius + 13.0, Rgba(145, 169, 219, 28));
+    c.circle(cx, cy, radius + 8.0, Rgba(91, 111, 156, 230));
+    c.circle(cx, cy, radius + 3.0, Rgba(26, 32, 47, 255));
+    c.circle(cx, cy, radius - 8.0, Rgba(111, 133, 181, 165));
+    c.circle(cx, cy, radius - 13.0, Rgba(15, 19, 28, 255));
+    c.circle(cx, cy, 151.0, Rgba(86, 103, 145, 210));
+    c.circle(cx, cy, 145.0, Rgba(24, 30, 44, 255));
+    c.circle(cx, cy, 132.0, Rgba(111, 133, 181, 165));
+    c.circle(cx, cy, 126.0, Rgba(15, 19, 28, 255));
+
+    // Metallic roller pockets sit between the two races; their little specular
+    // glints make the silhouette read as a bearing even from across the room.
+    for i in 0..APPS.len() {
+        let angle = -std::f32::consts::FRAC_PI_2
+            + i as f32 * std::f32::consts::TAU / APPS.len() as f32
+            - rotation;
+        let bx = cx + angle.cos() * 173.0;
+        let by = cy + angle.sin() * 173.0;
+        c.circle(bx, by, 20.0, Rgba(7, 10, 17, 255));
+        c.circle(bx, by, 16.0, Rgba(132, 153, 196, 245));
+        c.circle(bx - 3.0, by - 4.0, 8.0, Rgba(204, 217, 245, 180));
+    }
+
+    c.circle(cx, cy, 112.0, Rgba(37, 47, 69, 245));
+    c.circle(cx, cy, 106.0, Rgba(255, 255, 255, 20));
     draw_app_icon(c, icons, focus, cx, cy - 24.0, 56.0);
     c.text_fit(
         APPS[focus].0,

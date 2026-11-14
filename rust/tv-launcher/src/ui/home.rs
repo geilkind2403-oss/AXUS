@@ -307,10 +307,10 @@ impl Screen for Home {
             return Nav::None;
         }
         if k == Key::Ok && self.focus >= 6 {
-            return if self.focus == 6 {
-                Nav::Push(Box::new(super::weather::WeatherScreen::new()))
-            } else {
-                Nav::Push(Box::new(super::control::Control::new(false)))
+            return match self.focus {
+                6 => Nav::Push(Box::new(super::weather::WeatherScreen::new())),
+                7 => Nav::Push(Box::new(super::control::Control::new(false))),
+                _ => Nav::Push(Box::new(super::apps::Apps::wheel(&cx.cfg.last_app_id))),
             };
         }
         self.focus = match (k, f) {
@@ -334,6 +334,9 @@ impl Screen for Home {
             }
             (Key::Down, 6) => nearest_top_slot(tile_center(header_tiles(&self.order).0)),
             (Key::Down, 7) => nearest_top_slot(tile_center(header_tiles(&self.order).1)),
+            (Key::Down, 3..=5) => 8,
+            (Key::Up, 8) => nearest_bottom_slot(640.0),
+            (Key::Left, 8) | (Key::Right, 8) => 8,
             (Key::Right, 6) => 7,
             (Key::Left, 7) => 6,
             (Key::ChUp, _) | (Key::ChDown, _) => {
@@ -484,6 +487,7 @@ impl Screen for Home {
                 &self.order,
             );
         }
+        draw_app_wheel_button(c, self.focus == 8);
         if self.editing {
             draw_edit_pulse(
                 c,
@@ -527,6 +531,7 @@ impl Screen for Home {
             self.moving.is_some(),
             &self.order,
         );
+        draw_app_wheel_button(c, self.focus == 8);
         if self.editing {
             draw_edit_pulse(
                 c,
@@ -681,6 +686,64 @@ fn draw_home_status(
     let _ = (editing, moving);
 }
 
+fn draw_app_wheel_button(c: &mut Canvas, focused: bool) {
+    let (x, y, w, h) = (525.0, 661.0, 230.0, 46.0);
+    if focused {
+        c.circle(640.0, y + h * 0.5, 35.0, Rgba(97, 137, 220, 38));
+    }
+    c.rect(
+        x,
+        y,
+        w,
+        h,
+        23.0,
+        if focused {
+            Rgba::hex(0x34476d)
+        } else {
+            Rgba::hex(0x20232c)
+        },
+    );
+    c.stroke_rect(
+        x,
+        y,
+        w,
+        h,
+        23.0,
+        if focused { 2.5 } else { 1.2 },
+        if focused {
+            Rgba::hex(0xb9d0ff)
+        } else {
+            Rgba(178, 202, 255, 95)
+        },
+    );
+    // Tiny bearing mark on the button mirrors the launcher wheel.
+    c.circle(554.0, 684.0, 14.0, Rgba::hex(0x758bb7));
+    c.circle(554.0, 684.0, 10.0, Rgba::hex(0x20232c));
+    c.circle(554.0, 684.0, 5.0, Rgba::hex(0x9eafd2));
+    c.text(
+        "APP-KREIS",
+        650.0,
+        670.0,
+        13,
+        Weight::Bold,
+        color::TEXT,
+        Align::Center,
+    );
+    c.text(
+        "OK ÖFFNEN",
+        650.0,
+        687.0,
+        10,
+        Weight::Regular,
+        if focused {
+            Rgba::hex(0xc4d7ff)
+        } else {
+            color::MUTED
+        },
+        Align::Center,
+    );
+}
+
 /// Where the headline is drawn over the news tile (beside its photo, or the
 /// whole tile when there is none).
 fn news_text_area(cx: &Ctx, order: &[usize; 6]) -> (f32, f32, f32, f32) {
@@ -778,6 +841,16 @@ fn nearest_top_slot(x: f32) -> usize {
             da.total_cmp(&db)
         })
         .unwrap_or(0)
+}
+
+fn nearest_bottom_slot(x: f32) -> usize {
+    (3..6)
+        .min_by(|a, b| {
+            let da = (tile_center(TILES[*a]) - x).abs();
+            let db = (tile_center(TILES[*b]) - x).abs();
+            da.total_cmp(&db)
+        })
+        .unwrap_or(4)
 }
 
 fn home_status_key(
