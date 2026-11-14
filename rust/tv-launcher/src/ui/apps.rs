@@ -1,7 +1,7 @@
 //! Remote-first catalog of installed and web-based TV apps.
 use super::*;
 use crate::app::{Ctx, Nav, Screen};
-use crate::gfx::{color, Align, Canvas, Image, LayerCache, Rgba, Weight};
+use crate::gfx::{color, Align, Canvas, Rgba, Weight};
 
 const APPS: [(&str, &str, &str); 6] = [
     ("YouTube TV", "YouTube-TV-Oberfläche", "youtube"),
@@ -23,15 +23,10 @@ const APPS: [(&str, &str, &str); 6] = [
         "settings",
     ),
 ];
-const APP_ROW_H: f32 = 188.0;
-
 pub struct Apps {
     focus: usize,
-    frame: Focus,
-    base_cache: LayerCache,
-    base_image: Option<Image>,
-    last_focus_rect: Option<(f32, f32, f32, f32)>,
-    last_focus_note: Option<usize>,
+    wheel: bool,
+    down_button: bool,
 }
 
 impl Apps {
@@ -43,11 +38,8 @@ impl Apps {
             .unwrap_or(0);
         Self {
             focus,
-            frame: Focus::default(),
-            base_cache: LayerCache::default(),
-            base_image: None,
-            last_focus_rect: None,
-            last_focus_note: None,
+            wheel: false,
+            down_button: false,
         }
     }
 
@@ -75,28 +67,13 @@ impl Apps {
     }
 
     fn move_focus(&mut self, key: Key) {
-        let (x, y, w, _) = app_card_rect(self.focus);
-        let center = x + w * 0.5;
-        let row = usize::from(y > 140.0);
-        let candidate = (0..APPS.len())
-            .filter(|&i| i != self.focus)
-            .filter_map(|i| {
-                let (nx, ny, nw, _) = app_card_rect(i);
-                let nrow = usize::from(ny > 140.0);
-                let nc = nx + nw * 0.5;
-                let valid = match key {
-                    Key::Left => nrow == row && nc < center,
-                    Key::Right => nrow == row && nc > center,
-                    Key::Up => row == 1 && nrow == 0,
-                    Key::Down => row == 0 && nrow == 1,
-                    _ => false,
-                };
-                valid.then_some((i, (nc - center).abs()))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some((next, _)) = candidate {
-            self.focus = next;
-        }
+        self.focus = match key {
+            Key::Left => (self.focus + APPS.len() - 1) % APPS.len(),
+            Key::Right => (self.focus + 1) % APPS.len(),
+            Key::Up if self.focus >= 3 => self.focus - 3,
+            Key::Down if self.focus < 3 => self.focus + 3,
+            _ => self.focus,
+        };
     }
 }
 
@@ -106,19 +83,38 @@ impl Screen for Apps {
     }
 
     fn key(&mut self, key: Key, cx: &mut Ctx) -> Nav {
-        match key {
-            Key::Up | Key::Down | Key::Left | Key::Right => self.move_focus(key),
-            Key::Ok => {
-                if self.focus == 5 || self.focus == 4 || self.focus == 3 {
-                    return self.open(cx);
-                } else if self.focus == 2 {
-                    cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus");
-                } else if super::browser::installed() {
-                    return self.open(cx);
-                } else {
-                    cx.toast("Web-App-Unterstützung ist nicht installiert");
-                }
+        if self.wheel {
+            match key {
+                Key::Left => self.focus = (self.focus + APPS.len() - 1) % APPS.len(),
+                Key::Right => self.focus = (self.focus + 1) % APPS.len(),
+                Key::Up | Key::Back => self.wheel = false,
+                Key::Ok => return self.open(cx),
+                Key::Home => return Nav::Pop,
+                _ => {}
             }
+            return Nav::None;
+        }
+        if self.down_button {
+            match key {
+                Key::Ok => self.wheel = true,
+                Key::Up => self.down_button = false,
+                Key::Left | Key::Right => self.down_button = false,
+                Key::Back | Key::Home => return Nav::Pop,
+                _ => {}
+            }
+            return Nav::None;
+        }
+        match key {
+            Key::Up | Key::Left | Key::Right => self.move_focus(key),
+            Key::Down if self.focus >= 3 => self.down_button = true,
+            Key::Down => self.move_focus(key),
+            Key::Ok if self.focus == 2 => {
+                cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus")
+            }
+            Key::Ok if self.focus <= 1 && !super::browser::installed() => {
+                cx.toast("Web-App-Unterstützung ist nicht installiert")
+            }
+            Key::Ok => return self.open(cx),
             Key::Back | Key::Home => return Nav::Pop,
             _ => {}
         }
@@ -126,255 +122,229 @@ impl Screen for Apps {
     }
 
     fn animating(&self, _: &Ctx) -> bool {
-        self.frame.moving()
+        false
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
-        let trace = std::env::var_os("SHOT_APPS_TRACE").is_some();
-        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x151b27)));
-        c.text(
-            "Apps",
-            PAD,
-            38.0,
-            38,
-            Weight::Bold,
-            color::TEXT,
-            Align::Left,
-        );
-        c.text(
-            "Mit der Fernbedienung auswählen",
-            PAD,
-            84.0,
-            17,
-            Weight::Regular,
-            color::MUTED,
-            Align::Left,
-        );
-        c.text(
-            "STREAMING & LIVE-TV",
-            PAD,
-            116.0,
-            12,
-            Weight::Bold,
-            Rgba::hex(0x9eabc8),
-            Align::Left,
-        );
+        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x121722)));
         super::status(c, cx);
-
-        for i in 0..APPS.len() {
-            draw_app_card(c, i);
+        if self.wheel {
+            draw_wheel(c, self.focus);
+        } else {
+            draw_app_grid(c, self.focus, self.down_button);
         }
-        c.text(
-            "Pfeile: auswählen   ·   OK: öffnen   ·   Zurück: Startseite",
-            PAD,
-            670.0,
-            16,
-            Weight::Regular,
-            color::MUTED,
-            Align::Left,
-        );
-
-        // Keep the six cards and page chrome as one retained layer. Navigation
-        // then restores only the old selection and the small moving focus ring.
-        let base_started = std::time::Instant::now();
-        let base_changed = c.finish_cached(&mut self.base_cache);
-        let base_ms = base_started.elapsed().as_secs_f64() * 1000.0;
-        let full_restore = !base_changed && c.full_base_restore_required();
-        if base_changed {
-            self.base_image = Some(c.snapshot());
-            self.last_focus_rect = None;
-            self.last_focus_note = None;
-        } else if let Some(base) = self.base_image.as_ref() {
-            if full_restore {
-                c.restore_image(base);
-                self.last_focus_rect = None;
-            } else if let Some((x, y, w, h)) = self.last_focus_rect {
-                restore_app_focus(c, base, x, y, w, h);
-            }
-        }
-
-        let focus_changed =
-            base_changed || full_restore || self.last_focus_note != Some(self.focus);
-        let focus_started = std::time::Instant::now();
-        if focus_changed {
-            if !base_changed {
-                if let Some(base) = self.base_image.as_ref() {
-                    c.restore_rect(base, PAD, 584.0, 1080.0, 28.0);
-                }
-            }
-            draw_app_note(c, self.focus);
-            c.finish_pending_region(PAD, 584.0, 1080.0, 28.0);
-            self.last_focus_note = Some(self.focus);
-        }
-        let focus_ms = focus_started.elapsed().as_secs_f64() * 1000.0;
-
-        // The same time-based glide as Home; only its edge spans are rasterized
-        // between key presses, keeping the animation cheap on Pi 3.
-        let ring_started = std::time::Instant::now();
-        let (x, y, w, h) = app_card_rect(self.focus);
-        let bounds = self.frame.move_to(x, y, w, h, true);
-        super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
-        c.finish_pending_region(
-            bounds.0 - 10.0,
-            bounds.1 - 10.0,
-            bounds.2 + 20.0,
-            bounds.3 + 20.0,
-        );
-        let ring_ms = ring_started.elapsed().as_secs_f64() * 1000.0;
-        if trace && focus_changed {
-            eprintln!("Apps-Phase: Basis {base_ms:.2} ms, Auswahl {focus_ms:.2} ms, Rahmen {ring_ms:.2} ms");
-        }
-        self.last_focus_rect = Some(bounds);
     }
 }
 
-/// Erase the previous focus ring. Its rounded corners reach a few pixels
-/// into the card's own box, so the strips overlap the card edge: restoring
-/// only the margin outside left the corner arcs behind when the focus moved
-/// on, and made them brighter with every frame it stayed.
-fn restore_app_focus(c: &mut Canvas, base: &Image, x: f32, y: f32, w: f32, h: f32) {
-    const OUT: f32 = 10.0;
-    const IN: f32 = 8.0;
-    let edge = OUT + IN;
-    c.restore_rect(base, x - OUT, y - OUT, w + OUT * 2.0, edge);
-    c.restore_rect(base, x - OUT, y + h - IN, w + OUT * 2.0, edge);
-    c.restore_rect(base, x - OUT, y + IN, edge, (h - IN * 2.0).max(0.0));
-    c.restore_rect(base, x + w - IN, y + IN, edge, (h - IN * 2.0).max(0.0));
-}
-
-fn app_card_rect(index: usize) -> (f32, f32, f32, f32) {
-    let y = if index < 3 { 140.0 } else { 352.0 };
-    let (x, w) = match index {
-        0 => (64.0, 564.0),
-        1 => (652.0, 270.0),
-        2 => (946.0, 270.0),
-        3 => (64.0, 270.0),
-        4 => (358.0, 564.0),
-        _ => (946.0, 270.0),
-    };
-    (x, y, w, APP_ROW_H)
-}
-
-fn draw_app_card(c: &mut Canvas, index: usize) {
-    let (title, detail, _) = APPS[index];
-    let (x, y, w, h) = app_card_rect(index);
-    let accent = app_accent(index);
-    let wide = w > 400.0;
-    let muted = index == 2;
-    c.vgradient(
-        x,
-        y,
-        w,
-        h,
-        22.0,
-        if muted {
-            Rgba(39, 40, 47, 244)
-        } else {
-            Rgba(accent.0 / 3, accent.1 / 3, accent.2 / 3, 250)
-        },
-        Rgba(23, 25, 34, 250),
-    );
-    c.stroke_rect(
-        x,
-        y,
-        w,
-        h,
-        22.0,
-        1.0,
-        Rgba(accent.0, accent.1, accent.2, if muted { 35 } else { 105 }),
-    );
-    c.circle(
-        x + w - 54.0,
-        y + 52.0,
-        45.0,
-        Rgba(accent.0, accent.1, accent.2, 18),
-    );
-    c.circle(
-        x + w - 54.0,
-        y + 52.0,
-        30.0,
-        Rgba(accent.0, accent.1, accent.2, 16),
-    );
-    draw_badge(c, index, x + 22.0, y + 20.0);
-    let category = match index {
-        0 | 1 | 2 => "STREAMING",
-        3 | 4 => "LIVE-TV",
-        _ => "SYSTEM",
-    };
-    let chip_w = if index <= 2 {
-        88.0
-    } else if index <= 4 {
-        68.0
-    } else {
-        66.0
-    };
-    c.rect(
-        x + w - chip_w - 16.0,
-        y + 18.0,
-        chip_w,
-        24.0,
-        12.0,
-        Rgba(0, 0, 0, 74),
+fn draw_app_grid(c: &mut Canvas, focus: usize, down_button: bool) {
+    c.text(
+        "Apps",
+        PAD,
+        42.0,
+        38,
+        Weight::Bold,
+        color::TEXT,
+        Align::Left,
     );
     c.text(
-        category,
-        x + w - chip_w * 0.5 - 16.0,
-        y + 24.0,
-        10,
-        Weight::Bold,
-        accent,
-        Align::Center,
+        "Wähle eine App oder öffne den App-Kreis",
+        PAD,
+        86.0,
+        17,
+        Weight::Regular,
+        color::MUTED,
+        Align::Left,
     );
-    let ink = if index == 2 {
-        color::MUTED
-    } else {
-        color::TEXT
-    };
-    c.text_fit(
-        title,
-        x + 22.0,
-        y + 102.0,
-        if wide { 27 } else { 23 },
-        Weight::Bold,
-        ink,
-        w - 44.0,
-    );
+    let xs = [240.0, 640.0, 1040.0];
+    let ys = [230.0, 425.0];
+    for i in 0..APPS.len() {
+        let (title, _, _) = APPS[i];
+        let (x, y) = (xs[i % 3], ys[i / 3]);
+        let accent = app_accent(i);
+        if focus == i {
+            c.circle(x, y, 62.0, Rgba(accent.0, accent.1, accent.2, 40));
+            c.circle(x, y, 54.0, Rgba(18, 22, 31, 255));
+            c.circle(x, y, 50.0, Rgba(accent.0, accent.1, accent.2, 70));
+        }
+        draw_badge(c, i, x - 32.0, y - 27.0);
+        c.text_fit(
+            title,
+            x,
+            y + 67.0,
+            19,
+            Weight::Bold,
+            if i == 2 { color::MUTED } else { color::TEXT },
+            240.0,
+        );
+    }
+    let (detail, detail_color) = app_details(focus);
     c.text_fit(
         detail,
-        x + 22.0,
-        y + 135.0,
+        640.0,
+        555.0,
+        15,
+        Weight::Regular,
+        detail_color,
+        820.0,
+    );
+    c.rect(
+        570.0,
+        596.0,
+        140.0,
+        58.0,
+        29.0,
+        if down_button {
+            Rgba::hex(0x526fb1)
+        } else {
+            Rgba::hex(0x252a36)
+        },
+    );
+    c.stroke_rect(
+        570.0,
+        596.0,
+        140.0,
+        58.0,
+        29.0,
+        1.5,
+        Rgba(178, 202, 255, 115),
+    );
+    c.text(
+        "APP-KREIS",
+        640.0,
+        611.0,
+        11,
+        Weight::Bold,
+        color::TEXT,
+        Align::Center,
+    );
+    c.polygon(
+        &[(629.0, 630.0), (651.0, 630.0), (640.0, 642.0)],
+        color::WHITE,
+    );
+    c.text(
+        "Pfeile wählen · OK öffnen · ↓ App-Kreis",
+        PAD,
+        681.0,
         14,
         Weight::Regular,
         color::MUTED,
-        w - 44.0,
+        Align::Left,
     );
-    let status = match index {
-        0 | 1 => {
-            if super::browser::installed() {
-                "BROWSER BEREIT"
-            } else {
-                "BROWSER NICHT INSTALLIERT"
-            }
-        }
-        2 => "DERZEIT DEAKTIVIERT",
-        3 | 4 => "NATIVE WIEDERGABE",
-        _ => "EINSTELLUNGEN ÖFFNEN",
-    };
-    let status_color = match index {
-        2 => Rgba::hex(0xe5a66d),
-        3 | 4 => Rgba::hex(0x8dd5b0),
-        _ => Rgba::hex(0x91baff),
-    };
-    c.circle(x + 28.0, y + 169.0, 3.0, status_color);
-    c.text_fit(
-        status,
-        x + 39.0,
-        y + 162.0,
-        10,
+}
+
+fn draw_wheel(c: &mut Canvas, focus: usize) {
+    c.text(
+        "App-Kreis",
+        PAD,
+        42.0,
+        38,
         Weight::Bold,
-        status_color,
-        w - 55.0,
+        color::TEXT,
+        Align::Left,
     );
+    c.text(
+        "Links und rechts drehen den Kreis",
+        PAD,
+        86.0,
+        17,
+        Weight::Regular,
+        color::MUTED,
+        Align::Left,
+    );
+    let (cx, cy, radius) = (640.0f32, 372.0f32, 218.0f32);
+    c.circle(cx, cy, radius + 5.0, Rgba(99, 137, 215, 22));
+    c.circle(cx, cy, radius, Rgba(76, 103, 159, 90));
+    c.circle(cx, cy, radius - 3.0, Rgba(15, 19, 28, 255));
+    c.circle(cx, cy, 112.0, Rgba(37, 47, 69, 230));
+    c.circle(cx, cy, 110.0, Rgba(255, 255, 255, 18));
+    c.text_fit(
+        APPS[focus].0,
+        cx,
+        cy - 15.0,
+        24,
+        Weight::Bold,
+        color::TEXT,
+        220.0,
+    );
+    c.text(
+        "OK · ÖFFNEN",
+        cx,
+        cy + 22.0,
+        12,
+        Weight::Bold,
+        Rgba::hex(0xaecaff),
+        Align::Center,
+    );
+    for i in 0..APPS.len() {
+        let offset = (i + APPS.len() - focus) % APPS.len();
+        let angle = -std::f32::consts::FRAC_PI_2
+            + offset as f32 * std::f32::consts::TAU / APPS.len() as f32;
+        let (x, y) = (cx + angle.cos() * radius, cy + angle.sin() * radius);
+        let accent = app_accent(i);
+        let selected = i == focus;
+        c.circle(
+            x,
+            y,
+            if selected { 48.0 } else { 37.0 },
+            Rgba(
+                accent.0,
+                accent.1,
+                accent.2,
+                if selected { 125 } else { 48 },
+            ),
+        );
+        c.circle(
+            x,
+            y,
+            if selected { 42.0 } else { 33.0 },
+            Rgba(18, 22, 31, 255),
+        );
+        draw_badge(c, i, x - 32.0, y - 27.0);
+        if !selected {
+            c.text_fit(
+                APPS[i].0,
+                x,
+                y + 48.0,
+                12,
+                Weight::Bold,
+                color::MUTED,
+                132.0,
+            );
+        }
+    }
+    c.text(
+        "← / → WEITERBLÄTTERN · ↑ ZURÜCK · OK STARTEN",
+        640.0,
+        674.0,
+        14,
+        Weight::Bold,
+        color::MUTED,
+        Align::Center,
+    );
+}
+
+fn app_details(index: usize) -> (&'static str, Rgba) {
+    match index {
+        0 if !super::browser::installed() => (
+            "YouTube TV · Browser-Unterstützung nicht installiert",
+            Rgba::hex(0xe5a66d),
+        ),
+        1 if !super::browser::installed() => (
+            "Prime Video · Browser-Unterstützung nicht installiert",
+            Rgba::hex(0xe5a66d),
+        ),
+        2 => (
+            "ARD Mediathek · derzeit wegen eines WebKit-Fehlers deaktiviert",
+            Rgba::hex(0xe5a66d),
+        ),
+        3 => ("ZDF Live · native HLS-Wiedergabe", Rgba::hex(0x8dd5b0)),
+        4 => ("ARTE Live · native HLS-Wiedergabe", Rgba::hex(0x8dd5b0)),
+        5 => (
+            "Einstellungen · WLAN, Bild, Ton und Bedienung",
+            Rgba::hex(0x91baff),
+        ),
+        _ => ("App auswählen", Rgba::hex(0x91baff)),
+    }
 }
 
 fn app_accent(index: usize) -> Rgba {
@@ -386,18 +356,6 @@ fn app_accent(index: usize) -> Rgba {
         4 => Rgba::hex(0xe5e8ef),
         _ => Rgba::hex(0x8eb5ff),
     }
-}
-
-fn draw_app_note(c: &mut Canvas, focus: usize) {
-    let note = match focus {
-        1 => "Prime Video: DRM-Wiedergabe auf diesem Pi nicht bestätigt.",
-        2 => "ARD Mediathek ist wegen eines WebKit-Fehlers deaktiviert.",
-        3 => "ZDF Live läuft nativ via HLS mit Bild und Ton.",
-        4 => "ARTE Live läuft nativ via HLS in 720p.",
-        5 => "WLAN, Bluetooth, Bild, Ton und Fernbedienung konfigurieren.",
-        _ => "YouTube TV öffnet in der offiziellen TV-Oberfläche.",
-    };
-    c.text_fit(note, PAD, 590.0, 15, Weight::Regular, color::MUTED, 1080.0);
 }
 
 fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32) {

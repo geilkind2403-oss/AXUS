@@ -1167,6 +1167,11 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             app.cx.now = Instant::now();
             let _ = apps.key(Key::Down, &mut app.cx);
         }
+        if std::env::var_os("SHOT_APPS_WHEEL_ONLY").is_some() {
+            let _ = apps.key(Key::Down, &mut app.cx);
+            let _ = apps.key(Key::Down, &mut app.cx);
+            let _ = apps.key(Key::Ok, &mut app.cx);
+        }
         app.stack.push(Box::new(apps));
         settle(app, 0);
         shot(app, "02-apps");
