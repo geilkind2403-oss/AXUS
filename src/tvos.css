@@ -1,0 +1,187 @@
+/* ---------- TV-OS system layer (see tvos.js) ----------
+   Everything a real TV OS has on top of the apps: system toasts, network
+   status, the launch/error screen for web apps, the power menu and the
+   "screen off" standby. Only transform/opacity are animated. Stacking order
+   (z-index): network pill 40 < overlays 50-100 < app launch/error screen 300
+   < boot splash 500 < power menu 9000 < toasts 10000 < phone pointer 100000
+   < standby 200000. */
+
+/* The launcher draws its own focus (.focused); the browser's focus ring around
+   a clicked/tabbed button is a dead giveaway of a web page. */
+*:focus, *:focus-visible { outline: none; }
+* { -webkit-tap-highlight-color: transparent; }
+/* No ghost image when an image/link is dragged. */
+img, a, svg { -webkit-user-drag: none; }
+
+/* ---------------- Toasts ---------------- */
+#tvos-toasts {
+  position: fixed; top: 24px; right: 32px; z-index: 10000;
+  width: 360px; max-width: calc(100vw - 48px);
+  display: flex; flex-direction: column; gap: 10px;
+  pointer-events: none;
+}
+.tvos-toast {
+  --k: var(--accent, #3b6dff);
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 20px 14px 14px;
+  border-radius: 18px;
+  background: rgba(28, 28, 33, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 14px 44px rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  backdrop-filter: blur(16px) saturate(1.3);
+  color: var(--text, #f1f1f3);
+  animation: tvosToastIn var(--dur-slow, 480ms) var(--ease-out-expo, cubic-bezier(.16, 1, .3, 1)) both;
+}
+.tvos-toast.out { animation: tvosToastOut var(--dur-fast, 160ms) var(--ease-in, cubic-bezier(.4, 0, 1, 1)) forwards; }
+.tvos-toast-info { --k: var(--accent, #3b6dff); }
+.tvos-toast-success { --k: #3ddc84; }
+.tvos-toast-warning { --k: #e0a01c; }
+.tvos-toast-error { --k: #ff6b6b; }
+@keyframes tvosToastIn { from { opacity: 0; transform: translateX(28px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes tvosToastOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-8px); } }
+.tvos-toast-icon {
+  flex: none; width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 18%, transparent);
+  font-size: 20px;
+}
+.tvos-toast-icon svg { width: 22px; height: 22px; }
+.tvos-toast-body { min-width: 0; }
+.tvos-toast-title { font-size: 15px; font-weight: 700; line-height: 1.3; }
+.tvos-toast-text { font-size: 13px; font-weight: 500; color: var(--muted, #8b8b94); line-height: 1.35; margin-top: 2px; }
+
+/* ---------------- Network status (top right, only while offline) ---------------- */
+#tvos-net {
+  position: fixed; top: 22px; right: 48px; z-index: 40;
+  display: none; align-items: center; gap: 8px;
+  padding: 8px 16px 8px 11px; border-radius: 999px;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  color: #ff8f8f; font-size: 13px; font-weight: 700;
+}
+#tvos-net svg { width: 18px; height: 18px; }
+body.tvos-offline #tvos-net { display: flex; animation: tvosToastIn var(--dur, 280ms) var(--ease-out-expo, cubic-bezier(.16, 1, .3, 1)) both; }
+/* The WLAN pill in the bottom bar shows the same state: red with a slash. */
+body.tvos-offline #btn-wifi { position: relative; color: #ff8f8f; }
+body.tvos-offline #btn-wifi::after {
+  content: ''; position: absolute; left: 11px; right: 11px; top: 50%;
+  height: 2px; margin-top: -1px; border-radius: 2px;
+  background: currentColor; transform: rotate(-45deg);
+  box-shadow: 0 0 0 2px var(--panel-solid, #18181b);
+}
+
+/* ---------------- Launch splash / error screen for web apps ----------------
+   Shown by the renderer while the web app (a native view that sits on top of
+   the launcher window once it is ready) is still loading off-screen, or when
+   it failed to load. */
+#tvos-splash {
+  position: fixed; inset: 0; z-index: 300;
+  display: flex; align-items: center; justify-content: center;
+  background: #0a0a0c;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s linear var(--dur, 280ms);
+}
+#tvos-splash.on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s; }
+.tvos-splash-center {
+  display: flex; flex-direction: column; align-items: center; gap: 30px;
+  max-width: 760px; padding: 0 48px; text-align: center;
+}
+#tvos-brand {
+  display: flex; align-items: center; gap: 16px;
+  font-size: 46px; font-weight: 800; letter-spacing: 0.5px; color: #fff;
+  text-shadow: 0 4px 30px rgba(0, 0, 0, 0.45);
+}
+#tvos-brand .tvos-brand-icon svg { width: 60px; height: 60px; display: block; }
+#tvos-brand .tvos-brand-word { color: var(--tvos-word, #fff); }
+#tvos-splash.error #tvos-brand { font-size: 26px; opacity: 0.7; }
+#tvos-splash.error #tvos-brand .tvos-brand-icon svg { width: 36px; height: 36px; }
+.tvos-spinner {
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--tvos-accent, #fff);
+  animation: tvosSpin .9s linear infinite;
+  will-change: transform;
+}
+@keyframes tvosSpin { to { transform: rotate(360deg); } }
+/* The splash sits invisible over the home screen all the time: don't keep the
+   spinner turning (and the compositor busy) while nobody can see it. */
+#tvos-splash:not(.on) .tvos-spinner { animation-play-state: paused; }
+#tvos-splash-slow {
+  margin-top: -10px; font-size: 15px; font-weight: 600; color: rgba(255, 255, 255, 0.6);
+  opacity: 0; transition: opacity .5s ease;
+}
+#tvos-splash-slow.show { opacity: 1; }
+#tvos-splash.error .tvos-spinner, #tvos-splash.error #tvos-splash-slow { display: none; }
+#tvos-splash:not(.error) .tvos-err { display: none; }
+.tvos-err { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.tvos-err-icon {
+  width: 88px; height: 88px; border-radius: 50%; margin-bottom: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.07); color: #fff;
+}
+.tvos-err-icon svg { width: 44px; height: 44px; }
+.tvos-err-title { font-size: 32px; font-weight: 800; letter-spacing: -0.3px; }
+.tvos-err-text { font-size: 17px; font-weight: 500; color: rgba(255, 255, 255, 0.68); line-height: 1.5; max-width: 560px; }
+.tvos-err-code { font-size: 12px; font-weight: 600; color: rgba(255, 255, 255, 0.35); letter-spacing: 0.4px; }
+.tvos-err-actions { display: flex; gap: 14px; margin-top: 18px; }
+
+/* Buttons shared by the error screen and the power menu (same look as .lib-btn). */
+.tvos-btn {
+  padding: 15px 28px; border-radius: 14px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: var(--panel-raised, #202024); color: var(--text, #f1f1f3);
+  font-family: inherit; font-size: 16px; font-weight: 700; cursor: pointer;
+  transition: box-shadow var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur-fast, 160ms) var(--ease-out, ease);
+}
+.tvos-btn.primary { background: var(--accent, #3b6dff); border-color: transparent; color: #fff; }
+.tvos-btn.focused { box-shadow: 0 0 0 3px #fff, 0 10px 30px rgba(0, 0, 0, 0.5); transform: scale(1.05); }
+.tvos-btn:active { transform: scale(.97); }
+
+/* ---------------- Power menu ---------------- */
+#tvos-power {
+  position: fixed; inset: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s linear var(--dur, 280ms);
+}
+#tvos-power.on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s; }
+.tvos-power-panel {
+  padding: 34px 38px 26px; border-radius: 28px;
+  background: linear-gradient(180deg, var(--panel-raised, #202024), var(--panel-solid, #18181b));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 14px 32px rgba(0, 0, 0, 0.55), 0 50px 110px rgba(0, 0, 0, 0.6);
+  transform: translateY(18px) scale(.96);
+  transition: transform var(--dur-slow, 480ms) var(--ease-out-expo, cubic-bezier(.16, 1, .3, 1));
+}
+#tvos-power.on .tvos-power-panel { transform: none; }
+.tvos-power-title { font-size: 24px; font-weight: 800; margin-bottom: 22px; }
+.tvos-power-row { display: flex; gap: 16px; }
+.tvos-power-btn {
+  width: 172px; height: 148px; border-radius: 20px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: rgba(255, 255, 255, 0.05); color: var(--text, #f1f1f3);
+  font-family: inherit; font-size: 15px; font-weight: 700; cursor: pointer;
+  transition: box-shadow var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur, 280ms) var(--ease-spring, ease), background-color var(--dur-fast, 160ms) ease;
+}
+.tvos-power-btn svg { width: 38px; height: 38px; }
+.tvos-power-btn.subtle { color: var(--muted, #8b8b94); }
+.tvos-power-btn.focused {
+  background: rgba(59, 109, 255, 0.14); color: #fff;
+  box-shadow: 0 0 0 3px var(--accent, #3b6dff), 0 16px 34px rgba(59, 109, 255, 0.28);
+  transform: translateY(-4px) scale(1.04);
+}
+.tvos-power-hint { margin-top: 20px; text-align: center; font-size: 12px; font-weight: 600; color: var(--muted, #8b8b94); }
+
+/* ---------------- Standby ("Bildschirm aus"): pure black until a key is pressed ---------------- */
+#tvos-standby {
+  position: fixed; inset: 0; z-index: 200000;
+  background: #000; cursor: none !important;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur-slow, 480ms) var(--ease-in-out, ease), visibility 0s linear var(--dur-slow, 480ms);
+}
+#tvos-standby.on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity var(--dur-slow, 480ms) var(--ease-in-out, ease), visibility 0s; }

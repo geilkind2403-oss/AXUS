@@ -1,0 +1,10 @@
+[package]
+name = "tvcore"
+version.workspace = true
+edition.workspace = true
+description = "Library scanning shared by the TV server (PC) and the launcher (Pi): films, music, tags, durations"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true

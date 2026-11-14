@@ -1,0 +1,129 @@
+/* ---------- Apps folder (Apple-TV-Style), see appfolder.js ---------- */
+
+/* ----- Home tile #grid-1: translucent plate with mini app icons + label ----- */
+/* Double class: index.html's inline .grid-cell rules load after this file and
+   would otherwise win the tie on centering/gap/padding. */
+.grid-cell.grid-cell-appfolder {
+  justify-content: flex-start; align-items: stretch;
+  gap: 10px;
+  padding: 16px 16px 14px;
+  cursor: pointer;
+}
+.af-plate {
+  flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 8px;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.09);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 6px 16px rgba(0,0,0,0.3);
+}
+.af-tile-label {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 15px; font-weight: 700; line-height: 1.2;
+}
+
+/* ----- Logo faces, shared by the mini icons and the big cards. Sized in %
+   so the same markup scales from a ~70px icon to a 250px card. ----- */
+.af-mini, .af-card { position: relative; overflow: hidden; }
+.af-mini {
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 2px 5px rgba(0,0,0,0.45);
+}
+.af-face {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 6%;
+}
+.af-face svg { width: 100%; height: 100%; }
+.af-face-bleed { padding: 0; }
+.af-cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+.af-logo { height: 60%; width: auto; aspect-ratio: 1; object-fit: contain; display: block; }
+
+/* ----- Folder overlay. backdrop-filter sits on the overlay itself (the
+   element that also fades): on a child it would see nothing but the overlay's
+   own contents while the fade runs, and the blur would pop in at the end. ----- */
+#appfolder-overlay {
+  display: none;
+  position: fixed; inset: 0; z-index: 55;
+  background: radial-gradient(90% 80% at 50% 35%, rgba(22,22,28,0.3), rgba(6,6,8,0.66));
+  backdrop-filter: blur(32px) saturate(1.2);
+}
+#appfolder-overlay.active { display: flex; animation: overlayFadeIn .25s cubic-bezier(.2,.8,.2,1); }
+#appfolder-overlay.closing { animation: overlayFadeOut .2s cubic-bezier(.4,0,1,1) forwards; }
+
+#af-shell {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 40px;
+}
+#af-title {
+  margin: 0 0 44px;
+  font-size: 48px; font-weight: 800; letter-spacing: -1px; line-height: 1.1;
+  text-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+#appfolder-overlay.active #af-title { animation: slideUpIn .45s cubic-bezier(.2,.8,.2,1) .04s backwards; }
+
+/* 4 x 2, 16:9 cards; the row gap leaves room for the focused app's name. */
+#af-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 250px);
+  column-gap: 30px; row-gap: 62px;
+}
+
+/* The wrapper carries the entrance/exit animation, the inner card the focus
+   transform -- an animation with a fill mode would otherwise pin transform
+   and swallow the focus scale. */
+.af-item { position: relative; cursor: pointer; }
+#appfolder-overlay.active .af-item {
+  animation: afItemIn .45s cubic-bezier(.2,.8,.2,1) calc(var(--i) * 40ms + 70ms) backwards;
+}
+#appfolder-overlay.closing .af-item { animation: afItemOut .2s cubic-bezier(.4,0,1,1) forwards; }
+@keyframes afItemIn {
+  from { opacity: 0; transform: translateY(26px) scale(.9); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes afItemOut {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(.94); }
+}
+
+/* Flight mode (appfolder.js): the stagger-in/out keyframes are replaced by
+   the mini-icon -> card flight; the real cards stay invisible while their
+   clones are in the air. */
+#appfolder-overlay.flip.active .af-item,
+#appfolder-overlay.flip.closing .af-item { animation: none; }
+#appfolder-overlay.flying .af-card { opacity: 0; }
+#appfolder-overlay.flying .af-name { opacity: 0; }
+.af-card.af-fly {
+  position: fixed; z-index: 56; margin: 0;
+  transform: none; pointer-events: none;
+  aspect-ratio: auto;
+}
+
+.af-card {
+  aspect-ratio: 16 / 9;
+  border-radius: 18px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 3px 8px rgba(0,0,0,0.5), 0 14px 30px rgba(0,0,0,0.45);
+  transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s cubic-bezier(.2,.8,.2,1);
+}
+.af-item.focused .af-card {
+  transform: scale(1.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 0 0 3px var(--accent), 0 10px 22px rgba(0,0,0,0.55), 0 32px 64px rgba(0,0,0,0.65);
+}
+
+.af-name {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin-top: 20px; /* clears the card's bottom edge once it is scaled up */
+  text-align: center;
+  font-size: 18px; font-weight: 600;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.6);
+  opacity: 0; transform: translateY(-6px);
+  transition: opacity .25s ease, transform .3s cubic-bezier(.2,.8,.2,1);
+  pointer-events: none;
+}
+.af-item.focused .af-name { opacity: 1; transform: translateY(0); }

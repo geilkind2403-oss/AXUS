@@ -1,0 +1,9 @@
+# Raspberry Pi 3 on LibreELEC (32-bit userland): one static musl binary, no
+# system libraries needed. Build with:  cargo build --release -p tv-launcher --target armv7-unknown-linux-musleabihf
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "target-cpu=cortex-a53"]
+
+[env]
+CC_armv7_unknown_linux_musleabihf = "clang"
+CFLAGS_armv7_unknown_linux_musleabihf = "--target=armv7-unknown-linux-musleabihf"

@@ -1,0 +1,13 @@
+node_modules/
+data/
+.DS_Store
+.claude/worktrees/
+rust/target/
+rust/dist/
+tv-launcher-pi.tar.gz
+tv-update.ps1
+usb_copy_log.txt
+rust/deploy/tv-update.ps1
+.env
+.env.*
+!.env.example

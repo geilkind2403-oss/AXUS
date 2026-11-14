@@ -1,0 +1,11 @@
+[package]
+name = "tv-server"
+version.workspace = true
+edition.workspace = true
+description = "Film + music server for the TV launcher (runs on the PC)"
+
+[dependencies]
+tvcore = { path = "../tvcore" }
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true

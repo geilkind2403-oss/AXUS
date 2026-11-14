@@ -1,0 +1,51 @@
+name: Rust (Pi launcher + PC server)
+
+on:
+  push:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: rust } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: cargo test --workspace
+
+  pi:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: rust } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build-pi.sh
+      - run: cp deploy/tv-update.ps1 dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-launcher-pi
+          path: |
+            rust/dist/tv-launcher-pi.tar.gz
+            rust/dist/tv-update.ps1
+
+  server-windows:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: rust } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p tv-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-server-windows
+          path: rust/target/release/tv-server.exe
+
+  server-linux:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: rust } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p tv-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-server-linux
+          path: rust/target/release/tv-server

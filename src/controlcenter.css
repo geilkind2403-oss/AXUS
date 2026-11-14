@@ -1,0 +1,120 @@
+/* ---------- Control Center (see controlcenter.js) ----------
+   Slides in at the top right on a long press of OK. Sits above the launcher's
+   overlays but below the power menu (9000) and toasts (10000). */
+#cc-overlay {
+  position: fixed; inset: 0; z-index: 8000;
+  background: linear-gradient(270deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.15) 60%, transparent);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s linear var(--dur, 280ms);
+}
+#cc-overlay.on { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity var(--dur, 280ms) var(--ease-out, ease), visibility 0s; }
+
+#cc-panel {
+  position: absolute; top: 24px; right: 32px;
+  width: 440px; max-width: calc(100vw - 32px); max-height: calc(100vh - 48px); overflow: hidden;
+  padding: 22px 22px 16px; border-radius: 30px;
+  display: flex; flex-direction: column; gap: 14px;
+  background: rgba(30, 30, 36, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 24px 70px rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  backdrop-filter: blur(28px) saturate(1.4);
+  color: var(--text, #f1f1f3);
+  transform-origin: top right;
+  transform: translate(24px, -12px) scale(.94);
+  transition: transform var(--dur-slow, 480ms) var(--ease-out-expo, cubic-bezier(.16, 1, .3, 1));
+}
+#cc-overlay.on #cc-panel { transform: none; }
+
+.cc-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 2px; }
+.cc-title { font-size: 20px; font-weight: 800; }
+.cc-clock { font-size: 15px; font-weight: 700; color: var(--muted, #8b8b94); font-variant-numeric: tabular-nums; }
+
+.cc-row { display: grid; gap: 12px; }
+.cc-row-2 { grid-template-columns: 1fr 1fr; }
+.cc-row-3 { grid-template-columns: repeat(3, 1fr); }
+.cc-row-1 { grid-template-columns: 1fr; }
+
+.cc-item {
+  font-family: inherit; color: inherit; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.07);
+  transition: box-shadow var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur, 280ms) var(--ease-spring, ease), background-color var(--dur-fast, 160ms) ease;
+}
+.cc-item.focused {
+  box-shadow: 0 0 0 3px var(--accent, #3b6dff), 0 12px 28px rgba(59, 109, 255, 0.28);
+  transform: scale(1.04);
+}
+
+.cc-ic {
+  flex: none; width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.12); color: #fff;
+  transition: background-color var(--dur-fast, 160ms) ease, color var(--dur-fast, 160ms) ease;
+}
+.cc-ic svg { width: 21px; height: 21px; }
+.cc-item.on .cc-ic { background: var(--accent, #3b6dff); }
+.cc-txt { min-width: 0; display: flex; flex-direction: column; text-align: left; }
+.cc-label { font-size: 14px; font-weight: 700; line-height: 1.25; }
+.cc-sub { font-size: 12px; font-weight: 600; color: var(--muted, #8b8b94); line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* WLAN / Bluetooth */
+.cc-tile { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 22px; min-width: 0; }
+
+/* Volume: ◀/▶ while focused change it, OK mutes */
+.cc-volume { display: flex; align-items: center; gap: 12px; padding: 12px 16px 12px 12px; border-radius: 22px; }
+.cc-vol-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.cc-vol-fill { display: block; height: 100%; width: 0; border-radius: inherit; background: #fff; transition: width var(--dur-fast, 160ms) var(--ease-out, ease); }
+.cc-volume.focused .cc-vol-fill { background: var(--accent, #3b6dff); }
+.cc-vol-val { flex: none; min-width: 42px; text-align: right; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cc-volume.unavailable { opacity: .55; }
+
+/* Sleep timer: OK steps through 30 / 60 / 90 / Aus */
+.cc-sleep .cc-txt { flex: 1; }
+.cc-sleep-steps { flex: none; display: flex; gap: 6px; }
+.cc-sleep-steps span {
+  min-width: 34px; padding: 6px 0; border-radius: 999px; text-align: center;
+  font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums;
+  color: var(--muted, #8b8b94); background: rgba(255, 255, 255, 0.07);
+  transition: background-color var(--dur-fast, 160ms) ease, color var(--dur-fast, 160ms) ease;
+}
+.cc-sleep-steps span.sel { color: #fff; background: var(--accent, #3b6dff); }
+
+/* Switches */
+.cc-switch {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 16px 8px 12px; border-radius: 22px; text-align: center;
+}
+.cc-switch .cc-ic { width: 46px; height: 46px; }
+.cc-switch .cc-label { font-size: 13px; }
+
+/* Music player (only while something is loaded in it) */
+.cc-music { display: none; flex-direction: column; gap: 12px; padding: 14px; border-radius: 22px; background: rgba(255, 255, 255, 0.05); }
+.cc-music.on { display: flex; }
+.cc-music-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cc-cover {
+  flex: none; width: 52px; height: 52px; border-radius: 12px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #1ed760, #0f7a38); color: #000;
+}
+.cc-cover svg { width: 24px; height: 24px; }
+.cc-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cc-transport { gap: 10px; }
+.cc-round { height: 44px; border-radius: 999px; display: flex; align-items: center; justify-content: center; }
+.cc-round svg { width: 18px; height: 18px; }
+
+/* Screen off / Settings */
+.cc-wide {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  height: 52px; border-radius: 18px; font-size: 14px; font-weight: 700;
+}
+.cc-wide svg { width: 20px; height: 20px; }
+
+.cc-hint { text-align: center; font-size: 11px; font-weight: 600; color: var(--muted, #8b8b94); padding-top: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  #cc-panel, .cc-item { transition: none; }
+}
+
+/* Toasts share the top-right corner: keep them out of the popup's way while it is open. */
+body.cc-open #tvos-toasts { opacity: 0; pointer-events: none; }

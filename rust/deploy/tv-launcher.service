@@ -1,0 +1,19 @@
+[Unit]
+Description=TV Launcher (instead of Kodi)
+# Runs only while the flag file exists; kodi.service gets the opposite
+# condition (kodi.service.d/tv-launcher.conf), so exactly one of them starts.
+ConditionPathExists=/storage/.config/tv-launcher.enabled
+After=network.target connman.service bluetooth.service
+# Kodi's sound server holds the sound device, eventlircd grabs remotes/keyboards
+Conflicts=kodi.service pulseaudio.service eventlircd.service
+
+[Service]
+EnvironmentFile=-/storage/tv-launcher/env
+Environment=TV_DATA=/storage/tv-launcher/data HOME=/storage
+ExecStart=/storage/tv-launcher/tv-launcher
+Restart=always
+RestartSec=2
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,40 @@
+# TV Launcher Media-Server + Musik-Server (laufen auf dem PC, nicht auf dem TV-Laptop).
+# Streamen die Filme (Schema: Movies/<Film>/{Film.mp4, Name, Info, FSK, ...}) und
+# die Musik (Schema: <Interpret>/<Interpret> - <Album>/01 - <Interpret> - <Titel>.mp3)
+# ins WLAN; der Launcher holt sich Listen, Cover und Streams von hier.
+#
+# Start:   docker compose up -d --build     (im Ordner dieser Datei)
+# Stop:    docker compose down
+# Logs:    docker compose logs -f
+# Pfade stehen in .env (Vorlage: .env.example).
+
+services:
+  mediaserver:
+    build: .
+    container_name: tv-mediaserver
+    restart: unless-stopped              # startet nach PC-Neustart von selbst wieder
+    ports:
+      - "8420:8420"
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-Media-Server}
+      - API_KEY=${API_KEY:-}
+      - TZ=Europe/Berlin
+    volumes:
+      - ${FILME_ORDNER}:/media:ro         # :ro = nur lesen, deine Filme werden nie verändert
+      - ./data:/data                      # Weiterschauen-Stände
+
+  musicserver:
+    build: .
+    container_name: tv-musicserver
+    restart: unless-stopped
+    command: ["node", "musicserver.js"]
+    ports:
+      - "8421:8421"
+    environment:
+      - PORT=8421
+      - SERVER_NAME=${SERVER_NAME:-Media-Server}
+      - API_KEY=${API_KEY:-}
+      - TZ=Europe/Berlin
+    volumes:
+      - ${MUSIK_ORDNER:-./musik}:/music:ro  # :ro = nur lesen, deine Musik wird nie verändert
+      - ./data:/data                      # Tag-Cache (schnellerer Start)
