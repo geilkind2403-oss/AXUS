@@ -297,13 +297,13 @@ fn draw_wheel(
         Align::Left,
     );
     let (cx, cy, orbit) = (640.0f32, 372.0f32, 150.0f32);
-    // A textured transparent asset gives the lens a soft edge and a cloudy
-    // milk-glass reflection instead of stacking flat vector circles.
+    // A textured milk-glass ring leaves its center genuinely transparent.
     if let Some(glass) = glass {
         c.image_fit(glass, cx - 239.0, cy - 239.0, 478.0, 478.0, 0.0, false, 1.0);
     } else {
         c.circle(cx, cy, 239.0, Rgba(230, 239, 255, 18));
         c.circle(cx, cy, 232.0, Rgba(204, 218, 242, 82));
+        c.circle(cx, cy, 108.0, Rgba::hex(0x121722));
     }
     for i in 0..APPS.len() {
         let angle = -std::f32::consts::FRAC_PI_2
