@@ -258,65 +258,95 @@ fn app_card_rect(index: usize) -> (f32, f32, f32, f32) {
 fn draw_app_card(c: &mut Canvas, index: usize) {
     let (title, detail, _) = APPS[index];
     let (x, y, w, h) = app_card_rect(index);
-    let wide = w > 400.0;
-    let fill = if index == 2 {
-        Rgba(25, 27, 33, 185)
-    } else {
-        Rgba(31, 34, 43, 238)
-    };
-    c.rect(x, y, w, h, 22.0, fill);
-    c.stroke_rect(x, y, w, h, 22.0, 1.0, Rgba(255, 255, 255, 24));
     let accent = app_accent(index);
-    c.rect(
-        x + 1.0,
-        y + 58.0,
-        4.0,
-        72.0,
-        2.0,
-        Rgba(accent.0, accent.1, accent.2, 220),
+    let wide = w > 400.0;
+    let muted = index == 2;
+    c.vgradient(
+        x,
+        y,
+        w,
+        h,
+        22.0,
+        if muted {
+            Rgba(39, 40, 47, 244)
+        } else {
+            Rgba(accent.0 / 3, accent.1 / 3, accent.2 / 3, 250)
+        },
+        Rgba(23, 25, 34, 250),
     );
-    draw_badge(
-        c,
-        index,
-        x + if wide { 24.0 } else { 18.0 },
-        y + if wide { 22.0 } else { 18.0 },
+    c.stroke_rect(
+        x,
+        y,
+        w,
+        h,
+        22.0,
+        1.0,
+        Rgba(accent.0, accent.1, accent.2, if muted { 35 } else { 105 }),
     );
+    c.circle(
+        x + w - 54.0,
+        y + 52.0,
+        45.0,
+        Rgba(accent.0, accent.1, accent.2, 18),
+    );
+    c.circle(
+        x + w - 54.0,
+        y + 52.0,
+        30.0,
+        Rgba(accent.0, accent.1, accent.2, 16),
+    );
+    draw_badge(c, index, x + 22.0, y + 20.0);
     let category = match index {
         0 | 1 | 2 => "STREAMING",
         3 | 4 => "LIVE-TV",
         _ => "SYSTEM",
     };
+    let chip_w = if index <= 2 {
+        88.0
+    } else if index <= 4 {
+        68.0
+    } else {
+        66.0
+    };
+    c.rect(
+        x + w - chip_w - 16.0,
+        y + 18.0,
+        chip_w,
+        24.0,
+        12.0,
+        Rgba(0, 0, 0, 74),
+    );
     c.text(
         category,
-        x + if wide { 102.0 } else { 98.0 },
-        y + 27.0,
-        11,
+        x + w - chip_w * 0.5 - 16.0,
+        y + 24.0,
+        10,
         Weight::Bold,
         accent,
-        Align::Left,
+        Align::Center,
     );
     let ink = if index == 2 {
         color::MUTED
     } else {
         color::TEXT
     };
-    c.text(
+    c.text_fit(
         title,
-        x + if wide { 102.0 } else { 20.0 },
-        y + if wide { 76.0 } else { 100.0 },
-        22,
+        x + 22.0,
+        y + 102.0,
+        if wide { 27 } else { 23 },
         Weight::Bold,
         ink,
-        Align::Left,
+        w - 44.0,
     );
     c.text_fit(
         detail,
-        x + if wide { 102.0 } else { 20.0 },
-        y + if wide { 110.0 } else { 129.0 },
+        x + 22.0,
+        y + 135.0,
         14,
         Weight::Regular,
         color::MUTED,
-        w - if wide { 126.0 } else { 40.0 },
+        w - 44.0,
     );
     let status = match index {
         0 | 1 => {
@@ -335,16 +365,15 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
         3 | 4 => Rgba::hex(0x8dd5b0),
         _ => Rgba::hex(0x91baff),
     };
-    let status_x = if wide { x + 106.0 } else { x + 24.0 };
-    c.circle(status_x, y + 165.0, 3.0, status_color);
-    c.text(
+    c.circle(x + 28.0, y + 169.0, 3.0, status_color);
+    c.text_fit(
         status,
-        status_x + 11.0,
-        y + 157.0,
-        11,
+        x + 39.0,
+        y + 162.0,
+        10,
         Weight::Bold,
         status_color,
-        Align::Left,
+        w - 55.0,
     );
 }
 
