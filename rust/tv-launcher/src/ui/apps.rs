@@ -254,29 +254,30 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         color::MUTED,
         Align::Left,
     );
-    let (cx, cy, radius) = (640.0f32, 372.0f32, 202.0f32);
-    // Softer bearing races: low contrast, layered rings suggest a Kugellager
-    // without making the screen feel like a hard mechanical diagram.
-    c.circle(cx, cy, radius + 12.0, Rgba(151, 174, 222, 18));
-    c.circle(cx, cy, radius + 7.0, Rgba(91, 108, 147, 135));
-    c.circle(cx, cy, radius + 2.0, Rgba(26, 32, 47, 245));
-    c.circle(cx, cy, radius - 7.0, Rgba(93, 111, 151, 105));
-    c.circle(cx, cy, radius - 12.0, Rgba(17, 21, 31, 255));
-    c.circle(cx, cy, 148.0, Rgba(91, 108, 147, 115));
-    c.circle(cx, cy, 143.0, Rgba(24, 30, 44, 255));
-    c.circle(cx, cy, 132.0, Rgba(93, 111, 151, 95));
-    c.circle(cx, cy, 127.0, Rgba(17, 21, 31, 255));
+    let (cx, cy, radius) = (640.0f32, 372.0f32, 220.0f32);
+    // Two quiet, concentric races define the bearing: a smaller inner guide
+    // and an outer guide around the balls.
+    c.circle(cx, cy, 190.0, Rgba(151, 174, 222, 16));
+    c.circle(cx, cy, 184.0, Rgba(91, 108, 147, 120));
+    c.circle(cx, cy, 178.0, Rgba(26, 32, 47, 245));
+    c.circle(cx, cy, 173.0, Rgba(93, 111, 151, 92));
+    c.circle(cx, cy, 168.0, Rgba(17, 21, 31, 255));
+    c.circle(cx, cy, 133.0, Rgba(91, 108, 147, 105));
+    c.circle(cx, cy, 128.0, Rgba(24, 30, 44, 255));
+    c.circle(cx, cy, 121.0, Rgba(93, 111, 151, 90));
+    c.circle(cx, cy, 116.0, Rgba(17, 21, 31, 255));
 
-    // Six softly lit rollers sit at identical intervals on the inner orbit.
+    // The six identical balls share one radius and six exactly equal angles.
+    // Keep them between the races, clear of the app icons on the outer orbit.
     for i in 0..APPS.len() {
         let angle = -std::f32::consts::FRAC_PI_2
             + i as f32 * std::f32::consts::TAU / APPS.len() as f32
             - rotation;
-        let bx = cx + angle.cos() * 170.0;
-        let by = cy + angle.sin() * 170.0;
-        c.circle(bx, by, 19.0, Rgba(10, 14, 22, 230));
-        c.circle(bx, by, 15.0, Rgba(113, 132, 174, 175));
-        c.circle(bx - 3.0, by - 4.0, 7.0, Rgba(193, 207, 235, 90));
+        let bx = cx + angle.cos() * 150.0;
+        let by = cy + angle.sin() * 150.0;
+        c.circle(bx, by, 18.0, Rgba(10, 14, 22, 220));
+        c.circle(bx, by, 14.0, Rgba(113, 132, 174, 170));
+        c.circle(bx - 3.0, by - 4.0, 6.0, Rgba(193, 207, 235, 85));
     }
 
     c.circle(cx, cy, 110.0, Rgba(42, 50, 68, 245));
@@ -328,7 +329,7 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         // The icon centers use one radius and one size: the six positions
         // stay perfectly circular as the wheel rotates.
         draw_app_icon(c, icons, i, x, y, 48.0);
-        let label_radius = radius + 54.0;
+        let label_radius = radius + 44.0;
         let lx = cx + angle.cos() * label_radius;
         let ly = cy + angle.sin() * label_radius;
         c.text_fit(
