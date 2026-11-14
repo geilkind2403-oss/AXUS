@@ -1184,14 +1184,20 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             }
         }
         app.stack.push(Box::new(apps));
-        settle(
-            app,
-            if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
-                450
-            } else {
-                0
-            },
-        );
+        if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline
+                && app
+                    .stack
+                    .last()
+                    .map(|screen| screen.animating(&app.cx))
+                    .unwrap_or(false)
+            {
+                draw_frame(app);
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        }
+        settle(app, 0);
         shot(app, "02-apps");
         if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
             app.key(Key::Ok);

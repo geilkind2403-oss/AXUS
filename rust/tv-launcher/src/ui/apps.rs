@@ -287,14 +287,14 @@ fn draw_wheel(
         color::TEXT,
         Align::Left,
     );
-    c.text(
-        "Links und rechts drehen den Kreis",
+    c.text_fit(
+        &format!("{} · Links/rechts wählen · OK starten", APPS[focus].0),
         PAD,
         86.0,
         17,
         Weight::Regular,
         color::MUTED,
-        Align::Left,
+        620.0,
     );
     let (cx, cy, orbit) = (640.0f32, 372.0f32, 164.0f32);
     // A textured milk-glass ring leaves its center genuinely transparent.
@@ -321,13 +321,10 @@ fn draw_wheel(
         c.circle(
             x,
             y,
-            if selected { 46.0 } else { 40.0 },
-            Rgba(accent.0, accent.1, accent.2, if selected { 54 } else { 18 }),
+            44.0,
+            Rgba(accent.0, accent.1, accent.2, if selected { 52 } else { 24 }),
         );
         draw_app_icon(c, icons, i, x, y, 62.0);
-    }
-    if launch.is_none() {
-        c.text_fit(APPS[focus].0, cx, 628.0, 18, Weight::Bold, color::TEXT, 360.0);
     }
     if let Some((launch_focus, progress)) = launch {
         let progress = progress.clamp(0.0, 1.0);
@@ -428,7 +425,7 @@ fn app_accent(index: usize) -> Rgba {
 fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32, size: f32) {
     match app {
         4 => {
-            c.circle(x, y, size * 0.46, Rgba::hex(0x151515));
+            c.circle(x, y, size * 0.5, Rgba::hex(0x151515));
             c.text(
                 "ARTE",
                 x,
@@ -439,7 +436,7 @@ fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32, size: f32) {
                 Align::Center,
             );
         }
-        5 => super::icon_gear(c, x, y, size * 0.68, Rgba::hex(0xe8eaf0)),
+        5 => super::icon_gear(c, x, y, size * 0.94, Rgba::hex(0xe8eaf0)),
         _ => c.circle(x, y, size * 0.42, Rgba::hex(0x262a35)),
     }
 }
