@@ -127,7 +127,7 @@ impl Screen for Apps {
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
         let trace = std::env::var_os("SHOT_APPS_TRACE").is_some();
-        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x354a78)));
+        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x111722)));
         c.text(
             "Apps & Dienste",
             PAD,
@@ -247,6 +247,7 @@ fn app_card_origin(index: usize) -> (f32, f32) {
 
 fn draw_app_hero(c: &mut Canvas, index: usize) {
     let (title, detail, _) = APPS[index];
+    let accent = app_accent(index);
     let category = match index {
         0..=2 => "STREAMING",
         3..=4 => "LIVE-TV",
@@ -258,12 +259,30 @@ fn draw_app_hero(c: &mut Canvas, index: usize) {
         310.0,
         436.0,
         24.0,
-        Rgba(43, 57, 84, 245),
-        Rgba(24, 27, 37, 245),
+        Rgba(accent.0 / 4, accent.1 / 4, accent.2 / 4 + 12, 248),
+        Rgba(20, 24, 33, 248),
     );
-    c.stroke_rect(PAD, 142.0, 310.0, 436.0, 24.0, 1.0, Rgba(255, 255, 255, 34));
-    c.circle(PAD + 155.0, 273.0, 103.0, Rgba(110, 160, 255, 24));
-    c.circle(PAD + 155.0, 273.0, 76.0, Rgba(110, 160, 255, 20));
+    c.stroke_rect(
+        PAD,
+        142.0,
+        310.0,
+        436.0,
+        24.0,
+        1.0,
+        Rgba(accent.0, accent.1, accent.2, 90),
+    );
+    c.circle(
+        PAD + 155.0,
+        273.0,
+        103.0,
+        Rgba(accent.0, accent.1, accent.2, 24),
+    );
+    c.circle(
+        PAD + 155.0,
+        273.0,
+        76.0,
+        Rgba(accent.0, accent.1, accent.2, 20),
+    );
     draw_badge(c, index, PAD + 123.0, 248.0);
     c.text(
         category,
@@ -271,7 +290,7 @@ fn draw_app_hero(c: &mut Canvas, index: usize) {
         166.0,
         12,
         Weight::Bold,
-        Rgba::hex(0xaecaff),
+        accent,
         Align::Left,
     );
     c.text_fit(
@@ -334,6 +353,15 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     };
     c.rect(x, y, 394.0, 118.0, 18.0, fill);
     c.stroke_rect(x, y, 394.0, 118.0, 18.0, 1.0, Rgba(255, 255, 255, 22));
+    let accent = app_accent(index);
+    c.rect(
+        x + 1.0,
+        y + 20.0,
+        3.0,
+        78.0,
+        1.5,
+        Rgba(accent.0, accent.1, accent.2, 210),
+    );
     draw_badge(c, index, x + 18.0, y + 34.0);
     let ink = if index == 2 {
         color::MUTED
@@ -378,6 +406,17 @@ fn app_status(index: usize) -> (&'static str, Rgba) {
         2 => ("DERZEIT DEAKTIVIERT", Rgba::hex(0xe5a66d)),
         3 | 4 => ("NATIVE WIEDERGABE", Rgba::hex(0x8dd5b0)),
         _ => ("EINSTELLUNGEN ÖFFNEN", Rgba::hex(0x91baff)),
+    }
+}
+
+fn app_accent(index: usize) -> Rgba {
+    match index {
+        0 => Rgba::hex(0xf0444b),
+        1 => Rgba::hex(0x54bfff),
+        2 => Rgba::hex(0x9bb4dc),
+        3 => Rgba::hex(0x9a72ff),
+        4 => Rgba::hex(0xe5e8ef),
+        _ => Rgba::hex(0x8eb5ff),
     }
 }
 
