@@ -1184,7 +1184,14 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             }
         }
         app.stack.push(Box::new(apps));
-        settle(app, 0);
+        settle(
+            app,
+            if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
+                450
+            } else {
+                0
+            },
+        );
         shot(app, "02-apps");
         if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
             app.key(Key::Ok);

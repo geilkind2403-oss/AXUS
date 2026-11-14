@@ -32,6 +32,7 @@ pub struct Apps {
     grid_focus: Focus,
     wheel_rotation: Anim,
     icons: [Option<Image>; 5],
+    glass: Option<Image>,
     launch_started: Option<Instant>,
 }
 
@@ -61,12 +62,18 @@ impl Apps {
         ];
         let icons =
             icon_bytes.map(|bytes| bytes.and_then(|b| crate::gfx::decode_image(b, 128, 128)));
+        let glass = crate::gfx::decode_image(
+            include_bytes!("../../assets/apps/milk-glass.png"),
+            512,
+            512,
+        );
         Self {
             focus,
             wheel,
             grid_focus: Focus::default(),
             wheel_rotation,
             icons,
+            glass,
             launch_started: None,
         }
     }
@@ -173,7 +180,7 @@ impl Screen for Apps {
             let launch = self
                 .launch_started
                 .map(|started| (self.focus, started.elapsed().as_secs_f32() / LAUNCH_ANIMATION_SECONDS));
-            draw_wheel(c, self.focus, rotation, &self.icons, launch);
+            draw_wheel(c, self.focus, rotation, &self.icons, self.glass.as_ref(), launch);
         } else {
             draw_app_grid(c, self.focus, &mut self.grid_focus, &self.icons);
         }
@@ -268,6 +275,7 @@ fn draw_wheel(
     focus: usize,
     rotation: f32,
     icons: &[Option<Image>; 5],
+    glass: Option<&Image>,
     launch: Option<(usize, f32)>,
 ) {
     c.text(
@@ -288,39 +296,14 @@ fn draw_wheel(
         color::MUTED,
         Align::Left,
     );
-    let (cx, cy, orbit) = (640.0f32, 372.0f32, 158.0f32);
-    // A broad milk-glass disc replaces the hard metal-looking tracks. Its
-    // translucent layers keep a soft hint of the launcher backdrop visible.
-    c.circle(cx, cy, 240.0, Rgba(225, 237, 255, 20));
-    c.circle(cx, cy, 234.0, Rgba(177, 197, 232, 48));
-    c.circle(cx, cy, 228.0, Rgba(95, 111, 145, 105));
-    c.circle(cx, cy, 222.0, Rgba(43, 51, 68, 205));
-    c.circle(cx, cy, 216.0, Rgba(220, 232, 250, 24));
-    c.circle(cx, cy, 210.0, Rgba(45, 53, 70, 115));
-
-    // A soft inset hub and a single circular orbit hold all six app bubbles.
-    c.circle(cx, cy, 91.0, Rgba(226, 237, 255, 30));
-    c.circle(cx, cy, 86.0, Rgba(53, 62, 81, 205));
-    if launch.is_none() {
-        c.text(
-            "AUSGEWÄHLT",
-            cx,
-            cy - 22.0,
-            11,
-            Weight::Bold,
-            Rgba(166, 183, 215, 190),
-            Align::Center,
-        );
-        c.text_fit(
-            APPS[focus].0,
-            cx,
-            cy + 2.0,
-            20,
-            Weight::Bold,
-            color::TEXT,
-            220.0,
-        );
-        c.text("OK · ÖFFNEN", cx, cy + 31.0, 12, Weight::Bold, Rgba::hex(0xc6d7f5), Align::Center);
+    let (cx, cy, orbit) = (640.0f32, 372.0f32, 150.0f32);
+    // A textured transparent asset gives the lens a soft edge and a cloudy
+    // milk-glass reflection instead of stacking flat vector circles.
+    if let Some(glass) = glass {
+        c.image_fit(glass, cx - 239.0, cy - 239.0, 478.0, 478.0, 0.0, false, 1.0);
+    } else {
+        c.circle(cx, cy, 239.0, Rgba(230, 239, 255, 18));
+        c.circle(cx, cy, 232.0, Rgba(204, 218, 242, 82));
     }
     for i in 0..APPS.len() {
         let angle = -std::f32::consts::FRAC_PI_2
@@ -335,24 +318,18 @@ fn draw_wheel(
         if selected {
             c.circle(x, y, 48.0, Rgba(accent.0, accent.1, accent.2, 22));
         }
-        // Equal-size frosted bubbles are the bearing balls: every app is
-        // inside the glass disc and every center lies on this exact orbit.
-        c.circle(x, y, 42.0, Rgba(235, 243, 255, if selected { 85 } else { 48 }));
-        c.circle(x, y, 37.0, Rgba(55, 65, 83, 205));
-        c.circle(x - 8.0, y - 10.0, 14.0, Rgba(235, 243, 255, 22));
-        draw_app_icon(c, icons, i, x, y, 48.0);
-        let label_radius = 207.0;
-        let lx = cx + angle.cos() * label_radius;
-        let ly = cy + angle.sin() * label_radius;
-        c.text_fit(
-            APPS[i].0,
-            lx,
-            ly,
-            12,
-            Weight::Bold,
-            if selected { color::TEXT } else { color::MUTED },
-            144.0,
+        // The icons themselves form the six equally spaced points inside the
+        // lens. Keep their size fixed; mark selection with a soft back glow.
+        c.circle(
+            x,
+            y,
+            if selected { 46.0 } else { 40.0 },
+            Rgba(accent.0, accent.1, accent.2, if selected { 34 } else { 16 }),
         );
+        draw_app_icon(c, icons, i, x, y, 62.0);
+    }
+    if launch.is_none() {
+        c.text_fit(APPS[focus].0, cx, 628.0, 18, Weight::Bold, color::TEXT, 360.0);
     }
     if let Some((launch_focus, progress)) = launch {
         let progress = progress.clamp(0.0, 1.0);
@@ -361,7 +338,7 @@ fn draw_wheel(
         if progress < pull_end {
             let t = ease(progress / pull_end);
             let y = 128.0 + (cy - 128.0) * t;
-            let size = 48.0 + 38.0 * t;
+            let size = 62.0 + 44.0 * t;
             c.circle(cx, y, size * 0.76, Rgba(accent.0, accent.1, accent.2, 28));
             c.circle(cx, y, size * 0.62, Rgba(232, 241, 255, 55));
             draw_app_icon(c, icons, launch_focus, cx, y, size);
@@ -375,12 +352,12 @@ fn draw_wheel(
                 92.0 + 680.0 * t,
                 Rgba(accent.0, accent.1, accent.2, (24.0 + 44.0 * t) as u8),
             );
-            draw_app_icon(c, icons, launch_focus, cx, cy, 86.0 + 112.0 * t);
+            draw_app_icon(c, icons, launch_focus, cx, cy, 106.0 + 122.0 * t);
         }
     }
     if launch.is_none() {
         c.text(
-            "← / → WEITERBLÄTTERN · ↑ ZURÜCK · OK STARTEN",
+            "← / → AUSWÄHLEN · OK STARTEN · ↑ ZURÜCK",
             640.0,
             674.0,
             14,
