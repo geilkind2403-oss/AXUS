@@ -296,7 +296,7 @@ fn draw_wheel(
         color::MUTED,
         Align::Left,
     );
-    let (cx, cy, orbit) = (640.0f32, 372.0f32, 150.0f32);
+    let (cx, cy, orbit) = (640.0f32, 372.0f32, 164.0f32);
     // A textured milk-glass ring leaves its center genuinely transparent.
     if let Some(glass) = glass {
         c.image_fit(glass, cx - 239.0, cy - 239.0, 478.0, 478.0, 0.0, false, 1.0);
@@ -315,16 +315,14 @@ fn draw_wheel(
         }
         let accent = app_accent(i);
         let selected = i == focus;
-        if selected {
-            c.circle(x, y, 48.0, Rgba(accent.0, accent.1, accent.2, 22));
-        }
         // The icons themselves form the six equally spaced points inside the
-        // lens. Keep their size fixed; mark selection with a soft back glow.
+        // lens. Keep the glow and icon bubbles the same size so they all stay
+        // inside the annulus, even at the selected position.
         c.circle(
             x,
             y,
             if selected { 46.0 } else { 40.0 },
-            Rgba(accent.0, accent.1, accent.2, if selected { 34 } else { 16 }),
+            Rgba(accent.0, accent.1, accent.2, if selected { 54 } else { 18 }),
         );
         draw_app_icon(c, icons, i, x, y, 62.0);
     }
