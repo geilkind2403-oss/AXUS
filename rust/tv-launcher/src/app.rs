@@ -19,6 +19,8 @@ pub struct Config {
     pub volume: u32,
     /// Home focus for the most recently used media app (0 YouTube, 1 Live TV, 2 films, 5 Apps).
     pub last_media_tile: usize,
+    /// Home-screen tile order (slot -> content ID).
+    pub home_order: [u8; 6],
     /// Last web app opened from Apps, used to restore its selection.
     pub last_app_id: String,
     /// Resume positions of films on the Pi itself (id -> seconds).
@@ -55,6 +57,7 @@ impl Default for Config {
             audio_output: "hdmi".into(),
             volume: 70,
             last_media_tile: 0,
+            home_order: [0, 1, 2, 3, 4, 5],
             last_app_id: "youtube".into(),
             positions: HashMap::new(),
             last_film_key: String::new(),

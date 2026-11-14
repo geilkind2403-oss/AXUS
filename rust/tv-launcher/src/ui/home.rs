@@ -6,6 +6,10 @@ use std::time::Instant;
 
 pub struct Home {
     focus: usize,
+    order: [usize; 6],
+    editing: bool,
+    moving: Option<usize>,
+    edit_started: Option<Instant>,
     frame: Focus,
     tile_canvas: Canvas,
     tile_images: [Option<crate::gfx::Image>; 6],
@@ -13,7 +17,7 @@ pub struct Home {
     tile_cache_keys: [Option<(u64, u64)>; 6],
     base_cache: LayerCache,
     base_image: Option<Image>,
-    status_key: Option<(i32, i32, u64, u64, String, bool)>,
+    status_key: Option<(i32, i32, u64, u64, String, bool, usize, bool, [usize; 6])>,
     news_overlay_key: Option<u64>,
     last_focus_rect: Option<(f32, f32, f32, f32)>,
     ambient_focus: usize,
@@ -29,52 +33,70 @@ struct Tile {
 }
 
 const TILES: [Tile; 6] = [
+    // Medium, large, small across the first row.
     Tile {
         x: 64.0,
-        y: 118.0,
-        w: 368.0,
-        h: 252.0,
+        y: 130.0,
+        w: 360.0,
+        h: 244.0,
     },
     Tile {
-        x: 456.0,
-        y: 118.0,
-        w: 368.0,
-        h: 252.0,
-    },
-    Tile {
-        x: 848.0,
-        y: 118.0,
-        w: 368.0,
-        h: 252.0,
-    },
-    Tile {
-        x: 64.0,
-        y: 394.0,
-        w: 368.0,
-        h: 236.0,
-    },
-    Tile {
-        x: 456.0,
-        y: 394.0,
+        x: 448.0,
+        y: 130.0,
         w: 520.0,
-        h: 236.0,
+        h: 244.0,
     },
     Tile {
-        x: 1000.0,
-        y: 394.0,
-        w: 216.0,
-        h: 236.0,
+        x: 992.0,
+        y: 130.0,
+        w: 224.0,
+        h: 244.0,
+    },
+    // Large, medium, small across the second row.
+    Tile {
+        x: 64.0,
+        y: 398.0,
+        w: 520.0,
+        h: 244.0,
+    },
+    Tile {
+        x: 608.0,
+        y: 398.0,
+        w: 360.0,
+        h: 244.0,
+    },
+    Tile {
+        x: 992.0,
+        y: 398.0,
+        w: 224.0,
+        h: 244.0,
     },
 ];
 
-// Clock, network and the small weather summary change independently from
-// the Home artwork. Keep their raster damage to this compact top-right area.
-const STATUS_DAMAGE: (f32, f32, f32, f32) = (880.0, 16.0, 352.0, 96.0);
+// Header controls follow the weather and apps tiles, so their positions can
+// change as the user rearranges the home screen.
+const STATUS_DAMAGE: (f32, f32, f32, f32) = (64.0, 16.0, 1152.0, 52.0);
 
 impl Home {
-    pub fn new(last_media_tile: usize) -> Home {
+    pub fn new(last_media_tile: usize, saved_order: [u8; 6]) -> Home {
+        let mut order = saved_order.map(|v| v as usize);
+        let mut sorted = order;
+        sorted.sort_unstable();
+        let valid_permutation = sorted == [0, 1, 2, 3, 4, 5];
+        let sizes_match = valid_permutation
+            && order
+                .iter()
+                .enumerate()
+                .all(|(slot, content)| tile_size(*content) == tile_size(slot));
+        if !sizes_match {
+            order = [0, 1, 2, 3, 4, 5];
+        }
         Home {
             focus: last_media_tile.min(5),
+            order,
+            editing: false,
+            moving: None,
+            edit_started: None,
             frame: Focus::default(),
             // Rebuilding an artwork/news tile is the expensive path on Pi 3.
             // Use its cores for this small offscreen raster so the UI thread
@@ -99,16 +121,17 @@ impl Home {
     /// remote-button press.
     fn refresh_tile_cache(&mut self, cx: &mut Ctx, i: usize) {
         let t = TILES[i];
-        let sources = tile_image_sources(cx, i);
+        let content = self.order[i];
+        let sources = tile_image_sources(cx, content);
         self.tile_canvas.resize(t.w as u32, t.h as u32);
         self.tile_canvas.offset = (-t.x, -t.y);
         self.tile_canvas.opacity = 1.0;
         self.tile_canvas.clear(Rgba(0, 0, 0, 0));
-        draw_tile_content(&mut self.tile_canvas, cx, i, &t);
+        draw_tile_content(&mut self.tile_canvas, cx, content, &t);
         self.tile_canvas.finish();
         self.tile_images[i] = Some(self.tile_canvas.snapshot());
         self.tile_image_sources[i] = sources;
-        self.tile_cache_keys[i] = Some(tile_cache_key(cx, i, &self.tile_image_sources[i]));
+        self.tile_cache_keys[i] = Some(tile_cache_key(cx, content, &self.tile_image_sources[i]));
     }
 
     /// What the backdrop glows with: the focused tile's picture or colour.
@@ -167,7 +190,11 @@ impl Home {
     }
 
     fn open(&self, cx: &mut Ctx) -> Nav {
-        match self.focus {
+        match if self.focus < 6 {
+            self.order[self.focus]
+        } else {
+            self.focus
+        } {
             0 if super::browser::installed() => Nav::Push(Box::new(super::browser::Browser::new(
                 super::browser::YOUTUBE_TV,
             ))),
@@ -214,6 +241,75 @@ impl Screen for Home {
 
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
         let f = self.focus;
+        if k == Key::LongOk {
+            self.editing = !self.editing;
+            self.moving = None;
+            if self.editing && self.focus >= 6 {
+                self.focus = if self.focus == 6 { 0 } else { 2 };
+                self.focus_changed_at = Instant::now();
+            }
+            self.edit_started = self.editing.then(Instant::now);
+            cx.toast(if self.editing {
+                "Kachel wählen · OK · mit Pfeilen verschieben · OK speichern"
+            } else {
+                "Anordnung gespeichert"
+            });
+            return Nav::None;
+        }
+        if self.editing {
+            match k {
+                Key::Back | Key::Menu | Key::Home => {
+                    self.editing = false;
+                    self.moving = None;
+                    self.edit_started = None;
+                }
+                Key::Ok if self.moving.is_none() && self.focus < 6 => {
+                    self.moving = Some(self.focus);
+                    cx.toast("Zielposition wählen · OK zum Ablegen");
+                }
+                Key::Ok if self.moving.is_some() && self.focus < 6 => {
+                    let from = self.moving.unwrap();
+                    if tile_size(self.order[from]) == tile_size(self.order[self.focus]) {
+                        self.moving = None;
+                        self.order.swap(from, self.focus);
+                        cx.cfg.home_order = self.order.map(|v| v as u8);
+                        cx.save();
+                        self.tile_cache_keys = [None; 6];
+                        self.base_cache = LayerCache::default();
+                        self.base_image = None;
+                        cx.toast("Kachel verschoben");
+                    } else {
+                        cx.toast("Bitte eine Kachel gleicher Größe wählen");
+                    }
+                }
+                Key::Ok => {}
+                _ => {}
+            }
+            if matches!(k, Key::Left | Key::Right | Key::Up | Key::Down) {
+                self.focus = match (k, self.focus) {
+                    (Key::Right, 0..=1) | (Key::Right, 3..=4) => f + 1,
+                    (Key::Left, 1..=2) | (Key::Left, 4..=5) => f - 1,
+                    (Key::Down, 0) => 3,
+                    (Key::Down, 1) => 4,
+                    (Key::Down, 2) => 5,
+                    (Key::Up, 3) => 0,
+                    (Key::Up, 4) => 1,
+                    (Key::Up, 5) => 2,
+                    _ => f,
+                };
+            }
+            if self.focus != f {
+                self.focus_changed_at = Instant::now();
+            }
+            return Nav::None;
+        }
+        if k == Key::Ok && self.focus >= 6 {
+            return if self.focus == 6 {
+                Nav::Push(Box::new(super::weather::WeatherScreen::new()))
+            } else {
+                Nav::Push(Box::new(super::control::Control::new(false)))
+            };
+        }
         self.focus = match (k, f) {
             // top row: YouTube, Live TV, Filme -- bottom row: Wetter, Nachrichten, Apps
             (Key::Right, 0..=1) | (Key::Right, 3..=4) => f + 1,
@@ -224,6 +320,19 @@ impl Screen for Home {
             (Key::Up, 3) => 0,
             (Key::Up, 4) => 1,
             (Key::Up, 5) => 2,
+            (Key::Up, 0..=2) => {
+                let (weather, apps) = header_tiles(&self.order);
+                let center = tile_center(TILES[f]);
+                if (center - tile_center(weather)).abs() <= (center - tile_center(apps)).abs() {
+                    6
+                } else {
+                    7
+                }
+            }
+            (Key::Down, 6) => nearest_top_slot(tile_center(header_tiles(&self.order).0)),
+            (Key::Down, 7) => nearest_top_slot(tile_center(header_tiles(&self.order).1)),
+            (Key::Right, 6) => 7,
+            (Key::Left, 7) => 6,
             (Key::ChUp, _) | (Key::ChDown, _) => {
                 return Nav::Push(Box::new(super::livetv::LiveTv::new(cx)))
             }
@@ -238,22 +347,29 @@ impl Screen for Home {
     }
 
     fn animating(&self, _cx: &Ctx) -> bool {
-        self.frame.moving()
+        self.frame.moving() || self.editing
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
         let trace_started = Instant::now();
         for i in 0..TILES.len() {
-            if self.tile_cache_keys[i] != Some(tile_cache_key(cx, i, &self.tile_image_sources[i])) {
+            if self.tile_cache_keys[i]
+                != Some(tile_cache_key(
+                    cx,
+                    self.order[i],
+                    &self.tile_image_sources[i],
+                ))
+            {
                 self.refresh_tile_cache(cx, i);
             }
         }
         // Let rapid remote navigation finish before changing the full-screen
         // ambience; the focus itself can then move over a retained base layer.
-        if self.ambient_focus != self.focus
+        if self.focus < 6
+            && self.ambient_focus != self.order[self.focus]
             && self.focus_changed_at.elapsed() >= std::time::Duration::from_millis(280)
         {
-            self.ambient_focus = self.focus;
+            self.ambient_focus = self.order[self.focus];
         }
         let amb = self.ambient(cx, self.ambient_focus);
         c.ambient(amb);
@@ -263,8 +379,8 @@ impl Screen for Home {
         c.text(
             greeting(),
             PAD,
-            30.0,
-            34,
+            70.0,
+            26,
             Weight::Bold,
             color::TEXT,
             Align::Left,
@@ -278,8 +394,8 @@ impl Screen for Home {
         c.text(
             &date,
             PAD,
-            74.0,
-            16,
+            100.0,
+            14,
             Weight::Regular,
             color::MUTED,
             Align::Left,
@@ -306,7 +422,7 @@ impl Screen for Home {
                 c.restore_focus(base, x, y, w, h);
             }
         }
-        let status_key = home_status_key(cx);
+        let status_key = home_status_key(cx, self.focus, self.editing, &self.order);
         if base_restored || self.status_key.as_ref() != Some(&status_key) {
             if let Some(base) = self.base_image.as_ref() {
                 c.restore_rect(
@@ -316,7 +432,14 @@ impl Screen for Home {
                     STATUS_DAMAGE.2,
                     STATUS_DAMAGE.3,
                 );
-                draw_home_status(c, cx);
+                draw_home_status(
+                    c,
+                    cx,
+                    self.focus,
+                    self.editing,
+                    self.moving.is_some(),
+                    &self.order,
+                );
                 self.status_key = Some(status_key);
             }
         }
@@ -324,7 +447,8 @@ impl Screen for Home {
         if base_restored || self.news_overlay_key != Some(news_key) {
             if !base_restored {
                 if let Some(base) = self.base_image.as_ref() {
-                    let t = &TILES[4];
+                    let news_slot = self.order.iter().position(|id| *id == 4).unwrap_or(4);
+                    let t = &TILES[news_slot];
                     let iw = news_tile_photo_width(cx, t);
                     if iw > 0.0 {
                         c.restore_rect(
@@ -339,12 +463,33 @@ impl Screen for Home {
                     }
                 }
             }
-            draw_news_tile_overlay(c, cx, &TILES[4]);
+            let news_slot = self.order.iter().position(|id| *id == 4).unwrap_or(4);
+            draw_news_tile_overlay(c, cx, &TILES[news_slot]);
             self.news_overlay_key = Some(news_key);
         }
-        let t = &TILES[self.focus];
-        let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
-        super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+        if self.focus < 6 {
+            let t = &TILES[self.focus];
+            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
+            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            self.last_focus_rect = Some(bounds);
+        } else {
+            draw_home_status(
+                c,
+                cx,
+                self.focus,
+                self.editing,
+                self.moving.is_some(),
+                &self.order,
+            );
+        }
+        if self.editing {
+            draw_edit_pulse(
+                c,
+                self.edit_started.unwrap_or_else(Instant::now),
+                self.moving,
+                &self.order,
+            );
+        }
         if base_restored {
             // The full base is already drawn. Raster the small dynamic status,
             // headline and focus overlay once without another full worker pass.
@@ -352,7 +497,6 @@ impl Screen for Home {
         } else {
             c.finish_pending_damage();
         }
-        self.last_focus_rect = Some(bounds);
         if std::env::var_os("SHOT_HOME_FRAME_TRACE").is_some() {
             eprintln!(
                 "Home-Frame: {:.1} ms, base changed={base_changed}",
@@ -368,36 +512,248 @@ impl Screen for Home {
         };
         c.restore_rect(base, rect.0, rect.1, rect.2, rect.3);
         self.last_focus_rect = None;
-        let t = &TILES[self.focus];
-        let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
-        super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+        if self.focus < 6 {
+            let t = &TILES[self.focus];
+            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
+            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+        }
+        draw_home_status(
+            c,
+            cx,
+            self.focus,
+            self.editing,
+            self.moving.is_some(),
+            &self.order,
+        );
+        if self.editing {
+            draw_edit_pulse(
+                c,
+                self.edit_started.unwrap_or_else(Instant::now),
+                self.moving,
+                &self.order,
+            );
+        }
         c.finish_pending_damage();
-        self.last_focus_rect = Some(bounds);
     }
 }
 
-fn draw_home_status(c: &mut Canvas, cx: &Ctx) {
-    status(c, cx);
+fn draw_home_status(
+    c: &mut Canvas,
+    cx: &Ctx,
+    focus: usize,
+    editing: bool,
+    moving: bool,
+    order: &[usize; 6],
+) {
+    let y = 20.0;
+    let (weather_tile, apps_tile) = header_tiles(order);
+    let weather_x = weather_tile.x;
+    let weather_w = weather_tile.w;
+    let status_x = apps_tile.x;
+    let status_w = apps_tile.w;
+    c.rect(
+        weather_x,
+        y,
+        weather_w,
+        46.0,
+        23.0,
+        Rgba::hex(0x23252c).alpha(0.94),
+    );
+    c.stroke_rect(
+        weather_x,
+        y,
+        weather_w,
+        46.0,
+        23.0,
+        1.0,
+        color::BORDER.alpha(0.9),
+    );
+    if focus == 6 {
+        c.stroke_rect(weather_x, y, weather_w, 46.0, 23.0, 2.0, color::ACCENT);
+    }
+    if focus == 7 {
+        c.stroke_rect(status_x, y, status_w, 46.0, 23.0, 2.0, color::ACCENT);
+    }
+    c.rect(
+        status_x,
+        y,
+        status_w,
+        46.0,
+        23.0,
+        Rgba::hex(0x23252c).alpha(0.94),
+    );
+    c.stroke_rect(
+        status_x,
+        y,
+        status_w,
+        46.0,
+        23.0,
+        1.0,
+        color::BORDER.alpha(0.9),
+    );
+
+    let (hour, minute, _) = crate::app::local_hms();
+    c.text(
+        &format!("{hour:02}:{minute:02}"),
+        status_x + 12.0,
+        y + 12.0,
+        17,
+        Weight::Semi,
+        color::TEXT,
+        Align::Left,
+    );
+    c.line(
+        &[(status_x + 63.0, y + 9.0), (status_x + 63.0, y + 37.0)],
+        1.0,
+        color::BORDER.alpha(0.9),
+    );
+    if let Some((ok, kind, name)) = cx.net.get() {
+        c.circle(
+            status_x + 77.0,
+            y + 23.0,
+            3.0,
+            if ok { Rgba::hex(0x59d39a) } else { color::RED },
+        );
+        if ok {
+            if kind == "wifi" {
+                icon_wifi(c, status_x + 94.0, y + 21.0, 16.0, color::TEXT);
+            } else {
+                icon_ethernet(c, status_x + 94.0, y + 23.0, 16.0, color::TEXT);
+            }
+            c.text_fit(
+                &name,
+                status_x + 109.0,
+                y + 16.0,
+                11,
+                Weight::Regular,
+                color::MUTED,
+                49.0,
+            );
+        } else {
+            c.text(
+                "Offline",
+                status_x + 89.0,
+                y + 15.0,
+                11,
+                Weight::Semi,
+                color::RED,
+                Align::Left,
+            );
+        }
+    }
+    c.line(
+        &[(status_x + 164.0, y + 9.0), (status_x + 164.0, y + 37.0)],
+        1.0,
+        color::BORDER.alpha(0.9),
+    );
+    let phone = if cx.cfg.remote_enabled {
+        color::ACCENT
+    } else {
+        color::MUTED
+    };
+    c.stroke_rect(status_x + 176.0, y + 12.0, 12.0, 21.0, 3.0, 1.4, phone);
+    c.circle(status_x + 182.0, y + 30.0, 0.9, phone);
+    c.text(
+        if cx.cfg.remote_enabled { "AN" } else { "AUS" },
+        status_x + 208.0,
+        y + 16.0,
+        9,
+        Weight::Semi,
+        phone,
+        Align::Center,
+    );
+
     if let Some(Ok(w)) = cx.weather.get() {
         let (sky, _) = crate::weather::describe(w.code);
-        let right = crate::gfx::W as f32 - PAD;
-        let t = format!("{:.0}°", w.temp);
-        let tw = c.fonts.width(&t, 18, Weight::Semi);
-        c.text(&t, right, 72.0, 18, Weight::Semi, color::TEXT, Align::Right);
-        icon_weather(c, sky, w.day, right - tw - 18.0, 84.0, 26.0);
+        icon_weather(c, sky, w.day, weather_x + weather_w * 0.40, y + 23.0, 28.0);
         c.text(
-            &cx.cfg.city,
-            right - tw - 38.0,
-            74.0,
-            15,
-            Weight::Regular,
-            color::MUTED,
-            Align::Right,
+            &format!("{:.0}°", w.temp),
+            weather_x + weather_w * 0.60,
+            y + 12.0,
+            18,
+            Weight::Bold,
+            color::TEXT,
+            Align::Left,
         );
+    }
+    let _ = (editing, moving);
+}
+
+fn draw_edit_pulse(c: &mut Canvas, started: Instant, moving: Option<usize>, order: &[usize; 6]) {
+    let alpha = (70.0 + ((started.elapsed().as_secs_f32() * 4.0).sin() + 1.0) * 54.0) as u8;
+    for (i, t) in TILES.iter().enumerate() {
+        c.stroke_rect(
+            t.x - 2.0,
+            t.y - 2.0,
+            t.w + 4.0,
+            t.h + 4.0,
+            24.0,
+            2.0,
+            if moving == Some(i) {
+                Rgba(255, 202, 90, 235)
+            } else {
+                Rgba(128, 174, 255, alpha)
+            },
+        );
+    }
+    for tile in [header_tiles(order).0, header_tiles(order).1] {
+        c.stroke_rect(
+            tile.x,
+            20.0,
+            tile.w,
+            46.0,
+            23.0,
+            2.0,
+            Rgba(128, 174, 255, alpha),
+        );
+    }
+    c.text(
+        "ANORDNEN · OK AUSWÄHLEN · GLEICHE GRÖSSE WÄHLEN · PFEILE · OK ABLEGEN · ZURÜCK FERTIG",
+        640.0,
+        682.0,
+        12,
+        Weight::Bold,
+        Rgba(168, 203, 255, alpha),
+        Align::Center,
+    );
+}
+
+fn tile_size(content: usize) -> u8 {
+    match content {
+        2 | 5 => 0, // compact: films and apps
+        0 | 4 => 1, // medium: YouTube and news
+        1 | 3 => 2, // large: live TV and weather
+        _ => 0,
     }
 }
 
-fn home_status_key(cx: &Ctx) -> (i32, i32, u64, u64, String, bool) {
+fn header_tiles(_order: &[usize; 6]) -> (Tile, Tile) {
+    // These fields sit directly above the first and third cards. Their size
+    // follows those fixed slots; rearranging a tile swaps content within the
+    // same size class, so the header stays aligned with the card underneath.
+    (TILES[0], TILES[2])
+}
+
+fn tile_center(tile: Tile) -> f32 {
+    tile.x + tile.w / 2.0
+}
+
+fn nearest_top_slot(x: f32) -> usize {
+    (0..3)
+        .min_by(|a, b| {
+            let da = (tile_center(TILES[*a]) - x).abs();
+            let db = (tile_center(TILES[*b]) - x).abs();
+            da.total_cmp(&db)
+        })
+        .unwrap_or(0)
+}
+
+fn home_status_key(
+    cx: &Ctx,
+    focus: usize,
+    editing: bool,
+    order: &[usize; 6],
+) -> (i32, i32, u64, u64, String, bool, usize, bool, [usize; 6]) {
     let (hour, minute, _) = crate::app::local_hms();
     (
         hour,
@@ -406,6 +762,9 @@ fn home_status_key(cx: &Ctx) -> (i32, i32, u64, u64, String, bool) {
         cx.net.revision(),
         cx.cfg.city.clone(),
         cx.cfg.remote_enabled,
+        focus,
+        editing,
+        *order,
     )
 }
 
@@ -496,6 +855,7 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
                 Rgba(20, 20, 24, 0),
             );
             icon_youtube(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0);
+            home_chip(c, t.x + 24.0, t.y + 20.0, "FÜR DICH", Rgba::hex(0xff3448));
             label(c, t, "YouTube", "Suchen, ansehen");
         }
         1 => draw_livetv_tile(c, cx, t),
@@ -508,8 +868,23 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
                 c.rect(cx + dx - 9.0, cy + dy - 9.0, 18.0, 18.0, 5.0, color::MUTED);
             }
             label(c, t, "Apps", "Apps · Einstellungen");
+            home_chip(c, t.x + 18.0, t.y + 18.0, "MENÜ", Rgba(83, 105, 154, 220));
         }
     }
+}
+
+fn home_chip(c: &mut Canvas, x: f32, y: f32, text: &str, fill: Rgba) {
+    let width = c.fonts.width(text, 10, Weight::Bold) + 22.0;
+    c.rect(x, y, width, 23.0, 11.5, fill);
+    c.text(
+        text,
+        x + width / 2.0,
+        y + 5.0,
+        10,
+        Weight::Bold,
+        color::WHITE,
+        Align::Center,
+    );
 }
 
 fn draw_livetv_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
@@ -572,6 +947,15 @@ fn draw_livetv_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         Weight::Bold,
         color::WHITE,
         Align::Center,
+    );
+    c.text(
+        "DEINE SENDER",
+        t.x + 24.0,
+        t.y + 22.0,
+        11,
+        Weight::Bold,
+        Rgba(218, 236, 255, 220),
+        Align::Left,
     );
 }
 
@@ -663,6 +1047,13 @@ fn draw_films_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
     if !drawn {
         icon_film(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0, color::MUTED);
     }
+    home_chip(
+        c,
+        t.x + 18.0,
+        t.y + 18.0,
+        "MEDIATHEK",
+        Rgba(20, 24, 34, 176),
+    );
     let sub = match &pick {
         Some(f) if f.position > 60.0 => format!("Weiter: {}", f.title),
         Some(f) => f.title.clone(),

@@ -22,6 +22,8 @@ pub struct LiveTv {
     /// 0 groups, 1 channels
     col: usize,
     group: usize,
+    query: String,
+    keyboard: Option<Keyboard>,
     list: ListView,
     group_list: ListView,
     no_signal: Option<String>,
@@ -84,6 +86,8 @@ impl LiveTv {
             guide: false,
             col: 1,
             group: 1,
+            query: String::new(),
+            keyboard: None,
             list: ListView::new(),
             group_list: ListView::new(),
             no_signal: None,
@@ -241,6 +245,7 @@ impl Screen for LiveTv {
             || self.player.is_none()
             || self.guide_in.moving()
             || self.banner_in.moving()
+            || self.keyboard.is_some()
     }
     fn player_event(&mut self, e: &Event, cx: &mut Ctx) -> Nav {
         match e {
@@ -318,7 +323,37 @@ impl Screen for LiveTv {
     }
 
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
+        if let Some(kb) = self.keyboard.as_mut() {
+            let result = kb.key(k);
+            match result {
+                KbResult::Done(q) => {
+                    self.query = q.trim().to_string();
+                    self.list.sel = 0;
+                    self.keyboard = None;
+                }
+                KbResult::Cancel => self.keyboard = None,
+                KbResult::Changed => {
+                    self.query = kb.text.clone();
+                    self.list.sel = 0;
+                }
+                KbResult::None => {}
+            }
+            return Nav::None;
+        }
         let all = self.channels(cx);
+        if all.is_empty() && self.standalone_app_id.is_none() {
+            return match k {
+                Key::Back | Key::Stop => Nav::Pop,
+                Key::Home => Nav::Home,
+                Key::Menu => Nav::Push(Box::new(super::settings::Settings::new(cx))),
+                Key::Ok | Key::Info | Key::Play => {
+                    cx.reload_channels();
+                    cx.toast("Senderliste wird neu geladen");
+                    Nav::None
+                }
+                _ => Nav::None,
+            };
+        }
         if let Key::Digit(d) = k {
             self.digits.push((b'0' + d) as char);
             self.digits.truncate(4);
@@ -334,13 +369,38 @@ impl Screen for LiveTv {
             let chs: Vec<Channel> = in_group(&all, &gid, &cx.cfg.livetv_favs)
                 .into_iter()
                 .cloned()
+                .filter(|c| {
+                    self.query.is_empty()
+                        || c.name.to_lowercase().contains(&self.query.to_lowercase())
+                        || c.number.to_string().contains(&self.query)
+                })
                 .collect();
             match (k, self.col) {
                 (Key::Back, _) | (Key::Menu, _) => self.guide = false,
+                (Key::Info, _) => {
+                    self.keyboard = Some(Keyboard::new("Sender suchen", &self.query, false));
+                }
+                (Key::Char(ch), _) => {
+                    let mut kb = Keyboard::new("Sender suchen", &self.query, false);
+                    kb.text.push(ch);
+                    self.keyboard = Some(kb);
+                }
+                (Key::Backspace, _) => {
+                    self.query.pop();
+                    self.list.sel = 0;
+                }
+                (Key::Red, _) => {
+                    self.query.clear();
+                    self.list.sel = 0;
+                }
                 (Key::Left, 1) => self.col = 0,
                 (Key::Right, 0) | (Key::Ok, 0) => {
                     self.col = 1;
-                    self.list.sel = 0;
+                    if let Some(current) = &self.current {
+                        self.list.sel = chs.iter().position(|c| c.url == current.url).unwrap_or(0);
+                    } else {
+                        self.list.sel = 0;
+                    }
                 }
                 (Key::Up | Key::Down | Key::ChUp | Key::ChDown, 0) => {
                     if self.group_list.key(k, gs.len()) {
@@ -348,7 +408,7 @@ impl Screen for LiveTv {
                         self.list.sel = 0;
                     }
                 }
-                (Key::Right | Key::Green | Key::Yellow, 1) => {
+                (Key::Play | Key::Green | Key::Yellow, 1) => {
                     if let Some(ch) = chs.get(self.list.sel) {
                         let favs = &mut cx.cfg.livetv_favs;
                         if let Some(i) = favs.iter().position(|u| *u == ch.url) {
@@ -391,6 +451,24 @@ impl Screen for LiveTv {
                 self.player = None;
                 return Nav::Home;
             }
+            Key::Red => {
+                self.guide = true;
+                self.col = 1;
+                self.group = 0;
+                self.list.sel = 0;
+            }
+            Key::Green => {
+                if let Some(ch) = self.current.clone() {
+                    if let Some(i) = cx.cfg.livetv_favs.iter().position(|u| *u == ch.url) {
+                        cx.cfg.livetv_favs.remove(i);
+                        cx.toast(format!("{} aus den Favoriten entfernt", ch.name));
+                    } else {
+                        cx.cfg.livetv_favs.push(ch.url.clone());
+                        cx.toast(format!("★ {} ist jetzt ein Favorit", ch.name));
+                    }
+                    cx.save();
+                }
+            }
             // like any TV: up = next channel number
             Key::Up | Key::ChUp | Key::Next => self.zap(1, cx),
             Key::Down | Key::ChDown | Key::Prev => self.zap(-1, cx),
@@ -429,29 +507,113 @@ impl Screen for LiveTv {
             match cx.channels.get() {
                 None => {
                     c.clear(color::BG1);
+                    c.rect(
+                        w / 2.0 - 96.0,
+                        118.0,
+                        192.0,
+                        118.0,
+                        24.0,
+                        Rgba::hex(0x23252c),
+                    );
+                    c.stroke_rect(
+                        w / 2.0 - 96.0,
+                        118.0,
+                        192.0,
+                        118.0,
+                        24.0,
+                        2.0,
+                        color::BORDER,
+                    );
+                    c.stroke_rect(w / 2.0 - 64.0, 143.0, 128.0, 68.0, 12.0, 4.0, color::ACCENT);
+                    c.line(
+                        &[(w / 2.0 - 24.0, 216.0), (w / 2.0 + 24.0, 216.0)],
+                        4.0,
+                        color::ACCENT,
+                    );
                     c.text(
-                        "Senderliste wird geladen …",
+                        "LIVE TV",
                         w / 2.0,
-                        h / 2.0 - 14.0,
-                        24,
-                        Weight::Semi,
+                        278.0,
+                        14,
+                        Weight::Bold,
+                        color::ACCENT,
+                        Align::Center,
+                    );
+                    c.text(
+                        "Dein Fernsehprogramm wird vorbereitet",
+                        w / 2.0,
+                        318.0,
+                        30,
+                        Weight::Bold,
                         color::TEXT,
+                        Align::Center,
+                    );
+                    c.text(
+                        "Senderlisten werden geladen …",
+                        w / 2.0,
+                        366.0,
+                        18,
+                        Weight::Regular,
+                        color::MUTED,
                         Align::Center,
                     );
                     return;
                 }
                 Some(Err(e)) => {
-                    c.backdrop();
+                    c.clear(color::BG1);
+                    c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x302019)));
+                    c.rect(64.0, 80.0, w - 128.0, h - 160.0, 28.0, Rgba::hex(0x1a1a20));
+                    c.stroke_rect(64.0, 80.0, w - 128.0, h - 160.0, 28.0, 1.0, color::BORDER);
+                    c.rect(112.0, 132.0, 56.0, 32.0, 12.0, Rgba::hex(0x382323));
                     c.text(
-                        "Keine Senderliste",
-                        PAD,
-                        200.0,
-                        34,
+                        "LIVE TV",
+                        140.0,
+                        140.0,
+                        12,
+                        Weight::Bold,
+                        Rgba::hex(0xff7777),
+                        Align::Center,
+                    );
+                    c.text(
+                        "Deine Senderliste fehlt noch",
+                        112.0,
+                        192.0,
+                        32,
                         Weight::Bold,
                         color::TEXT,
                         Align::Left,
                     );
-                    c.paragraph(&format!("{e}\n\nEine .m3u-Datei nach /storage/tv-launcher/livetv/ oder auf den USB-Stick legen – oder unter Einstellungen › Live TV eine Adresse eintragen."), PAD, 260.0, 1000.0, 19, Weight::Regular, color::MUTED, 28.0, 8);
+                    c.paragraph(&format!("{e}\n\nLege eine M3U-Senderliste auf einen USB-Stick oder nach /storage/tv-launcher/livetv/. Du kannst auch unter Einstellungen › Live TV eine Playlist-Adresse eintragen."), 112.0, 250.0, 740.0, 18, Weight::Regular, color::MUTED, 27.0, 7);
+                    c.rect(112.0, 484.0, 320.0, 62.0, 16.0, color::ACCENT);
+                    c.text(
+                        "OK   ERNEUT LADEN",
+                        272.0,
+                        503.0,
+                        17,
+                        Weight::Bold,
+                        color::BLACK,
+                        Align::Center,
+                    );
+                    c.rect(452.0, 484.0, 390.0, 62.0, 16.0, Rgba::hex(0x292a31));
+                    c.stroke_rect(452.0, 484.0, 390.0, 62.0, 16.0, 1.0, color::BORDER);
+                    c.text(
+                        "MENÜ   LIVE-TV-EINSTELLUNGEN",
+                        647.0,
+                        503.0,
+                        15,
+                        Weight::Semi,
+                        color::TEXT,
+                        Align::Center,
+                    );
+                    c.text(
+                        "Sendernummern, Favoriten und Gruppen bleiben gespeichert.",
+                        112.0,
+                        579.0,
+                        16,
+                        Weight::Regular,
+                        color::MUTED,
+                        Align::Left,
+                    );
                     return;
                 }
                 Some(Ok((ch, _))) => ch,
@@ -629,97 +791,173 @@ impl Screen for LiveTv {
             c.offset = (0.0, 0.0);
             c.opacity = 1.0;
         }
+        if let Some(kb) = self.keyboard.as_ref() {
+            c.rect(0.0, 0.0, w, h, 0.0, Rgba(0, 0, 0, 185));
+            c.rect(132.0, 40.0, w - 264.0, h - 80.0, 28.0, Rgba::hex(0x1b1c22));
+            c.stroke_rect(132.0, 40.0, w - 264.0, h - 80.0, 28.0, 1.0, color::BORDER);
+            c.text(
+                "Sender suchen",
+                178.0,
+                72.0,
+                28,
+                Weight::Bold,
+                color::TEXT,
+                Align::Left,
+            );
+            kb.draw(c, 178.0, 124.0, w - 356.0, cx.t());
+        }
     }
 }
 
 fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &[Channel]) {
     let (w, h) = (crate::gfx::W as f32, crate::gfx::H as f32);
-    c.vgradient(
-        0.0,
-        0.0,
-        900.0,
-        h,
-        0.0,
-        Rgba(10, 10, 12, 245),
-        Rgba(10, 10, 12, 245),
-    );
-    c.vgradient(
-        900.0,
-        0.0,
-        w - 900.0,
-        h,
-        0.0,
-        Rgba(10, 10, 12, 200),
-        Rgba(10, 10, 12, 120),
-    );
+    let rail_w = 910.0;
+    c.rect(0.0, 0.0, rail_w, h, 0.0, Rgba::hex(0x101116));
+    c.rect(rail_w, 0.0, w - rail_w, h, 0.0, Rgba::hex(0x191a20));
+    c.line(&[(rail_w, 0.0), (rail_w, h)], 1.0, color::BORDER.alpha(0.8));
+
     c.text(
         "Live TV",
         PAD,
-        36.0,
+        32.0,
         30,
         Weight::Bold,
         color::TEXT,
         Align::Left,
     );
+    c.text(
+        &format!("{} Sender · dein Programm", all.len()),
+        PAD,
+        70.0,
+        15,
+        Weight::Regular,
+        color::MUTED,
+        Align::Left,
+    );
+
+    // Search is always visible and opens the remote friendly keyboard with INFO.
+    c.rect(PAD, 98.0, 828.0, 54.0, 16.0, Rgba::hex(0x24252c));
+    c.stroke_rect(PAD, 98.0, 828.0, 54.0, 16.0, 1.0, color::BORDER);
+    c.stroke_rect(PAD + 18.0, 116.0, 15.0, 15.0, 8.0, 1.8, color::MUTED);
+    c.line(
+        &[(PAD + 30.0, 129.0), (PAD + 36.0, 135.0)],
+        2.0,
+        color::MUTED,
+    );
+    c.text_fit(
+        if s.query.is_empty() {
+            "Sender suchen …"
+        } else {
+            &s.query
+        },
+        PAD + 52.0,
+        115.0,
+        17,
+        if s.query.is_empty() {
+            Weight::Regular
+        } else {
+            Weight::Semi
+        },
+        if s.query.is_empty() {
+            color::MUTED
+        } else {
+            color::TEXT
+        },
+        610.0,
+    );
+    c.text(
+        "INFO SUCHEN",
+        PAD + 804.0,
+        117.0,
+        11,
+        Weight::Bold,
+        color::MUTED,
+        Align::Right,
+    );
+
     let gs = groups(all);
     s.group = s.group.min(gs.len().saturating_sub(1));
     let favs = cx.cfg.livetv_favs.clone();
-    let gsel = s.group;
-    s.group_list.sel = gsel;
+    let gid = gs
+        .get(s.group)
+        .map(|g| g.0.clone())
+        .unwrap_or_else(|| "all".into());
+    let query = s.query.to_lowercase();
+    let chs: Vec<Channel> = in_group(all, &gid, &favs)
+        .into_iter()
+        .filter(|ch| {
+            query.is_empty()
+                || ch.name.to_lowercase().contains(&query)
+                || ch.number.to_string().contains(&query)
+        })
+        .cloned()
+        .collect();
+    let group_x = PAD - 8.0;
+    let group_w = 244.0;
+    let list_x = 326.0;
+    let list_w = 566.0;
+    c.text(
+        "KATEGORIEN",
+        group_x + 10.0,
+        170.0,
+        12,
+        Weight::Bold,
+        color::MUTED,
+        Align::Left,
+    );
+    c.text(
+        &format!("{} SENDER", chs.len()),
+        list_x + 8.0,
+        170.0,
+        12,
+        Weight::Bold,
+        color::MUTED,
+        Align::Left,
+    );
+
+    s.group_list.sel = s.group;
     s.group_list.draw(
         c,
         gs.len(),
-        PAD - 12.0,
-        100.0,
-        260.0,
-        560.0,
-        50.0,
+        group_x,
+        192.0,
+        group_w,
+        448.0,
+        52.0,
         s.col == 0,
-        |c, i, x, y, f| {
+        |c, i, x, y, focused| {
             let (id, label) = &gs[i];
-            let n = in_group(all, id, &favs).len();
-            let col = if f {
+            let count = in_group(all, id, &favs).len();
+            let fg = if focused {
                 color::BLACK
-            } else if i == gsel {
+            } else if i == s.group {
                 color::TEXT
             } else {
                 color::MUTED
             };
             let badge = match id.as_str() {
-                "fav" => "★".to_string(),
-                "all" => "TV".to_string(),
-                other if other.len() == 2 => other.to_string(),
-                _ => "•".to_string(),
+                "fav" => "★",
+                "all" => "TV",
+                other if other.len() == 2 => other,
+                _ => "•",
             };
             c.text(
-                &badge,
-                x + 30.0,
-                y + 13.0,
+                badge,
+                x + 24.0,
+                y + 15.0,
                 15,
                 Weight::Bold,
-                if f { color::BLACK } else { color::ACCENT },
+                if focused { color::BLACK } else { color::ACCENT },
                 Align::Center,
             );
-            c.text_fit(
-                label,
-                x + 58.0,
-                y + 12.0,
-                18,
-                if i == gsel {
-                    Weight::Semi
-                } else {
-                    Weight::Regular
-                },
-                col,
-                150.0,
-            );
+            c.text_fit(label, x + 48.0, y + 14.0, 16, Weight::Semi, fg, 145.0);
             c.text(
-                &n.to_string(),
-                x + 248.0,
-                y + 14.0,
-                14,
+                &count.to_string(),
+                x + group_w - 12.0,
+                y + 16.0,
+                13,
                 Weight::Regular,
-                if f {
+                if focused {
                     Rgba(60, 60, 60, 255)
                 } else {
                     color::MUTED
@@ -728,100 +966,267 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &[Channel]) {
             );
         },
     );
-    let gid = gs.get(s.group).map(|g| g.0.clone()).unwrap_or_default();
-    let chs: Vec<Channel> = in_group(all, &gid, &favs).into_iter().cloned().collect();
-    let x0 = PAD + 270.0;
+
     if chs.is_empty() {
-        let msg = if gid == "fav" {
-            "Noch keine Favoriten.\nIn einer Senderliste ▶ drücken, um einen Sender hier zu speichern."
+        let message = if !s.query.is_empty() {
+            "Keine Treffer für deine Suche.\nINFO öffnet die Suche · ROT löscht den Filter."
+        } else if gid == "fav" {
+            "Noch keine Favoriten.\nWähle einen Sender und drücke GRÜN oder ▶."
         } else {
-            "Keine Sender in dieser Liste."
+            "In dieser Kategorie sind keine Sender."
         };
+        c.rect(list_x, 192.0, list_w, 448.0, 20.0, Rgba::hex(0x1b1c22));
         c.paragraph(
-            msg,
-            x0 + 10.0,
-            110.0,
-            480.0,
+            message,
+            list_x + 32.0,
+            230.0,
+            list_w - 64.0,
             18,
             Weight::Regular,
             color::MUTED,
-            26.0,
-            4,
+            28.0,
+            5,
         );
-        return;
+    } else {
+        let playing = s.current.as_ref().map(|ch| ch.url.as_str()).unwrap_or("");
+        let playing_ready = s
+            .player
+            .as_ref()
+            .map(|p| p.shared.frames_shown.load(Relaxed) > 0)
+            .unwrap_or(false);
+        let stream_failed = s.no_signal.is_some();
+        s.list.draw(
+            c,
+            chs.len(),
+            list_x,
+            192.0,
+            list_w,
+            448.0,
+            64.0,
+            s.col == 1,
+            |c, i, x, y, focused| {
+                let ch = &chs[i];
+                let fg = if focused { color::BLACK } else { color::TEXT };
+                c.text(
+                    &format!("{:02}", ch.number),
+                    x + 36.0,
+                    y + 20.0,
+                    15,
+                    Weight::Semi,
+                    if focused {
+                        Rgba(65, 65, 65, 255)
+                    } else {
+                        color::MUTED
+                    },
+                    Align::Right,
+                );
+                logo(c, cx, ch, x + 52.0, y + 8.0, 76.0, 44.0);
+                c.text_fit(
+                    &ch.name,
+                    x + 144.0,
+                    y + 19.0,
+                    18,
+                    if focused {
+                        Weight::Semi
+                    } else {
+                        Weight::Regular
+                    },
+                    fg,
+                    310.0,
+                );
+                if ch.url == playing {
+                    let (label, tint) = if playing_ready {
+                        ("LIVE", color::RED)
+                    } else if stream_failed {
+                        ("FEHLER", color::RED)
+                    } else {
+                        ("LÄDT", Rgba::hex(0xc88d36))
+                    };
+                    c.rect(x + list_w - 92.0, y + 18.0, 68.0, 25.0, 12.0, tint);
+                    c.text(
+                        label,
+                        x + list_w - 58.0,
+                        y + 24.0,
+                        11,
+                        Weight::Bold,
+                        color::WHITE,
+                        Align::Center,
+                    );
+                } else if favs.contains(&ch.url) {
+                    c.text(
+                        "★",
+                        x + list_w - 58.0,
+                        y + 17.0,
+                        20,
+                        Weight::Bold,
+                        Rgba::hex(0xffc93c),
+                        Align::Center,
+                    );
+                }
+            },
+        );
     }
-    let playing = s
-        .current
-        .as_ref()
-        .map(|c| c.url.clone())
-        .unwrap_or_default();
-    let focus_channels = s.col == 1;
-    s.list.draw(
-        c,
-        chs.len(),
-        x0,
-        100.0,
-        520.0,
-        560.0,
-        64.0,
-        focus_channels,
-        |c, i, x, y, f| {
-            let ch = &chs[i];
-            let col = if f { color::BLACK } else { color::TEXT };
-            c.text(
-                &ch.number.to_string(),
-                x + 40.0,
-                y + 18.0,
-                17,
-                Weight::Semi,
-                if f {
-                    Rgba(60, 60, 60, 255)
-                } else {
-                    color::MUTED
-                },
-                Align::Right,
-            );
-            logo(c, cx, ch, x + 56.0, y + 7.0, 80.0, 44.0);
-            c.text_fit(
-                &ch.name,
-                x + 152.0,
-                y + 17.0,
-                19,
-                if f { Weight::Semi } else { Weight::Regular },
-                col,
-                290.0,
-            );
-            if ch.url == playing {
-                c.rect(x + 450.0, y + 18.0, 48.0, 22.0, 6.0, color::RED);
-                c.text(
-                    "LIVE",
-                    x + 474.0,
-                    y + 21.0,
-                    12,
-                    Weight::Bold,
-                    color::WHITE,
-                    Align::Center,
-                );
-            } else if favs.contains(&ch.url) {
-                c.text(
-                    "★",
-                    x + 474.0,
-                    y + 16.0,
-                    20,
-                    Weight::Bold,
-                    Rgba::hex(0xffc93c),
-                    Align::Center,
-                );
-            }
-        },
-    );
-    c.rect(0.0, h - 52.0, 900.0, 52.0, 0.0, Rgba(10, 10, 12, 255));
+
+    // Details pane keeps the selected station and its actions in view while browsing.
     c.text(
-        "OK Einschalten · ▶ Favorit · ◀ Gruppen · Zurück schließen · 0–9 Sendernummer",
+        "SENDERINFO",
+        950.0,
+        38.0,
+        12,
+        Weight::Bold,
+        color::MUTED,
+        Align::Left,
+    );
+    if let Some(ch) = chs.get(s.list.sel) {
+        let fav = favs.contains(&ch.url);
+        c.rect(950.0, 78.0, 284.0, 160.0, 18.0, Rgba::hex(0x24252c));
+        logo(c, cx, ch, 962.0, 88.0, 260.0, 140.0);
+        c.text_fit(&ch.name, 950.0, 266.0, 24, Weight::Bold, color::TEXT, 310.0);
+        c.text(
+            &format!(
+                "KANAL {:02}  ·  {}",
+                ch.number,
+                crate::livetv::country_name(&ch.group)
+            ),
+            950.0,
+            305.0,
+            14,
+            Weight::Regular,
+            color::MUTED,
+            Align::Left,
+        );
+        c.line(&[(950.0, 338.0), (1236.0, 338.0)], 1.0, color::BORDER);
+        let is_tuned = s.current.as_ref().map(|p| p.url == ch.url).unwrap_or(false);
+        let is_playing = is_tuned
+            && s.player
+                .as_ref()
+                .map(|p| p.shared.frames_shown.load(Relaxed) > 0)
+                .unwrap_or(false);
+        let is_connecting = is_tuned && !is_playing && s.no_signal.is_none();
+        c.circle(
+            960.0,
+            374.0,
+            4.0,
+            if is_playing {
+                Rgba::hex(0x59d39a)
+            } else if is_connecting {
+                Rgba::hex(0xc88d36)
+            } else if s.no_signal.is_some() && is_tuned {
+                color::RED
+            } else {
+                color::ACCENT
+            },
+        );
+        c.text(
+            if is_playing {
+                "LÄUFT GERADE"
+            } else if is_connecting {
+                "VERBINDET …"
+            } else if s.no_signal.is_some() && is_tuned {
+                "SIGNAL FEHLT"
+            } else {
+                "LIVE SENDER"
+            },
+            974.0,
+            365.0,
+            12,
+            Weight::Bold,
+            if is_playing {
+                Rgba::hex(0x59d39a)
+            } else if is_connecting {
+                Rgba::hex(0xc88d36)
+            } else if s.no_signal.is_some() && is_tuned {
+                color::RED
+            } else {
+                color::ACCENT
+            },
+            Align::Left,
+        );
+        c.text(
+            if fav {
+                "★ In deinen Favoriten"
+            } else {
+                "☆ Noch kein Favorit"
+            },
+            950.0,
+            405.0,
+            16,
+            Weight::Semi,
+            if fav {
+                Rgba::hex(0xffc93c)
+            } else {
+                color::MUTED
+            },
+            Align::Left,
+        );
+        c.rect(950.0, 454.0, 284.0, 48.0, 14.0, color::ACCENT);
+        c.text(
+            if is_playing {
+                "OK  ZUM PROGRAMM"
+            } else {
+                "OK  SENDER EINSCHALTEN"
+            },
+            1092.0,
+            468.0,
+            14,
+            Weight::Bold,
+            color::BLACK,
+            Align::Center,
+        );
+        c.rect(950.0, 514.0, 284.0, 48.0, 14.0, Rgba::hex(0x292a31));
+        c.stroke_rect(950.0, 514.0, 284.0, 48.0, 14.0, 1.0, color::BORDER);
+        c.text(
+            if fav {
+                "GRÜN  FAVORIT ENTFERNEN"
+            } else {
+                "GRÜN  ALS FAVORIT SPEICHERN"
+            },
+            1092.0,
+            528.0,
+            12,
+            Weight::Semi,
+            color::TEXT,
+            Align::Center,
+        );
+    } else {
+        c.text(
+            "Wähle links einen Sender aus.",
+            950.0,
+            102.0,
+            18,
+            Weight::Semi,
+            color::TEXT,
+            Align::Left,
+        );
+        c.paragraph("Mit INFO kannst du die Liste durchsuchen. Favoriten werden auf diesem Gerät gespeichert.", 950.0, 144.0, 278.0, 16, Weight::Regular, color::MUTED, 24.0, 5);
+    }
+    c.line(&[(950.0, 590.0), (1236.0, 590.0)], 1.0, color::BORDER);
+    c.text(
+        "PFEILE  NAVIGIEREN",
+        950.0,
+        614.0,
+        11,
+        Weight::Bold,
+        color::MUTED,
+        Align::Left,
+    );
+    c.text(
+        "CH+/−  SEITENWEISE",
+        950.0,
+        638.0,
+        11,
+        Weight::Bold,
+        color::MUTED,
+        Align::Left,
+    );
+
+    c.rect(0.0, h - 48.0, rail_w, 48.0, 0.0, Rgba::hex(0x101116));
+    c.text(
+        "OK EINSCHALTEN  ·  GRÜN FAVORIT  ·  INFO SUCHE  ·  ZURÜCK SCHLIESSEN",
         PAD,
-        h - 36.0,
-        14,
-        Weight::Regular,
+        h - 31.0,
+        12,
+        Weight::Semi,
         color::MUTED,
         Align::Left,
     );

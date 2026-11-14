@@ -56,17 +56,20 @@ pub struct Control {
 }
 
 const OPEN_ANIM: f32 = 0.14;
-const PANEL_BOUNDS: (f32, f32, f32, f32) = (930.0, 100.0, 272.0, 296.0);
+// The panel is rasterized in its own local coordinates and displayed at the
+// top right, including when it overlays the browser's video plane.
+const PANEL_SOURCE: (f32, f32) = (820.0, 96.0);
+const PANEL_BOUNDS: (f32, f32, f32, f32) = (878.0, 16.0, 390.0, 470.0);
 
 const FOCUS_POS: [(f32, f32); 8] = [
-    (49.0, 48.0),   // power, spans the two upper rows
-    (155.0, 26.5),  // Wi-Fi
-    (155.0, 69.5),  // Do Not Disturb
-    (49.0, 114.0),  // resume current screen
-    (36.0, 165.5),  // Live TV
-    (86.0, 165.5),  // weather
-    (136.0, 165.5), // phone remote
-    (186.0, 165.5), // settings
+    (901.0, 292.0),
+    (1071.0, 264.0),
+    (1071.0, 319.0),
+    (1015.0, 381.0),
+    (890.0, 456.0),
+    (973.0, 456.0),
+    (1056.0, 456.0),
+    (1139.0, 456.0),
 ];
 
 impl Control {
@@ -98,7 +101,7 @@ impl Control {
                     2,
                 );
                 canvas.clear(Rgba(0, 0, 0, 0));
-                canvas.offset = (-PANEL_BOUNDS.0, -PANEL_BOUNDS.1);
+                canvas.offset = (-PANEL_SOURCE.0, -PANEL_SOURCE.1);
                 Control::draw_panel(
                     usize::MAX,
                     key.5,
@@ -227,28 +230,36 @@ impl Control {
         active: bool,
     ) {
         let selected = idx == focus;
-        let fill = if selected {
-            Rgba(87, 91, 101, if active { 246 } else { 238 })
-        } else {
-            Rgba(48, 50, 56, if active { 226 } else { 212 })
-        };
-        c.rect(x, y, w, h, 11.0, fill);
-        if selected {
-            c.stroke_rect(x, y, w, h, 11.0, 1.5, Rgba(255, 255, 255, 226));
-        } else {
-            c.stroke_rect(
-                x + 0.5,
-                y + 0.5,
-                w - 1.0,
-                h - 1.0,
-                10.5,
-                1.0,
-                Rgba(255, 255, 255, 32),
-            );
-        }
+        c.rect(
+            x,
+            y,
+            w,
+            h,
+            13.0,
+            if selected {
+                Rgba(58, 103, 203, 248)
+            } else if active {
+                Rgba(47, 72, 105, 242)
+            } else {
+                Rgba(40, 46, 61, 245)
+            },
+        );
+        c.stroke_rect(
+            x,
+            y,
+            w,
+            h,
+            13.0,
+            if selected { 2.0 } else { 1.0 },
+            if selected {
+                Rgba(212, 229, 255, 255)
+            } else {
+                Rgba(255, 255, 255, 36)
+            },
+        );
     }
 
-    fn power_icon(c: &mut Canvas, x: f32, y: f32, color: Rgba) {
+    fn power_icon(c: &mut Canvas, x: f32, y: f32, col: Rgba) {
         let ring: Vec<(f32, f32)> = (0..=24)
             .map(|i| {
                 let a = 5.0 * std::f32::consts::PI / 4.0
@@ -256,92 +267,21 @@ impl Control {
                 (x + a.cos() * 13.0, y + a.sin() * 13.0)
             })
             .collect();
-        c.line(&ring, 2.8, color);
-        c.line(&[(x, y - 18.0), (x, y + 1.0)], 3.0, color);
+        c.line(&ring, 2.8, col);
+        c.line(&[(x, y - 18.0), (x, y + 1.0)], 3.0, col);
     }
 
-    fn draw_footer(c: &mut Canvas, x: f32, y: f32, idx: usize, focus: usize, remote_enabled: bool) {
-        let labels = ["Live TV", "Wetter", "Handy", "Einst."];
-        let bx = x + idx as f32 * 50.0;
-        Self::tile(
-            c,
-            bx,
-            y,
-            46.0,
-            47.0,
-            4 + idx,
-            focus,
-            idx == 2 && remote_enabled,
-        );
-        let cx = bx + 23.0;
-        let cy = y + 16.0;
-        let icon = Rgba(238, 239, 242, 255);
-        match idx {
-            0 => {
-                c.stroke_rect(cx - 8.5, cy - 6.0, 17.0, 12.0, 2.5, 1.5, icon);
-                c.line(&[(cx - 4.0, cy + 8.0), (cx + 4.0, cy + 8.0)], 1.5, icon);
-                c.line(&[(cx, cy + 6.0), (cx, cy + 8.0)], 1.5, icon);
-            }
-            1 => {
-                c.circle(cx, cy, 5.0, Rgba(255, 207, 91, 255));
-                for (dx, dy) in [
-                    (0.0, -9.0),
-                    (0.0, 9.0),
-                    (-9.0, 0.0),
-                    (9.0, 0.0),
-                    (-6.4, -6.4),
-                    (6.4, 6.4),
-                    (6.4, -6.4),
-                    (-6.4, 6.4),
-                ] {
-                    c.line(
-                        &[(cx + dx * 0.72, cy + dy * 0.72), (cx + dx, cy + dy)],
-                        1.2,
-                        Rgba(255, 207, 91, 255),
-                    );
-                }
-            }
-            2 => {
-                c.stroke_rect(cx - 6.0, cy - 10.0, 12.0, 20.0, 3.0, 1.4, icon);
-                c.line(&[(cx - 2.2, cy + 6.5), (cx + 2.2, cy + 6.5)], 1.0, icon);
-            }
-            _ => super::icon_gear(c, cx, cy, 17.0, icon),
-        }
-        c.text(
-            labels[idx],
-            cx,
-            y + 31.0,
-            8,
-            Weight::Semi,
-            Rgba(238, 239, 242, 255),
-            Align::Center,
-        );
-    }
-
-    fn draw_focus_overlay(c: &mut Canvas, focus: usize, dnd: bool, remote_enabled: bool) {
-        let (x, y, w, h, active) = match focus {
-            0 => (965.0, 182.0, 80.0, 80.0, false),
-            1 => (1052.0, 182.0, 115.0, 37.0, false),
-            2 => (1052.0, 225.0, 115.0, 37.0, dnd),
-            3 => (965.0, 270.0, 80.0, 36.0, false),
-            4..=7 => (
-                965.0 + (focus - 4) as f32 * 50.0,
-                316.0,
-                46.0,
-                47.0,
-                focus == 6 && remote_enabled,
-            ),
+    fn draw_focus_overlay(c: &mut Canvas, focus: usize) {
+        let (x, y, w, h) = match focus {
+            0 => (852.0, 238.0, 100.0, 106.0),
+            1 => (966.0, 238.0, 212.0, 51.0),
+            2 => (966.0, 293.0, 212.0, 51.0),
+            3 => (852.0, 356.0, 326.0, 52.0),
+            4..=7 => (852.0 + (focus - 4) as f32 * 83.0, 420.0, 76.0, 76.0),
             _ => return,
         };
-        // The cached panel contains the unselected tile. A translucent tint
-        // recreates the selected fill while only rerasterizing this one tile.
-        let tint = if active {
-            Rgba(98, 107, 119, 176)
-        } else {
-            Rgba(108, 113, 126, 154)
-        };
-        c.rect(x, y, w, h, 11.0, tint);
-        c.stroke_rect(x, y, w, h, 11.0, 1.5, Rgba(255, 255, 255, 226));
+        c.rect(x, y, w, h, 13.0, Rgba(73, 121, 230, 40));
+        c.stroke_rect(x, y, w, h, 13.0, 2.0, Rgba(216, 231, 255, 255));
     }
 
     fn draw_panel(
@@ -355,199 +295,202 @@ impl Control {
         dnd: bool,
         net_label: &str,
     ) {
-        let (x, y, w, h) = (956.0, 174.0, 220.0, 214.0);
-        // Roomier status capsule above the panel: time, actual network name,
-        // and phone-remote state stay readable from the couch.
-        let (sx, sy, sw, sh) = (940.0, 108.0, 252.0, 48.0);
-        c.rect(sx + 2.0, sy + 3.0, sw, sh, 17.0, Rgba(0, 0, 0, 56));
-        c.rect(sx, sy, sw, sh, 17.0, Rgba(35, 36, 42, 238));
-        c.stroke_rect(sx, sy, sw, sh, 17.0, 1.0, Rgba(255, 255, 255, 64));
-        c.text(
-            &format!("{hh:02}:{mm:02}"),
-            sx + 42.0,
-            sy + 15.0,
-            15,
-            Weight::Semi,
-            Rgba(248, 248, 250, 255),
-            Align::Center,
-        );
-        c.line(
-            &[(sx + 84.0, sy + 10.0), (sx + 84.0, sy + 38.0)],
+        let fg = Rgba(248, 250, 255, 255);
+        let muted = Rgba(177, 188, 211, 255);
+        c.rect(841.0, 117.0, 358.0, 446.0, 23.0, Rgba(0, 0, 0, 90));
+        c.rect(836.0, 111.0, 358.0, 446.0, 22.0, Rgba(24, 29, 43, 250));
+        c.stroke_rect(
+            836.0,
+            111.0,
+            358.0,
+            446.0,
+            22.0,
             1.0,
-            Rgba(255, 255, 255, 36),
+            Rgba(169, 196, 249, 81),
         );
-        c.circle(
-            sx + 100.0,
-            sy + 24.0,
-            3.0,
-            if connected {
-                Rgba(102, 213, 158, 255)
-            } else {
-                Rgba(244, 102, 102, 255)
-            },
-        );
-        draw_wifi(
-            c,
-            sx + 117.0,
-            sy + 23.0,
-            if connected {
-                Rgba(89, 184, 245, 255)
-            } else {
-                Rgba(218, 221, 228, 255)
-            },
-        );
-        let short_net = c.ellipsize(net_label, 9, Weight::Regular, 50.0);
+        c.rect(852.0, 135.0, 4.0, 32.0, 2.0, Rgba(100, 160, 255, 255));
         c.text(
-            &short_net,
-            sx + 137.0,
-            sy + 19.0,
-            9,
-            Weight::Semi,
-            Rgba(232, 233, 237, 255),
+            "Schnellmenü",
+            870.0,
+            130.0,
+            22,
+            Weight::Bold,
+            fg,
             Align::Left,
         );
-        c.line(
-            &[(sx + 194.0, sy + 10.0), (sx + 194.0, sy + 38.0)],
-            1.0,
-            Rgba(255, 255, 255, 36),
-        );
-        let phone_color = if remote_enabled {
-            Rgba(106, 191, 255, 255)
-        } else {
-            Rgba(232, 233, 237, 190)
-        };
-        c.stroke_rect(sx + 205.0, sy + 14.0, 12.0, 20.0, 3.0, 1.4, phone_color);
-        c.circle(sx + 211.0, sy + 31.0, 0.9, phone_color);
         c.text(
-            if remote_enabled { "AN" } else { "AUS" },
-            sx + 233.0,
-            sy + 19.0,
-            9,
-            Weight::Semi,
-            phone_color,
-            Align::Center,
-        );
-
-        c.rect(x + 4.0, y + 6.0, w, h, 20.0, Rgba(0, 0, 0, 78));
-        c.rect(x, y, w, h, 19.0, Rgba(48, 49, 55, 220));
-        c.stroke_rect(x, y, w, h, 19.0, 1.0, Rgba(255, 255, 255, 62));
-        c.line(
-            &[(x + 22.0, y + 1.5), (x + w - 22.0, y + 1.5)],
-            1.0,
-            Rgba(255, 255, 255, 35),
-        );
-
-        let left = x + 9.0;
-        let right = x + 96.0;
-        let fg = Rgba(247, 247, 249, 255);
-        let muted = Rgba(211, 213, 219, 255);
-        Self::tile(c, left, y + 8.0, 80.0, 80.0, 0, focus, false);
-        Self::power_icon(c, left + 40.0, y + 37.0, fg);
-        c.text(
-            "Power Off",
-            left + 40.0,
-            y + 62.0,
+            if over_video {
+                "WIEDERGABE"
+            } else {
+                "STARTSEITE"
+            },
+            1176.0,
+            140.0,
             10,
             Weight::Semi,
-            fg,
-            Align::Center,
+            Rgba(128, 187, 255, 255),
+            Align::Right,
         );
-
-        Self::tile(c, right, y + 8.0, 115.0, 37.0, 1, focus, false);
-        draw_wifi(c, right + 16.0, y + 22.0, Rgba(89, 184, 245, 255));
         c.text(
-            if connected { "Wi-Fi" } else { "Netzwerk" },
-            right + 31.0,
-            y + 11.0,
-            9,
-            Weight::Semi,
-            fg,
-            Align::Left,
-        );
-        let short_net = c.ellipsize(net_label, 8, Weight::Regular, 77.0);
-        c.text(
-            &short_net,
-            right + 31.0,
-            y + 24.0,
-            8,
+            "Aktionen und Verbindungen",
+            870.0,
+            158.0,
+            12,
             Weight::Regular,
             muted,
             Align::Left,
         );
-
-        Self::tile(c, right, y + 51.0, 115.0, 37.0, 2, focus, dnd);
+        c.rect(852.0, 180.0, 326.0, 45.0, 12.0, Rgba(38, 49, 70, 255));
+        c.text(
+            &format!("{hh:02}:{mm:02}"),
+            868.0,
+            190.0,
+            19,
+            Weight::Bold,
+            fg,
+            Align::Left,
+        );
+        c.line(
+            &[(940.0, 188.0), (940.0, 217.0)],
+            1.0,
+            Rgba(255, 255, 255, 40),
+        );
         c.circle(
-            right + 16.0,
-            y + 69.0,
-            7.0,
-            if dnd {
-                Rgba(107, 180, 244, 255)
+            955.0,
+            203.0,
+            4.0,
+            if connected {
+                Rgba(91, 216, 166, 255)
             } else {
-                Rgba(206, 209, 216, 255)
+                Rgba(246, 115, 115, 255)
             },
         );
-        c.circle(right + 19.0, y + 66.0, 6.5, Rgba(48, 49, 55, 255));
+        c.text_fit(net_label, 968.0, 194.0, 13, Weight::Semi, fg, 125.0);
+        c.text(
+            if remote_enabled {
+                "Handy an"
+            } else {
+                "Handy aus"
+            },
+            1163.0,
+            196.0,
+            11,
+            Weight::Regular,
+            muted,
+            Align::Right,
+        );
+
+        Self::tile(c, 852.0, 238.0, 100.0, 106.0, 0, focus, false);
+        Self::power_icon(c, 902.0, 275.0, fg);
+        c.text(
+            "Ausschalten",
+            902.0,
+            314.0,
+            11,
+            Weight::Semi,
+            fg,
+            Align::Center,
+        );
+        Self::tile(c, 966.0, 238.0, 212.0, 51.0, 1, focus, false);
+        draw_wifi(c, 989.0, 264.0, Rgba(119, 189, 255, 255));
+        c.text("Netzwerk", 1009.0, 244.0, 13, Weight::Semi, fg, Align::Left);
+        c.text_fit(net_label, 1009.0, 263.0, 11, Weight::Regular, muted, 156.0);
+        Self::tile(c, 966.0, 293.0, 212.0, 51.0, 2, focus, dnd);
+        c.circle(989.0, 318.0, 8.0, Rgba(151, 185, 252, 255));
+        c.circle(993.0, 314.0, 8.0, Rgba(40, 46, 61, 255));
         c.text(
             "Nicht stören",
-            right + 31.0,
-            y + 54.0,
-            9,
+            1009.0,
+            299.0,
+            13,
             Weight::Semi,
             fg,
             Align::Left,
         );
         c.text(
             if dnd { "Ein" } else { "Aus" },
-            right + 31.0,
-            y + 67.0,
-            8,
+            1009.0,
+            319.0,
+            11,
             Weight::Regular,
             muted,
             Align::Left,
         );
-
-        Self::tile(c, left, y + 96.0, 80.0, 36.0, 3, focus, false);
-        super::icon_play(c, left + 16.0, y + 113.0, 12.0, Rgba(228, 230, 235, 255));
+        Self::tile(c, 852.0, 356.0, 326.0, 52.0, 3, focus, false);
+        super::icon_play(c, 877.0, 381.0, 20.0, Rgba(126, 194, 255, 255));
         c.text(
             if over_video {
-                "Fortsetzen"
+                "Wiedergabe fortsetzen"
             } else {
-                "Startseite"
+                "Zur Startseite"
             },
-            left + 31.0,
-            y + 109.0,
-            8,
+            902.0,
+            365.0,
+            15,
             Weight::Semi,
             fg,
             Align::Left,
         );
-        c.rect(right, y + 96.0, 115.0, 36.0, 10.0, Rgba(43, 44, 50, 214));
-        c.circle(
-            right + 14.0,
-            y + 114.0,
-            3.0,
-            if over_video {
-                Rgba(244, 77, 80, 255)
-            } else {
-                Rgba(102, 213, 158, 255)
-            },
-        );
         c.text(
             if over_video {
-                "YouTube läuft"
+                "Menü schließen"
             } else {
-                "Launcher"
+                "Launcher anzeigen"
             },
-            right + 26.0,
-            y + 108.0,
-            9,
-            Weight::Semi,
-            fg,
+            902.0,
+            385.0,
+            11,
+            Weight::Regular,
+            muted,
             Align::Left,
         );
+        let labels = ["Live TV", "Wetter", "Handy", "Einstell."];
         for idx in 0..4 {
-            Self::draw_footer(c, x + 9.0, y + 142.0, idx, focus, remote_enabled);
+            let x = 852.0 + idx as f32 * 83.0;
+            Self::tile(
+                c,
+                x,
+                420.0,
+                76.0,
+                76.0,
+                idx + 4,
+                focus,
+                idx == 2 && remote_enabled,
+            );
+            let cx = x + 38.0;
+            let icon = Rgba(233, 240, 255, 255);
+            match idx {
+                0 => {
+                    c.stroke_rect(cx - 11.0, 439.0, 22.0, 16.0, 3.0, 2.0, icon);
+                    c.line(&[(cx - 5.0, 458.0), (cx + 5.0, 458.0)], 1.8, icon);
+                }
+                1 => {
+                    c.circle(cx, 448.0, 9.0, Rgba(255, 201, 77, 255));
+                }
+                2 => {
+                    c.stroke_rect(cx - 8.0, 435.0, 16.0, 26.0, 4.0, 2.0, icon);
+                }
+                _ => super::icon_gear(c, cx, 448.0, 23.0, icon),
+            }
+            c.text(
+                labels[idx],
+                cx,
+                473.0,
+                11,
+                Weight::Semi,
+                icon,
+                Align::Center,
+            );
         }
+        c.text(
+            "PFEILE  Navigieren    ·    OK  Wählen    ·    ZURÜCK  Schließen",
+            852.0,
+            522.0,
+            10,
+            Weight::Regular,
+            muted,
+            Align::Left,
+        );
     }
 }
 
@@ -633,7 +576,7 @@ impl Screen for Control {
                 self.panel_image = Some(image);
             } else {
                 self.panel_canvas.clear(Rgba(0, 0, 0, 0));
-                self.panel_canvas.offset = (-PANEL_BOUNDS.0, -PANEL_BOUNDS.1);
+                self.panel_canvas.offset = (-PANEL_SOURCE.0, -PANEL_SOURCE.1);
                 self.panel_canvas.opacity = 1.0;
                 Self::draw_panel(
                     usize::MAX,
@@ -664,7 +607,9 @@ impl Screen for Control {
         if let Some(image) = self.panel_image.as_ref() {
             c.image_exact(image, PANEL_BOUNDS.0, PANEL_BOUNDS.1);
         }
-        Self::draw_focus_overlay(c, self.focus, dnd, remote_enabled);
+        c.offset.0 += PANEL_BOUNDS.0 - PANEL_SOURCE.0;
+        c.offset.1 += PANEL_BOUNDS.1 - PANEL_SOURCE.1;
+        Self::draw_focus_overlay(c, self.focus);
         c.opacity = previous_opacity;
         c.offset = previous_offset;
     }

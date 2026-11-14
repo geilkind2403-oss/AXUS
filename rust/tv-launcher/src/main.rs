@@ -62,7 +62,7 @@ const FADE: f32 = if cfg!(target_arch = "arm") {
 };
 // Bound redraws to the capsule, card and their shadows. The old rectangle
 // included a wide margin around the panel and added avoidable work per key.
-const CONTROL_DAMAGE: (f32, f32, f32, f32) = (930.0, 100.0, 272.0, 296.0);
+const CONTROL_DAMAGE: (f32, f32, f32, f32) = (878.0, 16.0, 390.0, 470.0);
 
 impl App {
     fn top(&mut self) -> &mut Box<dyn Screen> {
@@ -168,6 +168,14 @@ impl App {
         }
         if k == Key::LongBack {
             self.apply(Nav::Home);
+            self.dirty = true;
+            return;
+        }
+        if k == Key::LongOk && self.top().name() == "home" {
+            let mut s = self.stack.pop().unwrap();
+            let nav = s.key(k, &mut self.cx);
+            self.stack.push(s);
+            self.apply(nav);
             self.dirty = true;
             return;
         }
@@ -436,7 +444,10 @@ fn main() {
     }
 
     cx.reload_channels();
-    let home = Box::new(ui::home::Home::new(cx.cfg.last_media_tile));
+    let home = Box::new(ui::home::Home::new(
+        cx.cfg.last_media_tile,
+        cx.cfg.home_order,
+    ));
     let mut app = App {
         cx,
         stack: vec![home],
@@ -765,6 +776,70 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
     settle(app, wait);
     shot(app, "01-home");
     if std::env::var_os("SHOT_HOME_ONLY").is_some() {
+        return;
+    }
+    if std::env::var_os("SHOT_HOME_EDIT_ONLY").is_some() {
+        app.key(Key::LongOk);
+        settle(app, 250);
+        shot(app, "01-home-arrange-mode");
+        app.key(Key::Ok);
+        settle(app, 100);
+        app.key(Key::Right);
+        settle(app, 100);
+        shot(app, "02-home-arrange-target");
+        return;
+    }
+    if std::env::var_os("SHOT_LIVETV_ONLY").is_some() {
+        let names = [
+            ("Das Erste HD", "DE"),
+            ("ZDF HD", "DE"),
+            ("3sat", "DE"),
+            ("arte", "DE"),
+            ("RTL Deutschland", "DE"),
+            ("ProSieben", "DE"),
+            ("ORF 1", "AT"),
+            ("SRF zwei", "CH"),
+            ("France 24", "FR"),
+            ("BBC News", "UK"),
+        ];
+        let channels = names
+            .iter()
+            .enumerate()
+            .map(|(i, (name, group))| livetv::Channel {
+                number: i + 1,
+                name: (*name).into(),
+                group: (*group).into(),
+                logo: String::new(),
+                url: format!("https://example.invalid/channel-{}.m3u8", i + 1),
+            })
+            .collect();
+        app.cx
+            .channels
+            .set(Ok((channels, "Screenshot-Vorschau".into())));
+        let live = ui::livetv::LiveTv::new(&mut app.cx);
+        app.stack.push(Box::new(live));
+        app.key(Key::Ok);
+        settle(app, 300);
+        shot(app, "01-live-tv-guide");
+        app.key(Key::Info);
+        settle(app, 100);
+        shot(app, "02-live-tv-search");
+        return;
+    }
+    if std::env::var_os("SHOT_WEATHER_ONLY").is_some() {
+        app.stack.push(Box::new(ui::weather::WeatherScreen::new()));
+        settle(app, 300);
+        shot(app, "08-weather");
+        return;
+    }
+    if std::env::var_os("SHOT_SETTINGS_ONLY").is_some() {
+        let settings = ui::settings::Settings::new(&app.cx);
+        app.stack.push(Box::new(settings));
+        settle(app, 300);
+        shot(app, "12-settings-overview");
+        app.key(Key::Right);
+        settle(app, 100);
+        shot(app, "13-settings-status-focus");
         return;
     }
     if std::env::var_os("SHOT_HOME_AMBIENT_BENCH").is_some() {
@@ -1100,7 +1175,8 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             vec![Key::Home, Key::Down, Key::Right, Key::Right, Key::Ok],
         ),
         ("11-settings", vec![Key::Home, Key::Menu]),
-        ("11-settings-server", vec![Key::Down, Key::Down]),
+        ("11a-settings-focused", vec![Key::Right]),
+        ("11-settings-server", vec![Key::Back, Key::Down, Key::Down]),
         ("11b-settings-livetv", vec![Key::Down]),
         ("11c-settings-picture", vec![Key::Down]),
         ("14-screensaver-is-next", vec![Key::Home]),
