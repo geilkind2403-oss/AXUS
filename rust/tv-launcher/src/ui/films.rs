@@ -170,6 +170,8 @@ impl Screen for Films {
         let top = y0 + 10.0;
         let first = (s / ROW_H) as usize * COLS;
         let mut focus_at = None;
+        // the row above peeks in below the header, it must not cover it
+        c.clip_y(Some((y0 - 8.0, crate::gfx::H as f32)));
         for i in first..(first + COLS * 4).min(n) {
             let f = &list.films[i];
             let x = PAD + (i % COLS) as f32 * (CW + GAP);
@@ -199,6 +201,7 @@ impl Screen for Films {
         if let Some((x, y)) = focus_at {
             self.frame.draw(c, x, y, CW, CH, 14.0);
         }
+        c.clip_y(None);
         c.text(
             "OK Öffnen · Menü Neu laden",
             crate::gfx::W as f32 - PAD,

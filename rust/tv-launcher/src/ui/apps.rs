@@ -215,14 +215,18 @@ impl Screen for Apps {
     }
 }
 
-/// Erase the focus halo outside the card. The shared restore_focus helper
-/// intentionally overlaps the card edge; Apps has a selected-card fill there.
+/// Erase the previous focus ring. Its rounded corners reach a few pixels
+/// into the card's own box, so the strips overlap the card edge: restoring
+/// only the margin outside left the corner arcs behind when the focus moved
+/// on, and made them brighter with every frame it stayed.
 fn restore_app_focus(c: &mut Canvas, base: &Image, x: f32, y: f32, w: f32, h: f32) {
-    const PAD: f32 = 10.0;
-    c.restore_rect(base, x - PAD, y - PAD, w + PAD * 2.0, PAD);
-    c.restore_rect(base, x - PAD, y + h, w + PAD * 2.0, PAD);
-    c.restore_rect(base, x - PAD, y, PAD, h);
-    c.restore_rect(base, x + w, y, PAD, h);
+    const OUT: f32 = 10.0;
+    const IN: f32 = 8.0;
+    let edge = OUT + IN;
+    c.restore_rect(base, x - OUT, y - OUT, w + OUT * 2.0, edge);
+    c.restore_rect(base, x - OUT, y + h - IN, w + OUT * 2.0, edge);
+    c.restore_rect(base, x - OUT, y + IN, edge, (h - IN * 2.0).max(0.0));
+    c.restore_rect(base, x + w - IN, y + IN, edge, (h - IN * 2.0).max(0.0));
 }
 
 fn app_card_origin(index: usize) -> (f32, f32) {

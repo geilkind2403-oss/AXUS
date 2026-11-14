@@ -7,7 +7,24 @@ use crate::gfx::{color, Align, Canvas, Rgba, Weight};
 use crate::livetv::{groups, in_group, Channel, ARTE_LIVE_CONFIG_URL};
 use crate::player::{Event, MediaSource, Player, StartOpts};
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// What the guide lists. Worked out when the channel list, the favourites,
+/// the group or the search changes -- not on every frame: sorting a few
+/// thousand channels into groups thirty times a second cost more than the
+/// drawing, while the stream was playing underneath.
+#[derive(Default)]
+struct GuideData {
+    /// (address, length) of the channel list this was made from
+    list: (usize, usize),
+    favs: Vec<String>,
+    /// (id, label, number of channels)
+    groups: Arc<Vec<(String, String, usize)>>,
+    /// (group index, search) the channel rows were made for
+    rows_for: Option<(usize, String)>,
+    rows: Arc<Vec<Channel>>,
+}
 
 pub struct LiveTv {
     standalone_app_id: Option<&'static str>,
@@ -30,6 +47,7 @@ pub struct LiveTv {
     retried: bool,
     guide_in: Anim,
     banner_in: Anim,
+    guide_data: GuideData,
 }
 
 const BANNER: Duration = Duration::from_millis(4500);
@@ -94,18 +112,67 @@ impl LiveTv {
             retried: false,
             guide_in: Anim::default(),
             banner_in: Anim::default(),
+            guide_data: GuideData::default(),
         }
     }
 
-    fn channels(&self, cx: &Ctx) -> Vec<Channel> {
+    fn channels(&self, cx: &Ctx) -> Arc<Vec<Channel>> {
         if self.standalone_app_id.is_some() {
-            return self.current.iter().cloned().collect();
+            return Arc::new(self.current.iter().cloned().collect());
         }
         cx.channels
-            .get()
-            .and_then(|r| r.ok())
-            .map(|x| x.0)
+            .with(|r| match r {
+                Some(Ok((list, _))) => Some(list.clone()),
+                _ => None,
+            })
             .unwrap_or_default()
+    }
+
+    /// The guide's groups and the channels of the chosen group that match
+    /// the search (see `GuideData`). Also keeps `self.group` in range.
+    fn guide_rows(
+        &mut self,
+        all: &Arc<Vec<Channel>>,
+        favs: &[String],
+    ) -> (Arc<Vec<(String, String, usize)>>, Arc<Vec<Channel>>) {
+        let g = &mut self.guide_data;
+        let list = (Arc::as_ptr(all) as usize, all.len());
+        if g.list != list || g.favs != favs || g.groups.is_empty() {
+            g.list = list;
+            g.favs = favs.to_vec();
+            g.groups = Arc::new(
+                groups(all)
+                    .into_iter()
+                    .map(|(id, label)| {
+                        let n = in_group(all, &id, favs).len();
+                        (id, label, n)
+                    })
+                    .collect(),
+            );
+            g.rows_for = None;
+        }
+        self.group = self.group.min(g.groups.len().saturating_sub(1));
+        if g.rows_for.as_ref().map(|r| (r.0, r.1.as_str())) != Some((self.group, &self.query)) {
+            let gid = g
+                .groups
+                .get(self.group)
+                .map(|x| x.0.as_str())
+                .unwrap_or("all");
+            let query = self.query.to_lowercase();
+            g.rows = Arc::new(
+                in_group(all, gid, favs)
+                    .into_iter()
+                    .filter(|ch| {
+                        query.is_empty()
+                            || ch.name.to_lowercase().contains(&query)
+                            || ch.number.to_string().contains(&query)
+                    })
+                    .cloned()
+                    .collect(),
+            );
+            g.rows_for = Some((self.group, self.query.clone()));
+        }
+        (g.groups.clone(), g.rows.clone())
     }
 
     fn tune(&mut self, ch: Channel, cx: &mut Ctx) {
@@ -158,7 +225,7 @@ impl LiveTv {
             .cloned()
             .collect();
         if list.is_empty() {
-            list = all.clone();
+            list = all.to_vec();
         }
         let from = self
             .zap
@@ -247,6 +314,11 @@ impl Screen for LiveTv {
             || self.banner_in.moving()
             || self.keyboard.is_some()
     }
+    fn motion_over_video(&self) -> bool {
+        self.guide_in.moving()
+            || self.banner_in.moving()
+            || (self.guide && (self.list.moving() || self.group_list.moving()))
+    }
     fn player_event(&mut self, e: &Event, cx: &mut Ctx) -> Nav {
         match e {
             Event::Error(m) => {
@@ -309,7 +381,7 @@ impl Screen for LiveTv {
         if !self.digits.is_empty() && self.digits_at.elapsed() > Duration::from_millis(1500) {
             let n: usize = self.digits.parse().unwrap_or(0);
             self.digits.clear();
-            if let Some(ch) = self.channels(cx).into_iter().find(|c| c.number == n) {
+            if let Some(ch) = self.channels(cx).iter().find(|c| c.number == n).cloned() {
                 self.guide = false;
                 self.tune(ch, cx);
             }
@@ -361,20 +433,7 @@ impl Screen for LiveTv {
             return Nav::None;
         }
         if self.guide {
-            let gs = groups(&all);
-            let gid = gs
-                .get(self.group)
-                .map(|g| g.0.clone())
-                .unwrap_or_else(|| "all".into());
-            let chs: Vec<Channel> = in_group(&all, &gid, &cx.cfg.livetv_favs)
-                .into_iter()
-                .cloned()
-                .filter(|c| {
-                    self.query.is_empty()
-                        || c.name.to_lowercase().contains(&self.query.to_lowercase())
-                        || c.number.to_string().contains(&self.query)
-                })
-                .collect();
+            let (gs, chs) = self.guide_rows(&all, &cx.cfg.livetv_favs);
             match (k, self.col) {
                 (Key::Back, _) | (Key::Menu, _) => self.guide = false,
                 (Key::Info, _) => {
@@ -501,10 +560,15 @@ impl Screen for LiveTv {
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
         c.clear(Rgba(0, 0, 0, 0));
         let (w, h) = (crate::gfx::W as f32, crate::gfx::H as f32);
-        let all = if self.standalone_app_id.is_some() {
-            self.current.iter().cloned().collect::<Vec<_>>()
+        let all: Arc<Vec<Channel>> = if self.standalone_app_id.is_some() {
+            Arc::new(self.current.iter().cloned().collect())
         } else {
-            match cx.channels.get() {
+            // a cheap handle on the shared list, or the reason there is none
+            match cx.channels.with(|r| match r {
+                None => None,
+                Some(Ok((list, _))) => Some(Ok((list.clone(), ()))),
+                Some(Err(e)) => Some(Err(e.clone())),
+            }) {
                 None => {
                     c.clear(color::BG1);
                     c.rect(
@@ -809,7 +873,7 @@ impl Screen for LiveTv {
     }
 }
 
-fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &[Channel]) {
+fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channel>>) {
     let (w, h) = (crate::gfx::W as f32, crate::gfx::H as f32);
     let rail_w = 910.0;
     c.rect(0.0, 0.0, rail_w, h, 0.0, Rgba::hex(0x101116));
@@ -875,23 +939,12 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &[Channel]) {
         Align::Right,
     );
 
-    let gs = groups(all);
-    s.group = s.group.min(gs.len().saturating_sub(1));
-    let favs = cx.cfg.livetv_favs.clone();
+    let (gs, chs) = s.guide_rows(all, &cx.cfg.livetv_favs);
+    let favs = s.guide_data.favs.clone();
     let gid = gs
         .get(s.group)
         .map(|g| g.0.clone())
         .unwrap_or_else(|| "all".into());
-    let query = s.query.to_lowercase();
-    let chs: Vec<Channel> = in_group(all, &gid, &favs)
-        .into_iter()
-        .filter(|ch| {
-            query.is_empty()
-                || ch.name.to_lowercase().contains(&query)
-                || ch.number.to_string().contains(&query)
-        })
-        .cloned()
-        .collect();
     let group_x = PAD - 8.0;
     let group_w = 244.0;
     let list_x = 326.0;
@@ -926,8 +979,7 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &[Channel]) {
         52.0,
         s.col == 0,
         |c, i, x, y, focused| {
-            let (id, label) = &gs[i];
-            let count = in_group(all, id, &favs).len();
+            let (id, label, count) = &gs[i];
             let fg = if focused {
                 color::BLACK
             } else if i == s.group {

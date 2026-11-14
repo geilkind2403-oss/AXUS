@@ -37,6 +37,31 @@ pub const BUILD: &str = match option_env!("TV_BUILD") {
     None => "dev",
 };
 
+/// When the main loop last came round (seconds since start), for the watchdog.
+static HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// A main loop that has not come round for this long is stuck for good (it
+/// normally passes at least once a second): a TV with a frozen picture that
+/// ignores the remote is worse than two seconds of black.
+const WATCHDOG_SECS: u64 = 120;
+
+/// Ends the program when the UI thread hangs (waiting forever on the display
+/// or the decoder, say); systemd starts it again (Restart=always).
+fn start_watchdog(started: Instant) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(10));
+        let silent = started
+            .elapsed()
+            .as_secs()
+            .saturating_sub(HEARTBEAT.load(Relaxed));
+        if silent > WATCHDOG_SECS {
+            log(&format!(
+                "Die Oberfläche reagiert seit {silent} s nicht mehr: der Launcher startet neu"
+            ));
+            std::process::abort();
+        }
+    });
+}
+
 pub fn log(msg: &str) {
     let (h, m, s) = app::local_hms();
     eprintln!("{h:02}:{m:02}:{s:02} {msg}");
@@ -52,6 +77,10 @@ struct App {
     last_input: Instant,
     restore_home_after_control: bool,
     control_blur_cache: Option<gfx::Image>,
+    /// The picture under the notification, where the screen keeps its frame
+    /// in the canvas (Home, Apps) instead of drawing it anew: put back before
+    /// the next frame, or the notification smears and stays for good.
+    toast_underlay: Option<(gfx::Image, f32, f32)>,
 }
 
 // The Pi 3 software renderer takes longer to draw a frame than newer TVs.
@@ -220,6 +249,9 @@ impl App {
     /// Records and draws a frame; false when it's the same picture as before.
     fn frame(&mut self) -> bool {
         self.canvas.reset_damage();
+        if let Some((under, x, y)) = self.toast_underlay.take() {
+            self.canvas.restore_region_image(&under, x, y);
+        }
         let mut s = self.stack.pop().unwrap();
         let nav = s.poll(&mut self.cx);
         self.stack.push(s);
@@ -329,6 +361,18 @@ impl App {
         }
         self.canvas.opacity = 1.0;
         self.canvas.offset = (0.0, 0.0);
+        // A screen that has drawn itself into the kept picture already: the
+        // notification goes on top of those pixels, so remember what is under it.
+        let toast_over_kept = match ui::toast_area(&mut self.canvas, &mut self.cx) {
+            Some(area) if self.canvas.pending_empty() => {
+                self.toast_underlay = self
+                    .canvas
+                    .snapshot_region(area.0, area.1, area.2, area.3)
+                    .map(|under| (under, area.0, area.1));
+                Some(area)
+            }
+            _ => None,
+        };
         ui::toast(&mut self.canvas, &mut self.cx);
         let panel_record_ms = phase.map(|started| started.elapsed().as_secs_f64() * 1000.0);
         self.stack.push(s);
@@ -341,6 +385,9 @@ impl App {
                 CONTROL_DAMAGE.2,
                 CONTROL_DAMAGE.3,
             );
+            true
+        } else if let Some((x, y, w, h)) = toast_over_kept {
+            self.canvas.finish_pending_region(x, y, w, h);
             true
         } else {
             self.canvas.finish()
@@ -361,16 +408,32 @@ impl App {
 
 fn background_refresh(cx: &mut Ctx) {
     let (lat, lon) = (cx.cfg.lat, cx.cfg.lon);
-    cx.weather = app::load(&cx.tx, move || weather::fetch(lat, lon));
-    cx.news = app::load(&cx.tx, news::fetch);
-    cx.net = app::load(&cx.tx, platform::system::network_status);
-    cx.youtube_home = app::load(&cx.tx, || {
-        crate::youtube::home()
-            .into_iter()
-            .flat_map(|(_, items)| items)
-            .take(12)
-            .collect()
-    });
+    app::refresh(
+        &cx.tx,
+        &cx.weather,
+        move || weather::fetch(lat, lon),
+        |w| w.is_ok(),
+    );
+    app::refresh(&cx.tx, &cx.news, news::fetch, |n| !n.is_empty());
+    app::refresh(&cx.tx, &cx.net, platform::system::network_status, |_| true);
+    app::refresh(
+        &cx.tx,
+        &cx.youtube_home,
+        || {
+            crate::youtube::home()
+                .into_iter()
+                .flat_map(|(_, items)| items)
+                .take(12)
+                .collect()
+        },
+        |v: &Vec<youtube::Video>| !v.is_empty(),
+    );
+}
+
+/// Weather and headlines are there (else: no network yet, try again soon).
+fn feeds_ready(cx: &Ctx) -> bool {
+    cx.weather.with(|w| matches!(w, Some(Ok(_))))
+        && cx.news.with(|n| n.map(|n| !n.is_empty()).unwrap_or(false))
 }
 
 /// Cache the small blurred Home patch after it has been presented. Its cost
@@ -458,6 +521,7 @@ fn main() {
         last_input: Instant::now(),
         restore_home_after_control: false,
         control_blur_cache: None,
+        toast_underlay: None,
     };
 
     if let Some(dir) = shot_dir {
@@ -492,7 +556,9 @@ fn main() {
     let mut shown_state = (false, false);
     let mut last_top = "";
     let mut last_refresh = Instant::now();
+    start_watchdog(app.cx.started);
     loop {
+        HEARTBEAT.store(app.cx.started.elapsed().as_secs(), Relaxed);
         let animating = app
             .stack
             .last()
@@ -505,11 +571,24 @@ fn main() {
         let timeout = if app.dirty {
             Duration::ZERO
         } else if animating {
-            // The Pi display is refreshed at 60 Hz. Waking every 8 ms made
-            // animations render more often than the panel can show them;
-            // pace UI motion at one frame per refresh and leave more CPU for
-            // video decode and background work.
-            Duration::from_millis(if video { 100 } else { 16 })
+            // One frame per refresh of the TV (60 Hz). The pause counts from
+            // the start of the last frame: drawing time is part of the frame,
+            // not added on top of it (a 12 ms frame plus a 16 ms wait was 35
+            // pictures a second instead of 60).
+            // Over a film the OSD is only looked at ten times a second, which
+            // leaves the CPU to the sound; at 30 pictures while something
+            // actually glides (guide, channel banner).
+            let gliding = app
+                .stack
+                .last()
+                .map(|s| s.motion_over_video())
+                .unwrap_or(false);
+            Duration::from_millis(match (video, gliding) {
+                (true, true) => 33,
+                (true, false) => 100,
+                _ => 16,
+            })
+            .saturating_sub(last_frame.elapsed())
         } else {
             Duration::from_millis(1000)
         };
@@ -609,7 +688,10 @@ fn main() {
         } else {
             sleep_warned = false;
         }
-        if last_refresh.elapsed() > Duration::from_secs(600) {
+        // every ten minutes; every minute while something is still missing
+        // (switched on before the WLAN was up)
+        let refresh_every = if feeds_ready(&app.cx) { 600 } else { 60 };
+        if last_refresh.elapsed() > Duration::from_secs(refresh_every) {
             last_refresh = Instant::now();
             background_refresh(&mut app.cx);
         }
@@ -816,7 +898,7 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             .collect();
         app.cx
             .channels
-            .set(Ok((channels, "Screenshot-Vorschau".into())));
+            .set(Ok((Arc::new(channels), "Screenshot-Vorschau".into())));
         let live = ui::livetv::LiveTv::new(&mut app.cx);
         app.stack.push(Box::new(live));
         app.key(Key::Ok);
@@ -825,6 +907,104 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         app.key(Key::Info);
         settle(app, 100);
         shot(app, "02-live-tv-search");
+        return;
+    }
+    if std::env::var_os("SHOT_HOME_NAV_ONLY").is_some() {
+        // the focus frame glides across the tiles: nothing it passes over
+        // (headline, status, tile edges) may be damaged afterwards
+        shot(app, "01-home-before");
+        for (i, key) in [
+            Key::Down,
+            Key::Left,
+            Key::Right,
+            Key::Up,
+            Key::Down,
+            Key::Right,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.key(key);
+            settle(app, 90);
+            shot(app, &format!("02-home-nav-{i}-gliding"));
+            settle(app, 700);
+            shot(app, &format!("02-home-nav-{i}-rest"));
+        }
+        return;
+    }
+    if std::env::var_os("SHOT_TOAST_ONLY").is_some() {
+        // a notification over the retained Home (and Apps) picture must
+        // leave nothing behind once it has faded
+        if std::env::var_os("SHOT_TOAST_APPS").is_some() {
+            app.stack
+                .push(Box::new(ui::apps::Apps::new(&app.cx.cfg.last_app_id)));
+            settle(app, 400);
+        }
+        app.key(Key::VolUp);
+        settle(app, 1000);
+        shot(app, "01-toast-visible");
+        settle(app, 4500);
+        shot(app, "02-toast-gone");
+        return;
+    }
+    if std::env::var_os("SHOT_SCROLL_ONLY").is_some() {
+        // lists and grids in the middle of a scroll: rows must stay inside
+        // their box, below the header
+        app.cx.news.set(
+            (0..24)
+                .map(|i| news::NewsItem {
+                    title: format!("Meldung {} – eine längere Überschrift zum Testen", i + 1),
+                    topline: ["Berlin", "Wetter", "Verkehr"][i % 3].into(),
+                    date: format!("2026-11-08T{:02}:15:00+01:00", i % 24),
+                    first_sentence: "Die Abgeordneten stimmten am Abend für den Entwurf.".into(),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        app.stack.push(Box::new(ui::news::NewsScreen::new()));
+        settle(app, 300);
+        for _ in 0..4 {
+            app.key(Key::Down);
+            settle(app, 200);
+        }
+        app.key(Key::Down);
+        std::thread::sleep(Duration::from_millis(40));
+        shot(app, "01-news-mid-scroll");
+        settle(app, 500);
+        shot(app, "02-news-rest");
+        app.key(Key::Home);
+        let films = (0..40)
+            .map(|i| films::Film {
+                key: format!("local:{i}"),
+                title: format!("Beispielfilm {}", i + 1),
+                info: String::new(),
+                fsk: String::new(),
+                genre: String::new(),
+                cast: String::new(),
+                crew: String::new(),
+                duration: 5400.0,
+                icon: String::new(),
+                banner: String::new(),
+                origin: films::Origin::Local(format!("/tmp/film{i}.mp4").into()),
+                position: 0.0,
+            })
+            .collect();
+        let wall = ui::films::Films::new(&mut app.cx);
+        settle(app, 300); // the real (empty) scan finishes first
+        app.cx.films.list.set(Arc::new(films::FilmList {
+            films,
+            errors: Vec::new(),
+        }));
+        app.stack.push(Box::new(wall));
+        settle(app, 300);
+        app.key(Key::Down);
+        std::thread::sleep(Duration::from_millis(40));
+        shot(app, "03-films-mid-scroll");
+        settle(app, 500);
+        shot(app, "04-films-rest");
+        app.key(Key::Down);
+        settle(app, 500);
+        shot(app, "05-films-third-row");
         return;
     }
     if std::env::var_os("SHOT_WEATHER_ONLY").is_some() {

@@ -322,7 +322,9 @@ impl Screen for YouTube {
                 let s = self.scroll.step();
                 let first = (s / RH) as usize * COLS;
                 let mut focus_at = None;
-                for i in first..(first + COLS * 3).min(vids.len()) {
+                // scrolled rows stay below the search bar and the chips
+                c.clip_y(Some((y0 - 12.0, 720.0)));
+                for i in first..(first + COLS * 4).min(vids.len()) {
                     let v = &vids[i];
                     let x = PAD + (i % COLS) as f32 * (TW + GAP);
                     let y = y0 + (i / COLS) as f32 * RH - s;
@@ -397,6 +399,7 @@ impl Screen for YouTube {
                     Some((x, y)) => self.frame.draw(c, x, y, TW, TH, 12.0),
                     None => self.frame.reset(),
                 }
+                c.clip_y(None);
                 if vids.is_empty() {
                     c.text(
                         "Nichts gefunden.",

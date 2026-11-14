@@ -131,6 +131,8 @@ launcher works with it too.
 cd rust
 cargo test --workspace            # demuxers are checked against files made by ffmpeg
 SHOT_SAMPLE=1 cargo run -p tv-launcher -- --shot /tmp/shots   # every screen as PNG
+SHOT_SAMPLE=1 SHOT_SCROLL_ONLY=1 cargo run -p tv-launcher -- --shot /tmp/shots   # lists in mid-scroll
+SHOT_SAMPLE=1 SHOT_TOAST_ONLY=1 cargo run -p tv-launcher -- --shot /tmp/shots    # a notification, then gone
 ```
 
 Layout: `tvcore/` (library scanning shared by both), `tv-server/`, `tv-launcher/src/`

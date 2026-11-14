@@ -87,7 +87,8 @@ pub struct FilmList {
 }
 
 pub struct FilmLibrary {
-    pub list: Slot<FilmList>,
+    /// shared, not copied: the film wall reads it on every frame
+    pub list: Slot<std::sync::Arc<FilmList>>,
 }
 
 /// Where films live on the Pi.
@@ -164,7 +165,7 @@ impl FilmLibrary {
             }
             out.films
                 .sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-            slot.set(out);
+            slot.set(std::sync::Arc::new(out));
             let _ = tx.send(Msg::Redraw);
         });
     }

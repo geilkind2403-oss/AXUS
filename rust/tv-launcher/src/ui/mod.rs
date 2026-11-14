@@ -107,10 +107,12 @@ pub fn frame_dt() -> f32 {
     FRAME_DT_US.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1e6
 }
 pub fn set_frame_dt(s: f32) {
-    FRAME_DT_US.store(
-        (s.clamp(0.001, 0.1) * 1e6) as u32,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    // A long gap means the screen was still (nothing to animate): the first
+    // frame of a new movement then counts as one ordinary frame, so it does
+    // not jump ahead. Otherwise the real time is used, and a slow frame moves
+    // further instead of stretching the animation.
+    let s = if s > 0.12 { 1.0 / 60.0 } else { s.max(0.001) };
+    FRAME_DT_US.store((s * 1e6) as u32, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The focus frame: glides from one item to the next instead of jumping.
@@ -204,8 +206,7 @@ impl Anim {
     /// takes the same ~0.25 s however fast the Pi draws.
     pub fn step(&mut self) -> f32 {
         let d = self.target - self.v;
-        let dt = frame_dt().min(1.0 / 30.0);
-        let k = 1.0 - (-dt / 0.07).exp();
+        let k = 1.0 - (-frame_dt() / 0.07).exp();
         let eps = (self.target.abs() * 0.002).max(0.004);
         self.v = if d.abs() < eps {
             self.target
@@ -298,6 +299,21 @@ pub fn status(c: &mut Canvas, cx: &Ctx) {
     };
     c.stroke_rect(x + 255.0, y + 13.0, 12.0, 20.0, 3.0, 1.4, phone);
     c.circle(x + 261.0, y + 29.0, 0.8, phone);
+}
+
+/// Where the notification is drawn this frame (it slides in from below), or
+/// None when there is none. Ends a notification whose time is up. The box is
+/// on even coordinates, so it lands on whole pixels at the Pi's 1.5x scale.
+pub fn toast_area(c: &mut Canvas, cx: &mut Ctx) -> Option<(f32, f32, f32, f32)> {
+    let t = cx.toast.as_ref()?;
+    if t.at.elapsed().as_secs_f32() > 4.5 {
+        cx.toast = None;
+        return None;
+    }
+    let w = (c.fonts.width(&t.text, 20, Weight::Semi) + 56.0).min(1100.0);
+    let x = (((crate::gfx::W as f32 - w) / 2.0 - 4.0) / 2.0).floor() * 2.0;
+    let w = ((w + 8.0) / 2.0).ceil() * 2.0 + 2.0;
+    Some((x, crate::gfx::H as f32 - 100.0, w, 92.0))
 }
 
 pub fn toast(c: &mut Canvas, cx: &mut Ctx) {
@@ -847,6 +863,9 @@ impl ListView {
         }
         self.bar.set(target_bar);
         let b = self.bar.step();
+        // rows sliding in or out stay inside the list's box instead of
+        // running over the title above or the footer below
+        c.clip_y(Some((y, y + h)));
         if focused_list {
             let by = y + b - s;
             if by > y - rh && by < y + h {
@@ -861,5 +880,6 @@ impl ListView {
             let f = focused_list && i == self.sel && (b - target_bar).abs() < rh * 0.5;
             row(c, i, x, yy, f);
         }
+        c.clip_y(None);
     }
 }

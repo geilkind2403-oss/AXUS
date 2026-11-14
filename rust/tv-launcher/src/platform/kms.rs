@@ -119,6 +119,10 @@ pub struct Kms {
     ui_generation: u64,
     ui_versions: [u64; 4],
     ui_damage_history: [Damage; 5],
+    /// A drawn frame was not copied to any buffer (overlay hidden, screen
+    /// given away): the next one that is must be copied whole, its damage
+    /// only says what changed since that missed frame.
+    ui_missed: bool,
     ui_free: [bool; 4],
     next_ui: usize,
     latest_ui: Option<usize>,
@@ -435,6 +439,7 @@ impl Kms {
             ui_generation: 0,
             ui_versions: [0; 4],
             ui_damage_history: [Damage::default(); 5],
+            ui_missed: false,
             video_fbs: HashMap::new(),
             video_on: false,
             overlay_on: false,
@@ -564,28 +569,42 @@ impl Kms {
         self.stop_video();
     }
 
-    pub fn present_ui(&mut self, bgra: &[u8], visible: bool, damage: Damage) {
+    pub fn present_ui(&mut self, bgra: &[u8], visible: bool, mut damage: Damage) {
+        let changed = damage.full || damage.len > 0;
         if self.suspended {
+            self.ui_missed |= changed;
             return;
         }
         let (mw, mh) = self.mode_size;
         if self.video_on {
-            let Some(ov) = self.overlay else { return };
+            let Some(ov) = self.overlay else {
+                self.ui_missed |= changed;
+                return;
+            };
             if !visible {
                 if self.overlay_on {
                     self.queue(ov, None, None, (0, 0, 0, 0), (0, 0, 0, 0));
                     self.overlay_on = false;
                 }
+                self.ui_missed |= changed;
                 return;
             }
         }
-        if !damage.full && damage.len == 0 {
+        // Nothing new to copy -- unless the overlay was switched off in the
+        // meantime and has to come back with the picture it had.
+        let overlay_back = self.video_on && !self.overlay_on;
+        if !changed && !self.ui_missed && !overlay_back {
             return;
         }
         let acquire_started = std::time::Instant::now();
         let Some(b) = self.acquire_ui_buffer() else {
+            self.ui_missed = true;
             return;
         };
+        if std::mem::take(&mut self.ui_missed) {
+            damage.full = true;
+            damage.len = 0;
+        }
         let acquire_ms = acquire_started.elapsed().as_secs_f64() * 1000.0;
         self.ui_generation = self.ui_generation.wrapping_add(1);
         let generation = self.ui_generation;
