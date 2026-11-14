@@ -76,21 +76,21 @@ impl Apps {
     fn move_focus(&mut self, key: Key) {
         self.focus = match key {
             Key::Left => {
-                if self.focus % 3 > 0 {
+                if self.focus % 2 > 0 {
                     self.focus - 1
                 } else {
                     self.focus
                 }
             }
             Key::Right => {
-                if self.focus % 3 < 2 && self.focus + 1 < APPS.len() {
+                if self.focus % 2 == 0 && self.focus + 1 < APPS.len() {
                     self.focus + 1
                 } else {
                     self.focus
                 }
             }
-            Key::Up => self.focus.saturating_sub(3),
-            Key::Down => (self.focus + 3).min(APPS.len() - 1),
+            Key::Up => self.focus.saturating_sub(2),
+            Key::Down => (self.focus + 2).min(APPS.len() - 1),
             _ => self.focus,
         };
     }
@@ -129,7 +129,7 @@ impl Screen for Apps {
         let trace = std::env::var_os("SHOT_APPS_TRACE").is_some();
         c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x354a78)));
         c.text(
-            "Apps",
+            "Apps & Dienste",
             PAD,
             38.0,
             38,
@@ -138,7 +138,7 @@ impl Screen for Apps {
             Align::Left,
         );
         c.text(
-            "Mit der Fernbedienung auswählen",
+            "Alles für deinen Fernseher an einem Ort",
             PAD,
             84.0,
             17,
@@ -147,9 +147,9 @@ impl Screen for Apps {
             Align::Left,
         );
         c.text(
-            "STREAMING & LIVE-TV",
+            "DEINE SAMMLUNG",
             PAD,
-            116.0,
+            117.0,
             12,
             Weight::Bold,
             Rgba::hex(0x9eabc8),
@@ -161,7 +161,7 @@ impl Screen for Apps {
             draw_app_card(c, i);
         }
         c.text(
-            "Pfeile: auswählen   ·   OK: öffnen   ·   Zurück: Startseite",
+            "Links/Rechts: App wählen   ·   OK: starten   ·   Zurück: Startseite",
             PAD,
             670.0,
             16,
@@ -195,11 +195,11 @@ impl Screen for Apps {
         if focus_changed {
             if !base_changed {
                 if let Some(base) = self.base_image.as_ref() {
-                    c.restore_rect(base, PAD, 584.0, 1080.0, 28.0);
+                    c.restore_rect(base, PAD, 137.0, 310.0, 470.0);
                 }
             }
             draw_app_note(c, self.focus);
-            c.finish_pending_region(PAD, 584.0, 1080.0, 28.0);
+            c.finish_pending_region(PAD, 137.0, 310.0, 470.0);
             self.last_focus_note = Some(self.focus);
         }
         let focus_ms = focus_started.elapsed().as_secs_f64() * 1000.0;
@@ -208,7 +208,7 @@ impl Screen for Apps {
         // between key presses, keeping the animation cheap on Pi 3.
         let ring_started = std::time::Instant::now();
         let (x, y) = app_card_origin(self.focus);
-        let bounds = self.frame.move_to(x, y, 356.0, 188.0, true);
+        let bounds = self.frame.move_to(x, y, 394.0, 118.0, true);
         super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
         c.finish_pending_region(
             bounds.0 - 10.0,
@@ -240,9 +240,88 @@ fn restore_app_focus(c: &mut Canvas, base: &Image, x: f32, y: f32, w: f32, h: f3
 
 fn app_card_origin(index: usize) -> (f32, f32) {
     (
-        PAD + (index % 3) as f32 * 376.0,
-        140.0 + (index / 3) as f32 * 218.0,
+        405.0 + (index % 2) as f32 * 419.0,
+        142.0 + (index / 2) as f32 * 145.0,
     )
+}
+
+fn draw_app_hero(c: &mut Canvas, index: usize) {
+    let (title, detail, _) = APPS[index];
+    let category = match index {
+        0..=2 => "STREAMING",
+        3..=4 => "LIVE-TV",
+        _ => "SYSTEM",
+    };
+    c.vgradient(
+        PAD,
+        142.0,
+        310.0,
+        436.0,
+        24.0,
+        Rgba(43, 57, 84, 245),
+        Rgba(24, 27, 37, 245),
+    );
+    c.stroke_rect(PAD, 142.0, 310.0, 436.0, 24.0, 1.0, Rgba(255, 255, 255, 34));
+    c.circle(PAD + 155.0, 273.0, 103.0, Rgba(110, 160, 255, 24));
+    c.circle(PAD + 155.0, 273.0, 76.0, Rgba(110, 160, 255, 20));
+    draw_badge(c, index, PAD + 123.0, 248.0);
+    c.text(
+        category,
+        PAD + 24.0,
+        166.0,
+        12,
+        Weight::Bold,
+        Rgba::hex(0xaecaff),
+        Align::Left,
+    );
+    c.text_fit(
+        title,
+        PAD + 24.0,
+        387.0,
+        29,
+        Weight::Bold,
+        color::TEXT,
+        260.0,
+    );
+    c.text_fit(
+        detail,
+        PAD + 24.0,
+        432.0,
+        15,
+        Weight::Regular,
+        color::MUTED,
+        260.0,
+    );
+    let (status, status_color) = app_status(index);
+    c.circle(PAD + 29.0, 481.0, 4.0, status_color);
+    c.text_fit(
+        status,
+        PAD + 42.0,
+        474.0,
+        12,
+        Weight::Bold,
+        status_color,
+        238.0,
+    );
+    c.rect(PAD + 22.0, 526.0, 266.0, 1.0, 0.0, Rgba(255, 255, 255, 28));
+    c.text(
+        "OK  ·  APP ÖFFNEN",
+        PAD + 24.0,
+        555.0,
+        13,
+        Weight::Bold,
+        Rgba::hex(0xc6d8ff),
+        Align::Left,
+    );
+    c.text(
+        "Auswahl mit den Pfeiltasten",
+        PAD + 24.0,
+        590.0,
+        13,
+        Weight::Regular,
+        color::MUTED,
+        Align::Left,
+    );
 }
 
 fn draw_app_card(c: &mut Canvas, index: usize) {
@@ -253,23 +332,9 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     } else {
         Rgba(31, 34, 43, 238)
     };
-    c.rect(x, y, 356.0, 188.0, 22.0, fill);
-    c.stroke_rect(x, y, 356.0, 188.0, 22.0, 1.0, Rgba(255, 255, 255, 18));
-    draw_badge(c, index, x + 24.0, y + 22.0);
-    let category = match index {
-        0 | 1 | 2 => "STREAMING",
-        3 | 4 => "LIVE-TV",
-        _ => "SYSTEM",
-    };
-    c.text(
-        category,
-        x + 102.0,
-        y + 27.0,
-        11,
-        Weight::Bold,
-        Rgba::hex(0x9eabc8),
-        Align::Left,
-    );
+    c.rect(x, y, 394.0, 118.0, 18.0, fill);
+    c.stroke_rect(x, y, 394.0, 118.0, 18.0, 1.0, Rgba(255, 255, 255, 22));
+    draw_badge(c, index, x + 18.0, y + 34.0);
     let ink = if index == 2 {
         color::MUTED
     } else {
@@ -277,44 +342,28 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     };
     c.text(
         title,
-        x + 24.0,
-        y + 101.0,
-        23,
+        x + 98.0,
+        y + 26.0,
+        21,
         Weight::Bold,
         ink,
         Align::Left,
     );
     c.text_fit(
         detail,
-        x + 24.0,
-        y + 132.0,
+        x + 98.0,
+        y + 59.0,
         14,
         Weight::Regular,
         color::MUTED,
-        308.0,
+        276.0,
     );
-    let status = match index {
-        0 | 1 => {
-            if super::browser::installed() {
-                "BROWSER BEREIT"
-            } else {
-                "BROWSER NICHT INSTALLIERT"
-            }
-        }
-        2 => "DERZEIT DEAKTIVIERT",
-        3 | 4 => "NATIVE WIEDERGABE",
-        _ => "EINSTELLUNGEN ÖFFNEN",
-    };
-    let status_color = match index {
-        2 => Rgba::hex(0xe5a66d),
-        3 | 4 => Rgba::hex(0x8dd5b0),
-        _ => Rgba::hex(0x91baff),
-    };
-    c.circle(x + 29.0, y + 169.0, 3.0, status_color);
+    let (status, status_color) = app_status(index);
+    c.circle(x + 104.0, y + 96.0, 3.0, status_color);
     c.text(
         status,
-        x + 40.0,
-        y + 161.0,
+        x + 114.0,
+        y + 89.0,
         11,
         Weight::Bold,
         status_color,
@@ -322,16 +371,18 @@ fn draw_app_card(c: &mut Canvas, index: usize) {
     );
 }
 
+fn app_status(index: usize) -> (&'static str, Rgba) {
+    match index {
+        0 | 1 if super::browser::installed() => ("BROWSER BEREIT", Rgba::hex(0x91baff)),
+        0 | 1 => ("BROWSER NICHT INSTALLIERT", Rgba::hex(0xe5a66d)),
+        2 => ("DERZEIT DEAKTIVIERT", Rgba::hex(0xe5a66d)),
+        3 | 4 => ("NATIVE WIEDERGABE", Rgba::hex(0x8dd5b0)),
+        _ => ("EINSTELLUNGEN ÖFFNEN", Rgba::hex(0x91baff)),
+    }
+}
+
 fn draw_app_note(c: &mut Canvas, focus: usize) {
-    let note = match focus {
-        1 => "Prime Video: DRM-Wiedergabe auf diesem Pi nicht bestätigt.",
-        2 => "ARD Mediathek ist wegen eines WebKit-Fehlers deaktiviert.",
-        3 => "ZDF Live läuft nativ via HLS mit Bild und Ton.",
-        4 => "ARTE Live läuft nativ via HLS in 720p.",
-        5 => "WLAN, Bluetooth, Bild, Ton und Fernbedienung konfigurieren.",
-        _ => "YouTube TV öffnet in der offiziellen TV-Oberfläche.",
-    };
-    c.text_fit(note, PAD, 590.0, 15, Weight::Regular, color::MUTED, 1080.0);
+    draw_app_hero(c, focus);
 }
 
 fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32) {
