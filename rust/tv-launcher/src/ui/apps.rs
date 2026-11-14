@@ -2,6 +2,9 @@
 use super::*;
 use crate::app::{Ctx, Nav, Screen};
 use crate::gfx::{color, Align, Canvas, Image, Rgba, Weight};
+use std::time::Instant;
+
+const LAUNCH_ANIMATION_SECONDS: f32 = 0.72;
 
 const APPS: [(&str, &str, &str); 6] = [
     ("YouTube TV", "YouTube-TV-Oberfläche", "youtube"),
@@ -29,6 +32,7 @@ pub struct Apps {
     grid_focus: Focus,
     wheel_rotation: Anim,
     icons: [Option<Image>; 5],
+    launch_started: Option<Instant>,
 }
 
 impl Apps {
@@ -63,6 +67,7 @@ impl Apps {
             grid_focus: Focus::default(),
             wheel_rotation,
             icons,
+            launch_started: None,
         }
     }
 
@@ -107,6 +112,9 @@ impl Screen for Apps {
 
     fn key(&mut self, key: Key, cx: &mut Ctx) -> Nav {
         if self.wheel {
+            if self.launch_started.is_some() {
+                return Nav::None;
+            }
             match key {
                 Key::Left => {
                     self.focus = (self.focus + APPS.len() - 1) % APPS.len();
@@ -121,7 +129,13 @@ impl Screen for Apps {
                     );
                 }
                 Key::Up | Key::Back => return Nav::Pop,
-                Key::Ok => return self.open(cx),
+                Key::Ok if self.focus == 2 => {
+                    cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus")
+                }
+                Key::Ok if self.focus <= 1 && !super::browser::installed() => {
+                    cx.toast("Web-App-Unterstützung ist nicht installiert")
+                }
+                Key::Ok => self.launch_started = Some(Instant::now()),
                 Key::Home => return Nav::Pop,
                 _ => {}
             }
@@ -145,7 +159,7 @@ impl Screen for Apps {
 
     fn animating(&self, _: &Ctx) -> bool {
         if self.wheel {
-            self.wheel_rotation.moving()
+            self.wheel_rotation.moving() || self.launch_started.is_some()
         } else {
             self.grid_focus.moving()
         }
@@ -156,10 +170,24 @@ impl Screen for Apps {
         super::status(c, cx);
         if self.wheel {
             let rotation = self.wheel_rotation.step();
-            draw_wheel(c, self.focus, rotation, &self.icons);
+            let launch = self
+                .launch_started
+                .map(|started| (self.focus, started.elapsed().as_secs_f32() / LAUNCH_ANIMATION_SECONDS));
+            draw_wheel(c, self.focus, rotation, &self.icons, launch);
         } else {
             draw_app_grid(c, self.focus, &mut self.grid_focus, &self.icons);
         }
+    }
+
+    fn poll(&mut self, cx: &mut Ctx) -> Nav {
+        if self
+            .launch_started
+            .is_some_and(|started| started.elapsed().as_secs_f32() >= LAUNCH_ANIMATION_SECONDS)
+        {
+            self.launch_started = None;
+            return self.open(cx);
+        }
+        Nav::None
     }
 }
 
@@ -235,7 +263,13 @@ fn draw_app_grid(c: &mut Canvas, focus: usize, grid_focus: &mut Focus, icons: &[
     );
 }
 
-fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image>; 5]) {
+fn draw_wheel(
+    c: &mut Canvas,
+    focus: usize,
+    rotation: f32,
+    icons: &[Option<Image>; 5],
+    launch: Option<(usize, f32)>,
+) {
     c.text(
         "App-Kreis",
         PAD,
@@ -254,82 +288,60 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         color::MUTED,
         Align::Left,
     );
-    let (cx, cy, radius) = (640.0f32, 372.0f32, 220.0f32);
-    // Two quiet, concentric races define the bearing: a smaller inner guide
-    // and an outer guide around the balls.
-    c.circle(cx, cy, 190.0, Rgba(151, 174, 222, 16));
-    c.circle(cx, cy, 184.0, Rgba(91, 108, 147, 120));
-    c.circle(cx, cy, 178.0, Rgba(26, 32, 47, 245));
-    c.circle(cx, cy, 173.0, Rgba(93, 111, 151, 92));
-    c.circle(cx, cy, 168.0, Rgba(17, 21, 31, 255));
-    c.circle(cx, cy, 133.0, Rgba(91, 108, 147, 105));
-    c.circle(cx, cy, 128.0, Rgba(24, 30, 44, 255));
-    c.circle(cx, cy, 121.0, Rgba(93, 111, 151, 90));
-    c.circle(cx, cy, 116.0, Rgba(17, 21, 31, 255));
+    let (cx, cy, orbit) = (640.0f32, 372.0f32, 158.0f32);
+    // A broad milk-glass disc replaces the hard metal-looking tracks. Its
+    // translucent layers keep a soft hint of the launcher backdrop visible.
+    c.circle(cx, cy, 240.0, Rgba(225, 237, 255, 20));
+    c.circle(cx, cy, 234.0, Rgba(177, 197, 232, 48));
+    c.circle(cx, cy, 228.0, Rgba(95, 111, 145, 105));
+    c.circle(cx, cy, 222.0, Rgba(43, 51, 68, 205));
+    c.circle(cx, cy, 216.0, Rgba(220, 232, 250, 24));
+    c.circle(cx, cy, 210.0, Rgba(45, 53, 70, 115));
 
-    // The six identical balls share one radius and six exactly equal angles.
-    // Keep them between the races, clear of the app icons on the outer orbit.
-    for i in 0..APPS.len() {
-        let angle = -std::f32::consts::FRAC_PI_2
-            + i as f32 * std::f32::consts::TAU / APPS.len() as f32
-            - rotation;
-        let bx = cx + angle.cos() * 150.0;
-        let by = cy + angle.sin() * 150.0;
-        c.circle(bx, by, 18.0, Rgba(10, 14, 22, 220));
-        c.circle(bx, by, 14.0, Rgba(113, 132, 174, 170));
-        c.circle(bx - 3.0, by - 4.0, 6.0, Rgba(193, 207, 235, 85));
+    // A soft inset hub and a single circular orbit hold all six app bubbles.
+    c.circle(cx, cy, 91.0, Rgba(226, 237, 255, 30));
+    c.circle(cx, cy, 86.0, Rgba(53, 62, 81, 205));
+    if launch.is_none() {
+        c.text(
+            "AUSGEWÄHLT",
+            cx,
+            cy - 22.0,
+            11,
+            Weight::Bold,
+            Rgba(166, 183, 215, 190),
+            Align::Center,
+        );
+        c.text_fit(
+            APPS[focus].0,
+            cx,
+            cy + 2.0,
+            20,
+            Weight::Bold,
+            color::TEXT,
+            220.0,
+        );
+        c.text("OK · ÖFFNEN", cx, cy + 31.0, 12, Weight::Bold, Rgba::hex(0xc6d7f5), Align::Center);
     }
-
-    c.circle(cx, cy, 110.0, Rgba(42, 50, 68, 245));
-    c.circle(cx, cy, 105.0, Rgba(174, 192, 226, 34));
-    c.text(
-        "AUSGEWÄHLT",
-        cx,
-        cy - 22.0,
-        11,
-        Weight::Bold,
-        Rgba(166, 183, 215, 190),
-        Align::Center,
-    );
-    c.text_fit(
-        APPS[focus].0,
-        cx,
-        cy + 2.0,
-        20,
-        Weight::Bold,
-        color::TEXT,
-        220.0,
-    );
-    c.text(
-        "OK · ÖFFNEN",
-        cx,
-        cy + 31.0,
-        12,
-        Weight::Bold,
-        Rgba::hex(0xaecaff),
-        Align::Center,
-    );
     for i in 0..APPS.len() {
         let angle = -std::f32::consts::FRAC_PI_2
             + i as f32 * std::f32::consts::TAU / APPS.len() as f32
             - rotation;
-        let (x, y) = (cx + angle.cos() * radius, cy + angle.sin() * radius);
+        let (x, y) = (cx + angle.cos() * orbit, cy + angle.sin() * orbit);
+        if launch.is_some_and(|(launch_focus, _)| launch_focus == i) {
+            continue;
+        }
         let accent = app_accent(i);
         let selected = i == focus;
         if selected {
-            c.circle(x, y, 49.0, Rgba(accent.0, accent.1, accent.2, 22));
+            c.circle(x, y, 48.0, Rgba(accent.0, accent.1, accent.2, 22));
         }
-        c.circle(
-            x,
-            y,
-            42.0,
-            Rgba(accent.0, accent.1, accent.2, if selected { 90 } else { 48 }),
-        );
-        c.circle(x, y, 37.0, Rgba(20, 25, 36, 255));
-        // The icon centers use one radius and one size: the six positions
-        // stay perfectly circular as the wheel rotates.
+        // Equal-size frosted bubbles are the bearing balls: every app is
+        // inside the glass disc and every center lies on this exact orbit.
+        c.circle(x, y, 42.0, Rgba(235, 243, 255, if selected { 85 } else { 48 }));
+        c.circle(x, y, 37.0, Rgba(55, 65, 83, 205));
+        c.circle(x - 8.0, y - 10.0, 14.0, Rgba(235, 243, 255, 22));
         draw_app_icon(c, icons, i, x, y, 48.0);
-        let label_radius = radius + 44.0;
+        let label_radius = 207.0;
         let lx = cx + angle.cos() * label_radius;
         let ly = cy + angle.sin() * label_radius;
         c.text_fit(
@@ -342,15 +354,41 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
             144.0,
         );
     }
-    c.text(
-        "← / → WEITERBLÄTTERN · ↑ ZURÜCK · OK STARTEN",
-        640.0,
-        674.0,
-        14,
-        Weight::Bold,
-        color::MUTED,
-        Align::Center,
-    );
+    if let Some((launch_focus, progress)) = launch {
+        let progress = progress.clamp(0.0, 1.0);
+        let pull_end = 0.64;
+        let accent = app_accent(launch_focus);
+        if progress < pull_end {
+            let t = ease(progress / pull_end);
+            let y = 128.0 + (cy - 128.0) * t;
+            let size = 48.0 + 38.0 * t;
+            c.circle(cx, y, size * 0.76, Rgba(accent.0, accent.1, accent.2, 28));
+            c.circle(cx, y, size * 0.62, Rgba(232, 241, 255, 55));
+            draw_app_icon(c, icons, launch_focus, cx, y, size);
+        } else {
+            // The selected app blooms out of the glass hub, then the normal
+            // screen transition reveals the app itself.
+            let t = ease((progress - pull_end) / (1.0 - pull_end));
+            c.circle(
+                cx,
+                cy,
+                92.0 + 680.0 * t,
+                Rgba(accent.0, accent.1, accent.2, (24.0 + 44.0 * t) as u8),
+            );
+            draw_app_icon(c, icons, launch_focus, cx, cy, 86.0 + 112.0 * t);
+        }
+    }
+    if launch.is_none() {
+        c.text(
+            "← / → WEITERBLÄTTERN · ↑ ZURÜCK · OK STARTEN",
+            640.0,
+            674.0,
+            14,
+            Weight::Bold,
+            color::MUTED,
+            Align::Center,
+        );
+    }
 }
 
 fn app_details(index: usize) -> (&'static str, Rgba) {

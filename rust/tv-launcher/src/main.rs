@@ -1178,9 +1178,20 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             app.cx.now = Instant::now();
             let _ = apps.key(Key::Down, &mut app.cx);
         }
+        if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
+            for _ in 0..3 {
+                let _ = apps.key(Key::Right, &mut app.cx);
+            }
+        }
         app.stack.push(Box::new(apps));
         settle(app, 0);
         shot(app, "02-apps");
+        if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
+            app.key(Key::Ok);
+            settle(app, 220);
+            shot(app, "03-app-launching");
+            return;
+        }
         if std::env::var_os("SHOT_APPS_BENCH").is_some() {
             // Exercise real remote navigation across the Apps grid at 60 Hz,
             // including the long move to Settings and its animated focus ring.
