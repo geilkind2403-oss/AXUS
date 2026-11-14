@@ -20,13 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./build-pi.sh
-      - run: cp deploy/tv-update.ps1 dist/
       - uses: actions/upload-artifact@v4
         with:
           name: tv-launcher-pi
           path: |
             rust/dist/tv-launcher-pi.tar.gz
-            rust/dist/tv-update.ps1
+            rust/dist/tv-launcher-update.tar.gz
 
   server-windows:
     runs-on: windows-latest

@@ -45,6 +45,7 @@ pub struct Settings {
     bt: Slot<Vec<BtDevice>>,
     bt_requested: bool,
     busy: Slot<Result<String, String>>,
+    update: Slot<Result<crate::updater::UpdateInfo, String>>,
     kb: Option<(Keyboard, Edit)>,
     confirm: Option<usize>,
     sec_bar: Anim,
@@ -65,6 +66,7 @@ impl Settings {
             bt: Slot::empty(),
             bt_requested: false,
             busy: Slot::empty(),
+            update: Slot::empty(),
             kb: None,
             confirm: None,
             sec_bar: Anim::default(),
@@ -83,7 +85,7 @@ impl Settings {
             4 => 4,
             5 => 2,
             7 => 1,
-            8 => 4,
+            8 => 5,
             _ => {
                 let _ = cx;
                 0
@@ -211,6 +213,14 @@ impl Settings {
                 cx.images.trim();
                 cx.toast("Bilder-Zwischenspeicher geleert");
             }
+            (8, 4) => match self.update.get() {
+                Some(Ok(info)) if !info.current => self.confirm = Some(3),
+                Some(Ok(_)) => cx.toast("Die installierte Version ist bereits aktuell"),
+                Some(Err(_)) | None => {
+                    self.update = load(&cx.tx, crate::updater::stage_github_update);
+                    cx.toast("Suche nach der neuesten GitHub-Version …");
+                }
+            },
             _ => {}
         }
         Nav::None
@@ -363,7 +373,11 @@ impl Screen for Settings {
                 match which {
                     0 => system::reboot(),
                     1 => system::poweroff(),
-                    _ => system::switch_to_kodi(),
+                    2 => system::switch_to_kodi(),
+                    _ => match crate::updater::apply_staged_update() {
+                        Ok(()) => cx.toast("Update wird installiert; der Launcher startet neu"),
+                        Err(e) => cx.toast(e),
+                    },
                 }
             }
             self.confirm = None;
@@ -770,8 +784,15 @@ impl Screen for Settings {
                 rows.push(("Ausschalten".into(), String::new()));
                 rows.push(("Zu Kodi wechseln".into(), "LibreELEC wie vorher".into()));
                 rows.push(("Zwischenspeicher leeren".into(), String::new()));
-                detail_card(c, x + 16.0, 448.0, w - 32.0, "GERÄT", "Systemsteuerung",
-                    "Neustart und Ausschalten erfordern eine Bestätigung. Der Bild-Zwischenspeicher lässt sich jederzeit neu aufbauen.");
+                let update_status = match self.update.get() {
+                    Some(Ok(info)) if info.current => format!("Bereits aktuell · {}", info.version),
+                    Some(Ok(info)) => format!("Update bereit · {}", info.version),
+                    Some(Err(e)) => e,
+                    None => "Noch nicht geprüft · OK zum Suchen".into(),
+                };
+                rows.push(("Software-Update suchen".into(), update_status));
+                detail_card(c, x + 16.0, 464.0, w - 32.0, "WARTUNG", "Software aktualisieren",
+                    "Sucht das neueste Release auf GitHub und prüft die SHA-256-Prüfsumme. OK startet die Installation; bei Startproblemen wird die vorige Version wiederhergestellt. Für dieses private Repo TV_UPDATE_TOKEN (Contents: Read-only) in /storage/tv-launcher/env eintragen.");
                 let temp = system::cpu_temp()
                     .map(|t| format!(" · CPU {t:.0} °C"))
                     .unwrap_or_default();
@@ -783,7 +804,7 @@ impl Screen for Settings {
                         crate::BUILD
                     ),
                     x,
-                    680.0,
+                    654.0,
                     14,
                     Weight::Regular,
                     color::MUTED,
@@ -873,11 +894,23 @@ impl Screen for Settings {
         if let Some(which) = self.confirm {
             c.rect(0.0, 0.0, 1280.0, 720.0, 0.0, Rgba(0, 0, 0, 190));
             c.rect(340.0, 250.0, 600.0, 200.0, 22.0, color::PANEL_SOLID);
-            let q = [
-                "Jetzt neu starten?",
-                "Jetzt ausschalten?",
-                "Den Launcher beenden und Kodi starten?",
-            ][which];
+            let update_question;
+            let q = match which {
+                0 => "Jetzt neu starten?",
+                1 => "Jetzt ausschalten?",
+                2 => "Den Launcher beenden und Kodi starten?",
+                _ => {
+                    update_question = format!(
+                        "Update {} installieren?",
+                        self.update
+                            .get()
+                            .and_then(Result::ok)
+                            .map(|v| v.version)
+                            .unwrap_or_else(|| "unbekannt".into())
+                    );
+                    &update_question
+                }
+            };
             c.text(
                 q,
                 640.0,

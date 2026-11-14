@@ -14,6 +14,7 @@ if [ "$1" = "--uninstall" ]; then
   systemctl disable tv-launcher.service 2>/dev/null || true
   systemctl stop tv-launcher.service 2>/dev/null || true
   rm -f "$UNITS/tv-launcher.service"
+  rm -f "$UNITS/tv-launcher-update.service"
   for s in kodi pulseaudio eventlircd; do rm -f "$UNITS/$s.service.d/tv-launcher.conf"; done
   systemctl daemon-reload
   systemctl start pulseaudio eventlircd kodi
@@ -25,6 +26,9 @@ fi
 mkdir -p "$DIR/data" /storage/videos
 cp "$HERE/tv-launcher" "$DIR/tv-launcher.new" && chmod 755 "$DIR/tv-launcher.new" && mv "$DIR/tv-launcher.new" "$DIR/tv-launcher"
 cp "$HERE/tv-launcher.service" "$UNITS/tv-launcher.service"
+cp "$HERE/tv-launcher-update.service" "$UNITS/tv-launcher-update.service"
+cp "$HERE/apply-update.sh" "$DIR/apply-update.sh"
+chmod 755 "$DIR/apply-update.sh"
 for s in kodi pulseaudio eventlircd; do
   mkdir -p "$UNITS/$s.service.d"
   cp "$HERE/kodi-off.conf" "$UNITS/$s.service.d/tv-launcher.conf"

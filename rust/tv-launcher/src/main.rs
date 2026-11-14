@@ -14,6 +14,7 @@ mod platform;
 mod player;
 mod remote;
 mod ui;
+mod updater;
 mod weather;
 mod youtube;
 
@@ -840,6 +841,17 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         app.key(Key::Right);
         settle(app, 100);
         shot(app, "13-settings-status-focus");
+        return;
+    }
+    if std::env::var_os("SHOT_UPDATE_ONLY").is_some() {
+        let settings = ui::settings::Settings::new(&app.cx);
+        app.stack.push(Box::new(settings));
+        for _ in 0..9 {
+            app.key(Key::Down);
+            settle(app, 35);
+        }
+        settle(app, 200);
+        shot(app, "12-settings-software-update");
         return;
     }
     if std::env::var_os("SHOT_HOME_AMBIENT_BENCH").is_some() {

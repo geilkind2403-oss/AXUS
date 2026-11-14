@@ -63,6 +63,20 @@ Einstellungen › Handy als Fernbedienung – it can also type text, e.g. for Yo
 Back to Kodi: Einstellungen › System › *Zu Kodi wechseln*, or `sh pi/install.sh --uninstall`.
 Log: `journalctl -u tv-launcher -f`. Data and settings: `/storage/tv-launcher/data`.
 
+### Software updates
+
+Open **Einstellungen › System › Software-Update suchen**. The launcher checks the
+latest GitHub Release, downloads `tv-launcher-update.tar.gz`, and verifies its SHA-256
+before installation. The update service keeps the previous binary and restores it if
+the new launcher does not stay healthy.
+
+The repository is private, so add a fine-grained GitHub token with **Contents: Read-only**
+access to this repository on the Pi. Put it in `/storage/tv-launcher/env` as
+`TV_UPDATE_TOKEN=github_pat_…` and restart the launcher. Keep this file private. Each
+`v*` tag builds and publishes a release automatically; the release includes the update
+archive and a full Pi installer. The updater must first be installed once using the Pi
+installer package, since older builds do not include the GitHub updater.
+
 ## Optional YouTube TV app
 
 The YouTube tile uses the launcher's built-in YouTube search and hardware video player by

@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply and verify a TV Launcher update
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/storage/tv-launcher/apply-update.sh
+TimeoutStartSec=30
