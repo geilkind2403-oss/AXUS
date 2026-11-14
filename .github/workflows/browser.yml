@@ -1,12 +1,9 @@
 name: YouTube TV browser (WPE WebKit for the Pi 3)
 
 # Builds WPE WebKit + cog + Mesa + GStreamer for the Raspberry Pi 3 with
-# Buildroot. A full build is long: the compiler cache is saved even when a
-# run hits the time limit, so the next run continues where this one stopped.
+# Buildroot. A full build can take hours, so start it manually when needed.
 on:
   workflow_dispatch:
-  push:
-    paths: ["browser/**", ".github/workflows/browser.yml"]
 
 env:
   # the 2025.02 long-term branch (gets fixes, keeps option names)
