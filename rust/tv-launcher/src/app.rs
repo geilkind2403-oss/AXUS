@@ -137,6 +137,12 @@ pub trait Screen {
     fn animating(&self, _cx: &Ctx) -> bool {
         false
     }
+    /// Something glides over the running picture (guide, banner, list):
+    /// draw at full pace for that moment. Otherwise an overlay over video is
+    /// only looked at a few times a second, which leaves the CPU to the film.
+    fn motion_over_video(&self) -> bool {
+        false
+    }
     /// Text from the phone remote.
     fn text(&mut self, _s: &str, _cx: &mut Ctx) {}
     /// This screen shows a film/video (UI goes on the overlay plane).
@@ -218,12 +224,38 @@ pub fn load<T: Clone + Send + 'static>(
     slot
 }
 
+/// Like `load`, but into a slot that is already shown: what is there stays
+/// until the new value has arrived, and a failed fetch (`good` says no)
+/// never replaces a good one. The weather and the headlines no longer blank
+/// out every ten minutes, or for good when the WLAN drops for a moment.
+pub fn refresh<T: Clone + Send + 'static>(
+    tx: &Sender<Msg>,
+    slot: &Slot<T>,
+    f: impl FnOnce() -> T + Send + 'static,
+    good: impl Fn(&T) -> bool + Send + 'static,
+) {
+    let slot = slot.clone();
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let new = f();
+        let keep_old = !good(&new) && slot.with(|old| old.map(&good).unwrap_or(false));
+        if !keep_old {
+            slot.set(new);
+            let _ = tx.send(Msg::Redraw);
+        }
+    });
+}
+
 #[allow(dead_code)]
 enum ImgState {
     Loading,
     Ready(Image, u64),
-    Failed,
+    /// when it failed: tried again later (the network may just not be up yet)
+    Failed(Instant),
 }
+
+/// A picture that could not be loaded is asked for again after this long.
+const IMG_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Images by URL or file path, decoded off the UI thread, kept in RAM up to
 /// a budget (the Pi 3 has 1 GB for everything), least recently used go first.
@@ -236,7 +268,13 @@ pub struct Images {
     tick: u64,
 }
 
-const IMG_BUDGET: usize = 160 << 20;
+// On the Pi the pictures share 1 GB with the frame buffers, the backdrops
+// and (in the YouTube TV app) a whole browser.
+const IMG_BUDGET: usize = if cfg!(target_arch = "arm") {
+    96 << 20
+} else {
+    160 << 20
+};
 
 impl Images {
     pub fn new(tx: Sender<Msg>) -> Images {
@@ -276,7 +314,7 @@ impl Images {
                     key,
                     (
                         img.map(|i| ImgState::Ready(i, 0))
-                            .unwrap_or(ImgState::Failed),
+                            .unwrap_or_else(|| ImgState::Failed(Instant::now())),
                         t,
                     ),
                 );
@@ -299,7 +337,7 @@ impl Images {
             None => 0,
             Some(ImgState::Loading) => 1,
             Some(ImgState::Ready(..)) => 2,
-            Some(ImgState::Failed) => 3,
+            Some(ImgState::Failed(_)) => 3,
         }
     }
 
@@ -335,6 +373,7 @@ impl Images {
                 *t = self.tick;
                 return Some(i.clone());
             }
+            Some((ImgState::Failed(at), _)) if at.elapsed() >= IMG_RETRY => {}
             Some(_) => return None,
             None => {}
         }
@@ -412,7 +451,9 @@ pub struct Ctx {
     pub remote_url: String,
     pub quit: bool,
     pub kms: Option<KmsHandle>,
-    pub channels: Slot<Result<(Vec<crate::livetv::Channel>, String), String>>,
+    /// (channels, where from). The list is shared, not copied: Live TV asks
+    /// for it on every frame and a list can have thousands of entries.
+    pub channels: Slot<Result<(Arc<Vec<crate::livetv::Channel>>, String), String>>,
     /// sleep timer: when to stop and switch the TV off
     pub sleep_at: Option<Instant>,
 }
@@ -425,7 +466,9 @@ pub type KmsHandle = Arc<Mutex<()>>;
 impl Ctx {
     pub fn reload_channels(&mut self) {
         let url = self.cfg.livetv_url.clone();
-        self.channels = load(&self.tx, move || crate::livetv::load(&url));
+        self.channels = load(&self.tx, move || {
+            crate::livetv::load(&url).map(|(list, from)| (Arc::new(list), from))
+        });
     }
     pub fn toast(&mut self, s: impl Into<String>) {
         if self.cfg.do_not_disturb {

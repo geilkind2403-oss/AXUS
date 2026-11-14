@@ -20,6 +20,8 @@ pub struct Home {
     status_key: Option<(i32, i32, u64, u64, String, bool, usize, bool, [usize; 6])>,
     news_overlay_key: Option<u64>,
     last_focus_rect: Option<(f32, f32, f32, f32)>,
+    /// the arrange-mode outlines are on the kept picture (wipe them next frame)
+    edit_drawn: bool,
     ambient_focus: usize,
     focus_changed_at: Instant,
 }
@@ -110,6 +112,7 @@ impl Home {
             status_key: None,
             news_overlay_key: None,
             last_focus_rect: None,
+            edit_drawn: false,
             ambient_focus: last_media_tile.min(5),
             focus_changed_at: Instant::now(),
         }
@@ -414,14 +417,25 @@ impl Screen for Home {
             self.base_image = Some(c.snapshot());
             self.last_focus_rect = None;
         } else if let Some(base) = self.base_image.as_ref() {
-            if c.full_base_restore_required() {
+            // Arrange mode draws pulsing outlines over every tile: they are
+            // wiped with the whole base picture (also once after it ends),
+            // or they pile up frame by frame and stay.
+            if c.full_base_restore_required() || self.editing || self.edit_drawn {
                 c.restore_image(base);
                 self.last_focus_rect = None;
                 base_restored = true;
-            } else if let Some((x, y, w, h)) = self.last_focus_rect {
-                c.restore_focus(base, x, y, w, h);
+            } else if let Some(frame) = self.last_focus_rect {
+                c.restore_focus(base, frame.0, frame.1, frame.2, frame.3);
+                // The base picture has no headline on it. A frame gliding
+                // across the news tile had its strips put back without the
+                // text: lines of the headline were cut until the next
+                // refresh. Draw the headline again whenever that happens.
+                if focus_strips_touch(frame, news_text_area(cx, &self.order)) {
+                    self.news_overlay_key = None;
+                }
             }
         }
+        self.edit_drawn = self.editing;
         let status_key = home_status_key(cx, self.focus, self.editing, &self.order);
         if base_restored || self.status_key.as_ref() != Some(&status_key) {
             if let Some(base) = self.base_image.as_ref() {
@@ -447,20 +461,8 @@ impl Screen for Home {
         if base_restored || self.news_overlay_key != Some(news_key) {
             if !base_restored {
                 if let Some(base) = self.base_image.as_ref() {
-                    let news_slot = self.order.iter().position(|id| *id == 4).unwrap_or(4);
-                    let t = &TILES[news_slot];
-                    let iw = news_tile_photo_width(cx, t);
-                    if iw > 0.0 {
-                        c.restore_rect(
-                            base,
-                            t.x + iw + 12.0,
-                            t.y + 12.0,
-                            t.w - iw - 12.0,
-                            t.h - 24.0,
-                        );
-                    } else {
-                        c.restore_rect(base, t.x, t.y, t.w, t.h);
-                    }
+                    let (x, y, w, h) = news_text_area(cx, &self.order);
+                    c.restore_rect(base, x, y, w, h);
                 }
             }
             let news_slot = self.order.iter().position(|id| *id == 4).unwrap_or(4);
@@ -677,6 +679,36 @@ fn draw_home_status(
         );
     }
     let _ = (editing, moving);
+}
+
+/// Where the headline is drawn over the news tile (beside its photo, or the
+/// whole tile when there is none).
+fn news_text_area(cx: &Ctx, order: &[usize; 6]) -> (f32, f32, f32, f32) {
+    let news_slot = order.iter().position(|id| *id == 4).unwrap_or(4);
+    let t = &TILES[news_slot];
+    let iw = news_tile_photo_width(cx, t);
+    if iw > 0.0 {
+        (t.x + iw + 12.0, t.y + 12.0, t.w - iw - 12.0, t.h - 24.0)
+    } else {
+        (t.x, t.y, t.w, t.h)
+    }
+}
+
+/// Whether the edge strips `Canvas::restore_focus` puts back for a focus
+/// frame at `frame` reach into `area`.
+fn focus_strips_touch(frame: (f32, f32, f32, f32), area: (f32, f32, f32, f32)) -> bool {
+    const PAD: f32 = 7.0;
+    const EDGE: f32 = 14.0;
+    let (x, y, w, h) = frame;
+    let strips = [
+        (x - PAD, y - PAD, w + PAD * 2.0, EDGE),
+        (x - PAD, y + h - PAD, w + PAD * 2.0, EDGE),
+        (x - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
+        (x + w - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
+    ];
+    strips.iter().any(|s| {
+        s.0 < area.0 + area.2 && area.0 < s.0 + s.2 && s.1 < area.1 + area.3 && area.1 < s.1 + s.3
+    })
 }
 
 fn draw_edit_pulse(c: &mut Canvas, started: Instant, moving: Option<usize>, order: &[usize; 6]) {

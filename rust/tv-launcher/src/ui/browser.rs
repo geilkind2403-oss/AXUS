@@ -351,6 +351,8 @@ impl Screen for Browser {
             #[cfg(not(target_os = "linux"))]
             let drm_fd = None;
             self.boost_cpu();
+            // decoded thumbnails and posters come back when they are needed again
+            cx.images.trim();
             match launch(&self.url, drm_fd) {
                 Ok(c) => {
                     crate::log(&format!(
@@ -412,6 +414,7 @@ impl Screen for Browser {
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
         if self.child.is_some() {
             c.clear(Rgba(0, 0, 0, 0)); // Cog owns the primary plane; ARGB is only for the menu.
+            c.trim_caches(); // the browser needs the memory more than we do
             return;
         }
         c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0xd0202c)));

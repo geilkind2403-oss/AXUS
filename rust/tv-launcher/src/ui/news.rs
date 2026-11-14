@@ -85,6 +85,8 @@ impl Screen for NewsScreen {
                 c.image_cover(&img, 840.0, 110.0, 376.0, 212.0, 16.0);
             }
             let w = 720.0;
+            // the text scrolls away under the header, not through it
+            c.clip_y(Some((100.0, 720.0)));
             if !n.topline.is_empty() {
                 c.text(
                     &n.topline,
@@ -143,6 +145,7 @@ impl Screen for NewsScreen {
                     }
                 }
             }
+            c.clip_y(None);
             c.vgradient(
                 0.0,
                 0.0,

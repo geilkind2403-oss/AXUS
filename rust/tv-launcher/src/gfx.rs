@@ -18,6 +18,10 @@ pub const RENDER_SCALE: f32 = if cfg!(target_arch = "arm") { 1.5 } else { 1.0 };
 // already-rendered backdrop in one frame; focus and page transitions remain
 // animated. Desktop keeps the smoother crossfade.
 const AMBIENT_FADE: f32 = if cfg!(target_arch = "arm") { 0.0 } else { 0.35 };
+// Each cached backdrop is a whole frame: 8 MB at the Pi's 1080p. Four cover
+// going back and forth between neighbours; a missing one is made again in
+// the background within a few frames.
+const AMBIENT_KEEP: usize = if cfg!(target_arch = "arm") { 4 } else { 8 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
@@ -328,6 +332,9 @@ enum Cmd {
         g: Glyph,
         c: Rgba,
     },
+    /// Everything recorded after this is drawn only in these pixel rows
+    /// [top, bottom) -- scrolling lists stay inside their box. None = whole screen.
+    ClipY(Option<(i32, i32)>),
 }
 
 pub struct Canvas {
@@ -358,6 +365,147 @@ pub struct Canvas {
     full_base_restore: bool,
     region_scratch: Vec<u8>,
     damage: Damage,
+    /// Fingerprint of what was drawn into each horizontal strip of the frame
+    /// by the last `finish`. Empty = unknown (pixels were changed some other
+    /// way since): everything is drawn.
+    strip_sigs: Vec<u64>,
+}
+
+/// The frame is compared in this many horizontal strips: a frame that only
+/// differs in a few of them (the clock, a moved selection, the OSD's time)
+/// is drawn and sent to the TV only there.
+const STRIPS: usize = 18;
+
+/// Fingerprint of one recorded command: everything that decides its pixels.
+fn cmd_hash(c: &Cmd) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let f = |v: f32, h: &mut std::collections::hash_map::DefaultHasher| v.to_bits().hash(h);
+    match c {
+        Cmd::Clear(p) => (0u8, p).hash(&mut h),
+        Cmd::Backdrop => 1u8.hash(&mut h),
+        Cmd::Screen(pm, a) => (2u8, Arc::as_ptr(pm) as usize, a).hash(&mut h),
+        Cmd::Path {
+            path,
+            color,
+            stroke,
+        } => {
+            3u8.hash(&mut h);
+            for p in path.points() {
+                f(p.x, &mut h);
+                f(p.y, &mut h);
+            }
+            for v in [color.red(), color.green(), color.blue(), color.alpha()] {
+                f(v, &mut h);
+            }
+            if let Some(s) = stroke {
+                f(s.width, &mut h);
+            }
+        }
+        Cmd::RoundedStroke {
+            x,
+            y,
+            w,
+            h: hh,
+            r,
+            thickness,
+            color,
+        } => {
+            (6u8, color).hash(&mut h);
+            for v in [x, y, w, hh, r, thickness] {
+                f(*v, &mut h);
+            }
+        }
+        Cmd::Spans {
+            x,
+            y,
+            w,
+            h: hh,
+            r,
+            fill,
+        } => {
+            (4u8, x, y, w, hh).hash(&mut h);
+            f(*r, &mut h);
+            match fill {
+                Fill::Solid(p) => (0u8, p).hash(&mut h),
+                Fill::VGrad(a, b) => (1u8, a.0, a.1, a.2, a.3, b.0, b.1, b.2, b.3).hash(&mut h),
+                Fill::HGrad(a, b) => (3u8, a.0, a.1, a.2, a.3, b.0, b.1, b.2, b.3).hash(&mut h),
+                Fill::Image { src, ox, oy, alpha } => {
+                    (2u8, Arc::as_ptr(src) as usize, ox, oy, alpha).hash(&mut h)
+                }
+            }
+        }
+        Cmd::Glyph { x, y, g, c } => {
+            // the address alone could be a new glyph in a freed one's place
+            // (the glyph cache is emptied now and then): add its shape
+            let (m, bmp) = (&g.0, &g.1);
+            let mid = bmp.get(bmp.len() / 2).copied().unwrap_or(0);
+            (5u8, x, y, Arc::as_ptr(g) as usize, c.0, c.1, c.2, c.3).hash(&mut h);
+            (m.width, m.height, m.xmin, m.ymin, mid).hash(&mut h)
+        }
+        Cmd::ClipY(rows) => (7u8, rows).hash(&mut h),
+    }
+    h.finish()
+}
+
+/// The same outline made of straight pieces only (curves cut finely enough
+/// that the difference is far below a pixel).
+fn flatten(path: &tiny_skia::Path) -> Option<tiny_skia::Path> {
+    use tiny_skia::{PathSegment, Point};
+    const TOLERANCE: f32 = 0.05;
+    let pieces = |bend: f32| ((bend / TOLERANCE).sqrt().ceil() as usize).clamp(1, 48);
+    let dist = |a: Point, b: Point| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    let mut out = PathBuilder::new();
+    let mut at = Point::from_xy(0.0, 0.0);
+    for seg in path.segments() {
+        match seg {
+            PathSegment::MoveTo(p) => {
+                out.move_to(p.x, p.y);
+                at = p;
+            }
+            PathSegment::LineTo(p) => {
+                out.line_to(p.x, p.y);
+                at = p;
+            }
+            PathSegment::QuadTo(c, p) => {
+                // how far the curve bends away from its chord
+                let mid = Point::from_xy((at.x + p.x) / 2.0, (at.y + p.y) / 2.0);
+                let n = pieces(dist(c, mid) / 2.0);
+                for i in 1..=n {
+                    let t = i as f32 / n as f32;
+                    let u = 1.0 - t;
+                    out.line_to(
+                        u * u * at.x + 2.0 * u * t * c.x + t * t * p.x,
+                        u * u * at.y + 2.0 * u * t * c.y + t * t * p.y,
+                    );
+                }
+                at = p;
+            }
+            PathSegment::CubicTo(c1, c2, p) => {
+                let bend = dist(
+                    c1,
+                    Point::from_xy((2.0 * at.x + p.x) / 3.0, (2.0 * at.y + p.y) / 3.0),
+                )
+                .max(dist(
+                    c2,
+                    Point::from_xy((at.x + 2.0 * p.x) / 3.0, (at.y + 2.0 * p.y) / 3.0),
+                ));
+                let n = pieces(bend * 0.75);
+                for i in 1..=n {
+                    let t = i as f32 / n as f32;
+                    let u = 1.0 - t;
+                    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    out.line_to(
+                        a * at.x + b * c1.x + c * c2.x + d * p.x,
+                        a * at.y + b * c1.y + c * c2.y + d * p.y,
+                    );
+                }
+                at = p;
+            }
+            PathSegment::Close => out.close(),
+        }
+    }
+    out.finish()
 }
 
 fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
@@ -435,6 +583,7 @@ impl Canvas {
             full_base_restore: false,
             region_scratch: Vec::new(),
             damage: Damage::default(),
+            strip_sigs: Vec::new(),
         }
     }
 
@@ -449,6 +598,7 @@ impl Canvas {
             return;
         }
         self.pm = Pixmap::new(pw, ph).unwrap();
+        self.strip_sigs.clear();
         self.cmds.clear();
         self.backdrop = None;
         self.last_sig = 0;
@@ -500,6 +650,7 @@ impl Canvas {
             return;
         }
         self.mark_full_damage();
+        self.strip_sigs.clear();
         let row = self.pm.width() as usize * 4;
         let rows_per_chunk = (self.pm.height() as usize).div_ceil(self.threads);
         let chunk_bytes = rows_per_chunk * row;
@@ -530,6 +681,7 @@ impl Canvas {
             return;
         }
         self.mark_damage_rect(x, y, w, h);
+        self.strip_sigs.clear();
         let row_bytes = self.pm.width() as usize * 4;
         let span = (x1 - x0) as usize * 4;
         let src = base.data();
@@ -580,6 +732,7 @@ impl Canvas {
             region.width() as f32 / self.scale,
             region.height() as f32 / self.scale,
         );
+        self.strip_sigs.clear();
         let src_stride = region.width() as usize * 4;
         let dst_stride = self.pm.width() as usize * 4;
         let row_bytes = (sx1 - sx0) as usize * 4;
@@ -661,6 +814,7 @@ impl Canvas {
             return;
         }
         self.mark_damage_rect(x, y, w, h);
+        self.strip_sigs.clear();
         let opacity = (opacity * 255.0).round() as u32;
         let (src_row, dst_row) = (src.width() as usize * 4, self.pm.width() as usize * 4);
         let (src_data, dst_data) = (src.data(), self.pm.data_mut());
@@ -690,6 +844,12 @@ impl Canvas {
         self.presented_directly = true;
     }
 
+    /// Nothing is recorded that still has to be drawn: the screen keeps its
+    /// picture in the canvas and has already drawn its changes into it.
+    pub fn pending_empty(&self) -> bool {
+        self.cmds.is_empty()
+    }
+
     pub fn set_full_base_restore(&mut self, required: bool) {
         self.full_base_restore = required;
     }
@@ -717,13 +877,37 @@ impl Canvas {
             s.width *= scale;
             s
         });
-        if let Some(path) = path {
+        // The outline of a stroke is worked out here, once, and every curve
+        // is turned into short straight pieces. Handing curves to the raster
+        // threads had two costs: each band stroked the path again, and where
+        // a band's edge cut through a curve (a rounded corner) tiny-skia
+        // approximated it differently -- a seam, or missing pixels in 1 px
+        // borders.
+        let path = path.and_then(|p| match &stroke {
+            Some(s) => p.stroke(s, 1.0),
+            None => Some(p),
+        });
+        if let Some(path) = path.and_then(|p| flatten(&p)) {
             self.cmds.push(Cmd::Path {
                 path,
                 color: c.sk(),
-                stroke,
+                stroke: None,
             });
         }
+    }
+
+    /// Limits what is drawn next to the rows between `top` and `bottom`
+    /// (a scrolling list must not run over the header above it). `None`
+    /// lifts the limit again; every `Some` needs its `None` before the
+    /// screen is done.
+    pub fn clip_y(&mut self, rows: Option<(f32, f32)>) {
+        let clip = rows.map(|(top, bottom)| {
+            (
+                ((top + self.offset.1) * self.scale).round() as i32,
+                ((bottom + self.offset.1) * self.scale).round() as i32,
+            )
+        });
+        self.cmds.push(Cmd::ClipY(clip));
     }
 
     pub fn clear(&mut self, c: Rgba) {
@@ -864,7 +1048,7 @@ impl Canvas {
         for (k, pm) in self.ambient_done.lock().unwrap().drain(..) {
             self.ambient_pending.retain(|p| *p != k);
             if let Some(pm) = pm {
-                if self.ambients.len() >= 8 {
+                if self.ambients.len() >= AMBIENT_KEEP {
                     self.ambients.remove(0);
                 }
                 self.ambients.push((k, pm));
@@ -1185,75 +1369,61 @@ impl Canvas {
         width / scale
     }
 
-    /// Draws everything recorded since the last clear/backdrop into `pm`,
-    /// split into horizontal bands, one thread each.
     /// A fingerprint of the recorded frame: same fingerprint = same picture.
     fn signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        let f = |v: f32, h: &mut std::collections::hash_map::DefaultHasher| v.to_bits().hash(h);
         for c in &self.cmds {
-            match c {
-                Cmd::Clear(p) => (0u8, p).hash(&mut h),
-                Cmd::Backdrop => 1u8.hash(&mut h),
-                Cmd::Screen(pm, a) => (2u8, Arc::as_ptr(pm) as usize, a).hash(&mut h),
-                Cmd::Path {
-                    path,
-                    color,
-                    stroke,
-                } => {
-                    3u8.hash(&mut h);
-                    for p in path.points() {
-                        f(p.x, &mut h);
-                        f(p.y, &mut h);
-                    }
-                    for v in [color.red(), color.green(), color.blue(), color.alpha()] {
-                        f(v, &mut h);
-                    }
-                    if let Some(s) = stroke {
-                        f(s.width, &mut h);
-                    }
-                }
-                Cmd::RoundedStroke {
-                    x,
-                    y,
-                    w,
-                    h: hh,
-                    r,
-                    thickness,
-                    color,
-                } => {
-                    (6u8, color).hash(&mut h);
-                    for v in [x, y, w, hh, r, thickness] {
-                        f(*v, &mut h);
-                    }
-                }
-                Cmd::Spans {
-                    x,
-                    y,
-                    w,
-                    h: hh,
-                    r,
-                    fill,
-                } => {
-                    (4u8, x, y, w, hh).hash(&mut h);
-                    f(*r, &mut h);
-                    match fill {
-                        Fill::Solid(p) => (0u8, p).hash(&mut h),
-                        Fill::VGrad(a, b) | Fill::HGrad(a, b) => {
-                            (1u8, a.0, a.1, a.2, a.3, b.0, b.1, b.2, b.3).hash(&mut h)
-                        }
-                        Fill::Image { src, ox, oy, alpha } => {
-                            (2u8, Arc::as_ptr(src) as usize, ox, oy, alpha).hash(&mut h)
-                        }
-                    }
-                }
-                Cmd::Glyph { x, y, g, c } => {
-                    (5u8, x, y, Arc::as_ptr(g) as usize, c.0, c.1, c.2, c.3).hash(&mut h)
-                }
-            }
+            cmd_hash(c).hash(&mut h);
         }
         h.finish()
+    }
+
+    /// One fingerprint per horizontal strip, made of the commands that draw
+    /// into it (in order). Returns the strip height in rows too.
+    fn strip_signatures(&self) -> (Vec<u64>, usize) {
+        let h = self.pm.height() as usize;
+        let rows = h.div_ceil(STRIPS).max(1);
+        let n = h.div_ceil(rows);
+        let mut sigs = vec![0xcbf2_9ce4_8422_2325u64; n];
+        let mut clip: Option<(i32, i32)> = None;
+        for c in &self.cmds {
+            let (mut top, mut bottom) = match c {
+                Cmd::ClipY(rows) => {
+                    clip = *rows;
+                    continue;
+                }
+                Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..) => (0, h as i32),
+                Cmd::Path { path, stroke, .. } => {
+                    let b = path.bounds();
+                    let pad = stroke.as_ref().map(|s| s.width).unwrap_or(0.0) + 2.0;
+                    (
+                        (b.top() - pad).floor() as i32,
+                        (b.bottom() + pad).ceil() as i32,
+                    )
+                }
+                Cmd::RoundedStroke { y, h, .. } => (y.floor() as i32, (y + h).ceil() as i32),
+                Cmd::Spans { y, h, .. } => (*y, *y + *h),
+                Cmd::Glyph { y, g, .. } => (*y, *y + g.0.height as i32),
+            };
+            if let Some((a, b)) = clip {
+                top = top.max(a);
+                bottom = bottom.min(b);
+            }
+            let (top, bottom) = (top.max(0), bottom.min(h as i32));
+            if top >= bottom {
+                continue;
+            }
+            // the clip is part of what a command draws
+            let ch = cmd_hash(c)
+                ^ clip
+                    .map(|(a, b)| (a as u64) << 32 | b as u32 as u64)
+                    .unwrap_or(0);
+            for sig in &mut sigs[top as usize / rows..=(bottom as usize - 1) / rows] {
+                *sig = (sig.rotate_left(5) ^ ch).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        (sigs, rows)
     }
 
     /// Draws the recorded frame -- unless it is exactly the one already
@@ -1268,10 +1438,90 @@ impl Canvas {
             return changed;
         }
         self.last_sig = sig;
-        self.mark_full_damage();
-        self.raster_pending();
         self.presented_directly = false;
+        let (sigs, rows) = self.strip_signatures();
+        let changed: Vec<usize> = if sigs.len() == self.strip_sigs.len() {
+            (0..sigs.len())
+                .filter(|i| sigs[*i] != self.strip_sigs[*i])
+                .collect()
+        } else {
+            (0..sigs.len()).collect()
+        };
+        // Strips can only be redrawn on their own when the frame starts from
+        // a background; commands meant to go on top of kept pixels can't.
+        let from_background = matches!(
+            self.cmds.first(),
+            Some(Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..))
+        );
+        // Mostly new anyway (scrolling, a new backdrop): one pass over everything.
+        if changed.len() * 3 > sigs.len() * 2 || self.damage.full || !from_background {
+            self.mark_full_damage();
+            self.raster_pending();
+            self.strip_sigs = sigs;
+            return true;
+        }
+        if changed.is_empty() {
+            // same pixels although the commands differ (drawn off-screen)
+            self.cmds.clear();
+            self.strip_sigs = sigs;
+            return self.damage.len > 0;
+        }
+        self.raster_strips(&changed, rows);
+        self.strip_sigs = sigs;
         true
+    }
+
+    /// Draws only the given strips of the recorded frame (ascending indices)
+    /// and reports them as the damage.
+    fn raster_strips(&mut self, strips: &[usize], rows: usize) {
+        let (w, h) = (self.pm.width() as usize, self.pm.height() as usize);
+        // neighbouring strips become one run of rows
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for &i in strips {
+            let (a, b) = (i * rows, ((i + 1) * rows).min(h));
+            match runs.last_mut() {
+                Some(last) if last.1 == a => last.1 = b,
+                _ => runs.push((a, b)),
+            }
+        }
+        for &(a, b) in &runs {
+            self.damage
+                .add_rect((0, a as u32, w as u32, (b - a) as u32));
+        }
+        // share the rows between the cores: long runs are cut up (a strip or
+        // two is quicker done here than a thread is started)
+        let total: usize = runs.iter().map(|r| r.1 - r.0).sum();
+        let piece = total.div_ceil(self.threads).max(rows * 2);
+        let mut pieces: Vec<(usize, usize)> = Vec::new();
+        for (mut a, b) in runs {
+            while a < b {
+                let end = (a + piece).min(b);
+                pieces.push((a, end));
+                a = end;
+            }
+        }
+        let cmds = &self.cmds;
+        let bd = self.backdrop.as_deref();
+        let row_bytes = w * 4;
+        let mut rest = self.pm.data_mut();
+        let mut at = 0usize;
+        if pieces.len() <= 2 {
+            for (a, b) in pieces {
+                let band = &mut rest[a * row_bytes..b * row_bytes];
+                raster(cmds, band, w as i32, a as i32, bd);
+            }
+        } else {
+            std::thread::scope(|sc| {
+                for (a, b) in pieces {
+                    let (_, tail) = std::mem::take(&mut rest).split_at_mut((a - at) * row_bytes);
+                    let (band, tail) = tail.split_at_mut((b - a) * row_bytes);
+                    rest = tail;
+                    at = b;
+                    sc.spawn(move || raster(cmds, band, w as i32, a as i32, bd));
+                }
+            });
+        }
+        self.cmds.clear();
     }
 
     /// Draws or skips a static layer based on its own signature, independently
@@ -1331,6 +1581,7 @@ impl Canvas {
     }
 
     fn raster_pending_region(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.strip_sigs.clear();
         if self
             .cmds
             .iter()
@@ -1430,6 +1681,9 @@ impl Canvas {
                     g: Arc::clone(g),
                     c: *c,
                 }),
+                Cmd::ClipY(rows) => local.push(Cmd::ClipY(
+                    rows.map(|(top, bottom)| (top - y0, bottom - y0)),
+                )),
                 _ => unreachable!(),
             }
         }
@@ -1456,6 +1710,7 @@ impl Canvas {
     }
 
     fn raster_pending_with_workers(&mut self, workers: usize) {
+        self.strip_sigs.clear();
         let (w, h) = (self.pm.width() as usize, self.pm.height() as usize);
         let bands = workers.clamp(1, self.threads);
         if bands == 1 {
@@ -1478,9 +1733,23 @@ impl Canvas {
         self.cmds.clear();
     }
 
+    /// Gives back the memory of everything that can be made again (cached
+    /// backdrops, pictures scaled to their display size): the browser of the
+    /// YouTube TV app needs every megabyte of the Pi's 1 GB.
+    pub fn trim_caches(&mut self) {
+        if self.ambients.is_empty() && self.scaled.is_empty() {
+            return;
+        }
+        self.ambients = Vec::new();
+        self.scaled = Vec::new();
+        self.region_scratch = Vec::new();
+        self.fonts.cache = HashMap::new();
+    }
+
     /// The next frame is drawn even if it looks the same (the screen was given away).
     pub fn invalidate(&mut self) {
         self.last_sig = 0;
+        self.strip_sigs.clear();
         self.layer_generation = self.layer_generation.wrapping_add(1);
         self.presented_directly = false;
     }
@@ -1809,13 +2078,31 @@ fn div255(x: u32) -> u32 {
 
 /// Draws the recorded commands into one band of rows [y0, y0 + band height).
 fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixmap>) {
-    let bh = (band.len() / (w as usize * 4)) as i32;
-    if bh == 0 {
+    let row_bytes = w as usize * 4;
+    let (band_y0, band_y1) = (y0, y0 + (band.len() / row_bytes) as i32);
+    if band_y1 == band_y0 {
         return;
     }
-    let y1 = y0 + bh;
+    let whole_band = band;
+    let mut clip: Option<(i32, i32)> = None;
     for cmd in cmds {
+        if let Cmd::ClipY(rows) = cmd {
+            clip = *rows;
+            continue;
+        }
+        // the rows of this band the command may touch
+        let (y0, y1) = match clip {
+            Some((top, bottom)) => (top.max(band_y0), bottom.min(band_y1)),
+            None => (band_y0, band_y1),
+        };
+        if y0 >= y1 {
+            continue;
+        }
+        let band = &mut whole_band
+            [(y0 - band_y0) as usize * row_bytes..(y1 - band_y0) as usize * row_bytes];
+        let bh = y1 - y0;
         match cmd {
+            Cmd::ClipY(_) => {}
             Cmd::Clear(px) => {
                 for p in band.chunks_exact_mut(4) {
                     p.copy_from_slice(px);
@@ -2279,6 +2566,135 @@ mod tests {
         assert!(c.finish(), "after invalidate: drawn");
     }
 
+    /// A busy little scene: a scrolled list, a selection, a clock.
+    fn scene(c: &mut Canvas, scroll: u32, sel: u32, clock: u32) {
+        c.backdrop();
+        c.text(
+            "Titel",
+            20.0,
+            10.0,
+            22,
+            Weight::Bold,
+            color::TEXT,
+            Align::Left,
+        );
+        c.clip_y(Some((60.0, 300.0)));
+        for i in 0..8 {
+            let y = 40.0 + i as f32 * 44.0 - scroll as f32 * 9.0;
+            c.rect(20.0, y, 500.0, 38.0, 10.0, color::PANEL_SOLID);
+            let focused = i == sel;
+            c.text(
+                &format!("Zeile {i}"),
+                34.0,
+                y + 9.0,
+                16,
+                if focused {
+                    Weight::Bold
+                } else {
+                    Weight::Regular
+                },
+                if focused { color::WHITE } else { color::MUTED },
+                Align::Left,
+            );
+        }
+        c.clip_y(None);
+        c.stroke_rect(
+            540.0,
+            60.0 + sel as f32 * 30.0,
+            80.0,
+            40.0,
+            8.0,
+            2.0,
+            color::ACCENT,
+        );
+        c.circle(600.0, 330.0, 6.0 + (clock % 2) as f32, color::RED);
+        c.vgradient(
+            0.0,
+            320.0,
+            640.0,
+            40.0,
+            0.0,
+            Rgba(0, 0, 0, 0),
+            Rgba(0, 0, 0, 200),
+        );
+        c.text(
+            &format!("12:{clock:02}"),
+            620.0,
+            10.0,
+            16,
+            Weight::Semi,
+            color::TEXT,
+            Align::Right,
+        );
+    }
+
+    #[test]
+    fn strips_draw_the_same_picture_as_a_full_pass() {
+        // (scroll, selection, clock): steps that change a little, a lot, nothing
+        let steps = [
+            (0, 0, 0),
+            (0, 0, 0),
+            (0, 0, 1),
+            (0, 1, 1),
+            (0, 2, 1),
+            (1, 2, 1),
+            (2, 3, 2),
+            (2, 3, 3),
+            (2, 7, 3),
+            (0, 0, 4),
+            (0, 0, 5),
+            (0, 5, 5),
+        ];
+        for scale in [1.0, 1.5] {
+            let mut part = Canvas::new_scaled(640, 360, scale);
+            let mut full = Canvas::new_scaled(640, 360, scale);
+            let mut partial_frames = 0;
+            for (i, (scroll, sel, clock)) in steps.into_iter().enumerate() {
+                part.reset_damage();
+                scene(&mut part, scroll, sel, clock);
+                part.finish();
+                partial_frames += usize::from(!part.damage().full && part.damage().len > 0);
+                full.invalidate();
+                scene(&mut full, scroll, sel, clock);
+                full.finish();
+                // Where a band's edge crosses a slanted outline tiny-skia
+                // may round one of its 16 coverage steps the other way; a
+                // real mistake leaves whole rows or shapes wrong.
+                let worst = part
+                    .pm
+                    .data()
+                    .iter()
+                    .zip(full.pm.data())
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap_or(0);
+                assert!(
+                    worst <= 20,
+                    "step {i} at scale {scale}: strips differ from a full pass by {worst}"
+                );
+            }
+            assert!(partial_frames >= 4, "small changes only touch a few strips");
+        }
+    }
+
+    #[test]
+    fn clip_keeps_rows_inside_their_box() {
+        let mut c = Canvas::new(64, 64);
+        c.clear(color::BLACK);
+        c.clip_y(Some((20.0, 40.0)));
+        c.rect(0.0, 0.0, 64.0, 64.0, 0.0, color::WHITE);
+        c.text("X", 30.0, 12.0, 20, Weight::Bold, color::RED, Align::Left);
+        c.clip_y(None);
+        c.rect(0.0, 60.0, 64.0, 4.0, 0.0, color::WHITE);
+        assert!(c.finish());
+        let px = |x: usize, y: usize| c.pm.data()[(y * 64 + x) * 4];
+        assert_eq!(px(5, 19), 0, "above the clip stays untouched");
+        assert_eq!(px(5, 20), 255);
+        assert_eq!(px(5, 39), 255);
+        assert_eq!(px(5, 40), 0, "below the clip stays untouched");
+        assert_eq!(px(5, 61), 255, "drawing after the clip is lifted is whole");
+    }
+
     #[test]
     fn rounded_stroke_uses_a_transparent_center_and_rounded_corners() {
         let mut c = Canvas::new(80, 60);
@@ -2376,5 +2792,70 @@ mod ambient_cost {
             "render_ambient: {:.1} ms",
             t.elapsed().as_secs_f64() * 1000.0 / 5.0
         );
+    }
+}
+
+#[cfg(test)]
+mod strip_cost {
+    use super::*;
+    /// cargo test --release -p tv-launcher strip_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn small_changes_cost_less_than_a_full_frame() {
+        let draw = |c: &mut Canvas, clock: u32| {
+            c.backdrop();
+            for i in 0..9 {
+                let y = 100.0 + i as f32 * 64.0;
+                c.rect(64.0, y, 1150.0, 56.0, 12.0, Rgba(255, 255, 255, 12));
+                c.stroke_rect(64.0, y, 1150.0, 56.0, 12.0, 1.0, color::BORDER);
+                c.text_fit(
+                    "Eine Zeile mit etwas Text darin, wie in einer Liste",
+                    84.0,
+                    y + 16.0,
+                    18,
+                    Weight::Semi,
+                    color::TEXT,
+                    900.0,
+                );
+            }
+            c.text(
+                &format!("12:{clock:02}"),
+                1200.0,
+                30.0,
+                19,
+                Weight::Semi,
+                color::TEXT,
+                Align::Right,
+            );
+        };
+        for (name, full) in [("alles neu", true), ("nur geänderte Streifen", false)] {
+            let mut c = Canvas::new_scaled(W, H, 1.5);
+            draw(&mut c, 0);
+            c.finish();
+            let t = std::time::Instant::now();
+            let mut bytes = 0u64;
+            for k in 1..=60u32 {
+                c.reset_damage();
+                if full {
+                    c.invalidate();
+                }
+                draw(&mut c, k);
+                c.finish();
+                let d = c.damage();
+                bytes += if d.full {
+                    c.pm.data().len() as u64
+                } else {
+                    d.rects[..d.len]
+                        .iter()
+                        .map(|r| r.2 as u64 * r.3 as u64 * 4)
+                        .sum()
+                };
+            }
+            eprintln!(
+                "{name}: {:.2} ms je Bild, {:.1} MB zum Fernseher je Bild",
+                t.elapsed().as_secs_f64() * 1000.0 / 60.0,
+                bytes as f64 / 60.0 / 1e6
+            );
+        }
     }
 }

@@ -835,6 +835,8 @@ impl Screen for Settings {
         self.item_bar.set(selected_y);
         let ib = self.item_bar.step();
         let near = (ib - selected_y).abs() < 28.0;
+        // a long list (WLAN networks) scrolls inside its pane
+        c.clip_y(Some((180.0, 634.0)));
         for (i, _) in rows.iter().enumerate() {
             let y = 182.0 + i as f32 * 57.0 - scroll;
             if y + 50.0 >= 182.0 && y <= 622.0 {
@@ -874,6 +876,7 @@ impl Screen for Settings {
                 w * 0.4,
             );
         }
+        c.clip_y(None);
         if let Some(r) = self.busy.get() {
             let (msg, col) = match r {
                 Ok(m) => (m, color::GREEN),
