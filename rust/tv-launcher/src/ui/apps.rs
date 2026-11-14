@@ -254,39 +254,46 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         color::MUTED,
         Align::Left,
     );
-    let (cx, cy, radius) = (640.0f32, 372.0f32, 218.0f32);
-    // Ball-bearing silhouette: a thick outer race, a grooved inner race and
-    // a floating set of six rollers around a solid central hub.
-    c.circle(cx, cy, radius + 13.0, Rgba(145, 169, 219, 28));
-    c.circle(cx, cy, radius + 8.0, Rgba(91, 111, 156, 230));
-    c.circle(cx, cy, radius + 3.0, Rgba(26, 32, 47, 255));
-    c.circle(cx, cy, radius - 8.0, Rgba(111, 133, 181, 165));
-    c.circle(cx, cy, radius - 13.0, Rgba(15, 19, 28, 255));
-    c.circle(cx, cy, 151.0, Rgba(86, 103, 145, 210));
-    c.circle(cx, cy, 145.0, Rgba(24, 30, 44, 255));
-    c.circle(cx, cy, 132.0, Rgba(111, 133, 181, 165));
-    c.circle(cx, cy, 126.0, Rgba(15, 19, 28, 255));
+    let (cx, cy, radius) = (640.0f32, 372.0f32, 202.0f32);
+    // Softer bearing races: low contrast, layered rings suggest a Kugellager
+    // without making the screen feel like a hard mechanical diagram.
+    c.circle(cx, cy, radius + 12.0, Rgba(151, 174, 222, 18));
+    c.circle(cx, cy, radius + 7.0, Rgba(91, 108, 147, 135));
+    c.circle(cx, cy, radius + 2.0, Rgba(26, 32, 47, 245));
+    c.circle(cx, cy, radius - 7.0, Rgba(93, 111, 151, 105));
+    c.circle(cx, cy, radius - 12.0, Rgba(17, 21, 31, 255));
+    c.circle(cx, cy, 148.0, Rgba(91, 108, 147, 115));
+    c.circle(cx, cy, 143.0, Rgba(24, 30, 44, 255));
+    c.circle(cx, cy, 132.0, Rgba(93, 111, 151, 95));
+    c.circle(cx, cy, 127.0, Rgba(17, 21, 31, 255));
 
-    // Metallic roller pockets sit between the two races; their little specular
-    // glints make the silhouette read as a bearing even from across the room.
+    // Six softly lit rollers sit at identical intervals on the inner orbit.
     for i in 0..APPS.len() {
         let angle = -std::f32::consts::FRAC_PI_2
             + i as f32 * std::f32::consts::TAU / APPS.len() as f32
             - rotation;
-        let bx = cx + angle.cos() * 173.0;
-        let by = cy + angle.sin() * 173.0;
-        c.circle(bx, by, 20.0, Rgba(7, 10, 17, 255));
-        c.circle(bx, by, 16.0, Rgba(132, 153, 196, 245));
-        c.circle(bx - 3.0, by - 4.0, 8.0, Rgba(204, 217, 245, 180));
+        let bx = cx + angle.cos() * 170.0;
+        let by = cy + angle.sin() * 170.0;
+        c.circle(bx, by, 19.0, Rgba(10, 14, 22, 230));
+        c.circle(bx, by, 15.0, Rgba(113, 132, 174, 175));
+        c.circle(bx - 3.0, by - 4.0, 7.0, Rgba(193, 207, 235, 90));
     }
 
-    c.circle(cx, cy, 112.0, Rgba(37, 47, 69, 245));
-    c.circle(cx, cy, 106.0, Rgba(255, 255, 255, 20));
-    draw_app_icon(c, icons, focus, cx, cy - 24.0, 56.0);
+    c.circle(cx, cy, 110.0, Rgba(42, 50, 68, 245));
+    c.circle(cx, cy, 105.0, Rgba(174, 192, 226, 34));
+    c.text(
+        "AUSGEWÄHLT",
+        cx,
+        cy - 22.0,
+        11,
+        Weight::Bold,
+        Rgba(166, 183, 215, 190),
+        Align::Center,
+    );
     c.text_fit(
         APPS[focus].0,
         cx,
-        cy + 16.0,
+        cy + 2.0,
         20,
         Weight::Bold,
         color::TEXT,
@@ -295,7 +302,7 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
     c.text(
         "OK · ÖFFNEN",
         cx,
-        cy + 43.0,
+        cy + 31.0,
         12,
         Weight::Bold,
         Rgba::hex(0xaecaff),
@@ -308,35 +315,31 @@ fn draw_wheel(c: &mut Canvas, focus: usize, rotation: f32, icons: &[Option<Image
         let (x, y) = (cx + angle.cos() * radius, cy + angle.sin() * radius);
         let accent = app_accent(i);
         let selected = i == focus;
-        c.circle(
-            x,
-            y,
-            if selected { 48.0 } else { 37.0 },
-            Rgba(
-                accent.0,
-                accent.1,
-                accent.2,
-                if selected { 125 } else { 48 },
-            ),
-        );
-        c.circle(
-            x,
-            y,
-            if selected { 42.0 } else { 33.0 },
-            Rgba(18, 22, 31, 255),
-        );
-        draw_app_icon(c, icons, i, x, y, if selected { 60.0 } else { 48.0 });
-        if !selected {
-            c.text_fit(
-                APPS[i].0,
-                x,
-                y + 48.0,
-                12,
-                Weight::Bold,
-                color::MUTED,
-                132.0,
-            );
+        if selected {
+            c.circle(x, y, 49.0, Rgba(accent.0, accent.1, accent.2, 22));
         }
+        c.circle(
+            x,
+            y,
+            42.0,
+            Rgba(accent.0, accent.1, accent.2, if selected { 90 } else { 48 }),
+        );
+        c.circle(x, y, 37.0, Rgba(20, 25, 36, 255));
+        // The icon centers use one radius and one size: the six positions
+        // stay perfectly circular as the wheel rotates.
+        draw_app_icon(c, icons, i, x, y, 48.0);
+        let label_radius = radius + 54.0;
+        let lx = cx + angle.cos() * label_radius;
+        let ly = cy + angle.sin() * label_radius;
+        c.text_fit(
+            APPS[i].0,
+            lx,
+            ly,
+            12,
+            Weight::Bold,
+            if selected { color::TEXT } else { color::MUTED },
+            144.0,
+        );
     }
     c.text(
         "← / → WEITERBLÄTTERN · ↑ ZURÜCK · OK STARTEN",
@@ -393,7 +396,7 @@ fn draw_app_icon(
             1.0,
         );
     } else {
-        draw_badge(c, index, x - 32.0, y - 27.0);
+        draw_badge(c, index, x, y, size);
     }
 }
 
@@ -408,78 +411,21 @@ fn app_accent(index: usize) -> Rgba {
     }
 }
 
-fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32) {
+fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32, size: f32) {
     match app {
-        0 => {
-            c.rect(x, y + 4.0, 64.0, 46.0, 12.0, color::RED);
-            c.polygon(
-                &[
-                    (x + 26.0, y + 14.0),
-                    (x + 26.0, y + 40.0),
-                    (x + 46.0, y + 27.0),
-                ],
-                color::WHITE,
-            );
-        }
-        1 => {
-            c.circle(x + 32.0, y + 27.0, 29.0, Rgba::hex(0x202c54));
-            c.text(
-                "prime",
-                x + 32.0,
-                y + 14.0,
-                15,
-                Weight::Bold,
-                Rgba::hex(0x74c9ff),
-                Align::Center,
-            );
-            c.line(
-                &[
-                    (x + 20.0, y + 39.0),
-                    (x + 31.0, y + 44.0),
-                    (x + 45.0, y + 37.0),
-                ],
-                2.0,
-                Rgba::hex(0x74c9ff),
-            );
-        }
-        2 => {
-            c.circle(x + 32.0, y + 27.0, 29.0, Rgba::hex(0x25272d));
-            c.circle(x + 32.0, y + 27.0, 20.0, Rgba::hex(0x25272d));
-            c.stroke_rect(x + 8.0, y + 4.0, 48.0, 46.0, 20.0, 2.0, Rgba::hex(0x97b7df));
-            c.text(
-                "ARD",
-                x + 32.0,
-                y + 16.0,
-                13,
-                Weight::Bold,
-                color::WHITE,
-                Align::Center,
-            );
-        }
         4 => {
-            c.circle(x + 32.0, y + 27.0, 29.0, Rgba::hex(0x151515));
+            c.circle(x, y, size * 0.46, Rgba::hex(0x151515));
             c.text(
                 "ARTE",
-                x + 32.0,
-                y + 17.0,
-                17,
+                x,
+                y - size * 0.12,
+                (size * 0.27) as u32,
                 Weight::Bold,
                 color::WHITE,
                 Align::Center,
             );
         }
-        5 => super::icon_gear(c, x + 32.0, y + 27.0, 38.0, Rgba::hex(0xe8eaf0)),
-        _ => {
-            c.circle(x + 32.0, y + 27.0, 29.0, Rgba::hex(0x6745ba));
-            c.text(
-                "ZDF",
-                x + 32.0,
-                y + 13.0,
-                20,
-                Weight::Bold,
-                color::WHITE,
-                Align::Center,
-            );
-        }
+        5 => super::icon_gear(c, x, y, size * 0.68, Rgba::hex(0xe8eaf0)),
+        _ => c.circle(x, y, size * 0.42, Rgba::hex(0x262a35)),
     }
 }
