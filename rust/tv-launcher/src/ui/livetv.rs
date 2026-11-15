@@ -4,7 +4,7 @@
 use super::*;
 use crate::app::{Ctx, Nav, Screen};
 use crate::gfx::{color, Align, Canvas, Rgba, Weight};
-use crate::livetv::{groups, in_group, Channel, ARTE_LIVE_CONFIG_URL};
+use crate::livetv::{groups, in_group, Channel, ALL_GROUP, ARTE_LIVE_CONFIG_URL};
 use crate::player::{Event, MediaSource, Player, StartOpts};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -133,7 +133,7 @@ impl LiveTv {
             digits_at: Instant::now(),
             guide: false,
             col: 1,
-            group: 1,
+            group: ALL_GROUP,
             query: String::new(),
             keyboard: None,
             list: ListView::new(),
@@ -175,6 +175,7 @@ impl LiveTv {
         &mut self,
         all: &Arc<Vec<Channel>>,
         favs: &[String],
+        watch: &std::collections::HashMap<String, u64>,
     ) -> (Arc<Vec<(String, String, usize)>>, Arc<Vec<Channel>>) {
         let g = &mut self.guide_data;
         let list = (Arc::as_ptr(all) as usize, all.len());
@@ -185,7 +186,7 @@ impl LiveTv {
                 groups(all)
                     .into_iter()
                     .map(|(id, label)| {
-                        let n = in_group(all, &id, favs).len();
+                        let n = in_group(all, &id, favs, watch).len();
                         (id, label, n)
                     })
                     .collect(),
@@ -201,7 +202,7 @@ impl LiveTv {
                 .unwrap_or("all");
             let query = self.query.to_lowercase();
             g.rows = Arc::new(
-                in_group(all, gid, favs)
+                in_group(all, gid, favs, watch)
                     .into_iter()
                     .filter(|ch| {
                         query.is_empty()
@@ -279,7 +280,7 @@ impl LiveTv {
             .get(self.group)
             .map(|g| g.0.clone())
             .unwrap_or_else(|| "all".into());
-        let mut list: Vec<Channel> = in_group(&all, &gid, &cx.cfg.livetv_favs)
+        let mut list: Vec<Channel> = in_group(&all, &gid, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch)
             .into_iter()
             .cloned()
             .collect();
@@ -302,6 +303,7 @@ impl LiveTv {
     }
 
     fn open_guide(&mut self) {
+        self.guide_data.groups = Arc::new(Vec::new());
         self.guide_since = Instant::now();
         self.wave_step = None;
         self.drawn_focus = None;
@@ -326,7 +328,7 @@ impl LiveTv {
     /// wave). Returns false when it cannot be drawn (no memory): the old
     /// guide is drawn instead.
     fn draw_list(&mut self, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channel>>) -> bool {
-        let (gs, chs) = self.guide_rows(all, &cx.cfg.livetv_favs);
+        let (gs, chs) = self.guide_rows(all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
         let (pw, ph) = (c.pm.width(), c.pm.height());
         let scale = pw as f32 / crate::gfx::W as f32;
         if self.tvl.is_none() {
@@ -647,7 +649,7 @@ impl Screen for LiveTv {
             return Nav::None;
         }
         if self.guide {
-            let (gs, chs) = self.guide_rows(&all, &cx.cfg.livetv_favs);
+            let (gs, chs) = self.guide_rows(&all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
             match k {
                 Key::Back | Key::Menu => self.close_guide(),
                 Key::Info => {
@@ -675,7 +677,7 @@ impl Screen for LiveTv {
                         (self.group + 1) % n
                     };
                     self.group_list.sel = self.group;
-                    let (_, rows) = self.guide_rows(&all, &cx.cfg.livetv_favs);
+                    let (_, rows) = self.guide_rows(&all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
                     self.list.sel = self
                         .current
                         .as_ref()
@@ -769,7 +771,7 @@ impl Screen for LiveTv {
                     .get(self.group)
                     .map(|g| g.0.clone())
                     .unwrap_or_else(|| "all".into());
-                let chs = in_group(&all, &gid, &cx.cfg.livetv_favs);
+                let chs = in_group(&all, &gid, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
                 if let Some(cur) = &self.current {
                     self.list.sel = chs.iter().position(|c| c.url == cur.url).unwrap_or(0);
                 }
@@ -1163,10 +1165,10 @@ fn draw_list_text(
     let playing = s.current.as_ref().map(|c| c.url.as_str()).unwrap_or("");
     if chs.is_empty() {
         c.text(
-            if s.group == 0 {
-                "Noch keine Favoriten: ▶ auf einem Sender"
-            } else {
-                "Keine Sender"
+            match gs.get(s.group).map(|g| g.0.as_str()) {
+                Some("fav") => "Noch keine Favoriten: ▶ auf einem Sender",
+                Some("top") => "Hier erscheinen die Sender, die du am längsten schaust",
+                _ => "Keine Sender",
             },
             ROW_X + 22.0,
             ROW_Y + 11.0,
@@ -1348,7 +1350,7 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channe
         Align::Right,
     );
 
-    let (gs, chs) = s.guide_rows(all, &cx.cfg.livetv_favs);
+    let (gs, chs) = s.guide_rows(all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
     let favs = s.guide_data.favs.clone();
     let gid = gs
         .get(s.group)

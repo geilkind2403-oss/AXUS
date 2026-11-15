@@ -176,7 +176,16 @@ pub fn load(url: &str) -> Result<(Vec<Channel>, String), String> {
     let dir = crate::app::data_dir();
     let _ = std::fs::create_dir_all(&dir);
     let tmp = dir.join("livetv-cache.m3u.tmp");
-    if std::fs::write(&tmp, format!("#CACHE-SOURCE:{url}\n").into_bytes().into_iter().chain(b).collect::<Vec<u8>>()).is_ok() {
+    if std::fs::write(
+        &tmp,
+        format!("#CACHE-SOURCE:{url}\n")
+            .into_bytes()
+            .into_iter()
+            .chain(b)
+            .collect::<Vec<u8>>(),
+    )
+    .is_ok()
+    {
         let _ = std::fs::rename(tmp, cache_path());
     }
     Ok((ch, url.to_string()))
@@ -189,7 +198,11 @@ fn cache_path() -> PathBuf {
 /// The list the last download brought, for the address `url` (the same
 /// address as configured now), read from the Pi's storage: no network.
 pub fn load_cached(url: &str) -> Option<(Vec<Channel>, String)> {
-    let want = if url.trim().is_empty() { DEFAULT_URL } else { url.trim() };
+    let want = if url.trim().is_empty() {
+        DEFAULT_URL
+    } else {
+        url.trim()
+    };
     let b = std::fs::read(cache_path()).ok()?;
     let text = String::from_utf8_lossy(&b);
     let first = text.lines().next()?;
@@ -201,7 +214,10 @@ pub fn load_cached(url: &str) -> Option<(Vec<Channel>, String)> {
 }
 
 /// The channel watched longest (seconds per address), if any was watched.
-pub fn most_watched<'a>(ch: &'a [Channel], watch: &std::collections::HashMap<String, u64>) -> Option<&'a Channel> {
+pub fn most_watched<'a>(
+    ch: &'a [Channel],
+    watch: &std::collections::HashMap<String, u64>,
+) -> Option<&'a Channel> {
     ch.iter()
         .filter_map(|c| watch.get(&c.url).map(|s| (c, *s)))
         .filter(|(_, s)| *s > 0)
@@ -226,6 +242,7 @@ pub fn groups(ch: &[Channel]) -> Vec<(String, String)> {
     });
     let mut g = vec![
         ("fav".to_string(), "Favoriten".to_string()),
+        ("top".to_string(), "Meistgesehen".to_string()),
         ("all".to_string(), "Alle Sender".to_string()),
     ];
     if counts.len() > 1 {
@@ -245,9 +262,27 @@ pub fn groups(ch: &[Channel]) -> Vec<(String, String)> {
     g
 }
 
-pub fn in_group<'a>(ch: &'a [Channel], group: &str, favs: &[String]) -> Vec<&'a Channel> {
+/// Index of "Alle Sender" in `groups`.
+pub const ALL_GROUP: usize = 2;
+
+pub fn in_group<'a>(
+    ch: &'a [Channel],
+    group: &str,
+    favs: &[String],
+    watch: &std::collections::HashMap<String, u64>,
+) -> Vec<&'a Channel> {
     match group {
         "fav" => ch.iter().filter(|c| favs.contains(&c.url)).collect(),
+        // the channels watched, longest first (at least a minute)
+        "top" => {
+            let mut v: Vec<(&Channel, u64)> = ch
+                .iter()
+                .filter_map(|c| watch.get(&c.url).map(|s| (c, *s)))
+                .filter(|(_, s)| *s >= 60)
+                .collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.number.cmp(&b.0.number)));
+            v.into_iter().map(|(c, _)| c).collect()
+        }
         "all" => ch.iter().collect(),
         g => ch.iter().filter(|c| c.group == g).collect(),
     }
@@ -270,13 +305,24 @@ mod tests {
         assert_eq!((c[1].name.as_str(), c[1].group.as_str()), ("ORF 1", "AT"));
         assert_eq!(c[2].group, "Musik");
         let g = groups(&c);
-        assert_eq!(g[2].1, "Deutschland");
+        assert_eq!(g[1].1, "Meistgesehen");
+        assert_eq!(g[ALL_GROUP].0, "all");
+        assert_eq!(g[3].1, "Deutschland");
         let mut watch = std::collections::HashMap::new();
         assert!(most_watched(&c, &watch).is_none());
         watch.insert("https://x/b.m3u8".to_string(), 900u64);
         watch.insert("http://x/c.m3u8".to_string(), 60u64);
         watch.insert("https://gone/x.m3u8".to_string(), 99_999u64);
         assert_eq!(most_watched(&c, &watch).unwrap().name, "ORF 1");
-        assert_eq!(in_group(&c, "fav", &["http://x/c.m3u8".into()]).len(), 1);
+        let top: Vec<&str> = in_group(&c, "top", &[], &watch)
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(top, ["ORF 1", "Radio"]);
+        let none = std::collections::HashMap::new();
+        assert_eq!(
+            in_group(&c, "fav", &["http://x/c.m3u8".into()], &none).len(),
+            1
+        );
     }
 }
