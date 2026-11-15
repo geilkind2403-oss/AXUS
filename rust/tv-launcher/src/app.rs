@@ -137,6 +137,16 @@ pub trait Screen {
     fn animating(&self, _cx: &Ctx) -> bool {
         false
     }
+    /// An overlay that draws its own glass over the screen below (no blur
+    /// from the launcher).
+    fn glass(&self) -> bool {
+        false
+    }
+    /// An overlay that wants the screen below drawn under it this frame.
+    /// Glass overlays say no while they still have a good picture of it.
+    fn needs_backdrop(&self) -> bool {
+        true
+    }
     /// Something glides over the running picture (guide, banner, list):
     /// draw at full pace for that moment. Otherwise an overlay over video is
     /// only looked at a few times a second, which leaves the CPU to the film.

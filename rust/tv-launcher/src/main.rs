@@ -7,6 +7,7 @@
 mod app;
 mod films;
 mod gfx;
+mod glass_fx;
 mod livetv;
 mod net;
 mod news;
@@ -93,7 +94,7 @@ const FADE: f32 = if cfg!(target_arch = "arm") {
 };
 // Bound redraws to the capsule, card and their shadows. The old rectangle
 // included a wide margin around the panel and added avoidable work per key.
-const CONTROL_DAMAGE: (f32, f32, f32, f32) = (878.0, 16.0, 390.0, 470.0);
+const CONTROL_DAMAGE: (f32, f32, f32, f32) = ui::control::REGION;
 
 impl App {
     fn top(&mut self) -> &mut Box<dyn Screen> {
@@ -196,6 +197,10 @@ impl App {
         self.last_input = Instant::now();
         if self.top().name() == "home" && k != Key::LongOk {
             self.control_blur_cache = None;
+            // Home is about to change: the prepared glass shows the old picture
+            if k != Key::Ok {
+                ui::control::Control::discard_glass();
+            }
         }
         if k == Key::LongBack {
             self.apply(Nav::Home);
@@ -282,7 +287,9 @@ impl App {
             self.canvas.set_full_base_restore(true);
         }
         let mut partial_control_overlay = false;
-        if s.overlay() {
+        // A glass overlay keeps its own pixels: the screen below is drawn
+        // again only when the glass needs a new picture of it.
+        if s.overlay() && s.needs_backdrop() {
             if let Some(base) = self.stack.last_mut() {
                 let use_partial_restore = s.name() == "control"
                     && !s.video()
@@ -305,7 +312,7 @@ impl App {
                 underlay_raster_ms = phase
                     .map(|started| started.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or_default();
-                if !s.video() {
+                if !s.video() && !s.glass() {
                     if use_partial_restore {
                         if let Some(blurred) = self.control_blur_cache.as_ref() {
                             let phase = trace_control.then(Instant::now);
@@ -437,16 +444,18 @@ fn feeds_ready(cx: &Ctx) -> bool {
         && cx.news.with(|n| n.map(|n| !n.is_empty()).unwrap_or(false))
 }
 
-/// Cache the small blurred Home patch after it has been presented. Its cost
-/// is paid during idle time, so the first Control Center frame can reuse it.
+/// While Home stands still, build the fast menu's glass from the Home
+/// picture behind it on a worker, so opening the menu only has to show it.
 fn prepare_control_blur(app: &mut App, top_name: &str, idle: Duration) {
-    if top_name == "home" && idle >= Duration::from_secs(3) && app.control_blur_cache.is_none() {
-        app.control_blur_cache = app.canvas.blurred_region_image(
-            CONTROL_DAMAGE.0,
-            CONTROL_DAMAGE.1,
-            CONTROL_DAMAGE.2,
-            CONTROL_DAMAGE.3,
-        );
+    if top_name == "home" && idle >= Duration::from_millis(150) {
+        let animating = app
+            .stack
+            .last()
+            .map(|s| s.animating(&app.cx))
+            .unwrap_or(false);
+        if !animating {
+            ui::control::Control::prewarm_glass(&app.canvas, &app.cx);
+        }
     }
 }
 
@@ -1094,7 +1103,8 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         return;
     }
     if std::env::var_os("SHOT_CONTROL_ONLY").is_some() {
-        app.key(Key::LongOk);
+        // a long OK on Home arranges the tiles: open the menu itself
+        app.apply(Nav::Push(Box::new(ui::control::Control::new(false))));
         settle(app, 140);
         shot(app, "02-control-center");
         app.key(Key::Down);
@@ -1108,7 +1118,7 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         return;
     }
     if std::env::var_os("SHOT_CONTROL_ANIM").is_some() {
-        app.key(Key::LongOk);
+        app.apply(Nav::Push(Box::new(ui::control::Control::new(false))));
         for frame in 0..9 {
             std::thread::sleep(Duration::from_millis(16));
             shot(app, &format!("control-entry-{frame:02}"));
@@ -1133,14 +1143,15 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             ui::control::Control::prewarm_ready(&app.cx, false)
         ));
         if !cold {
-            app.control_blur_cache = app.canvas.blurred_region_image(
-                CONTROL_DAMAGE.0,
-                CONTROL_DAMAGE.1,
-                CONTROL_DAMAGE.2,
-                CONTROL_DAMAGE.3,
-            );
+            // as the idle Home does: the glass is built before the menu opens
+            draw_frame(app);
+            ui::control::Control::prewarm_glass(&app.canvas, &app.cx);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !ui::control::Control::glass_ready() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
         }
-        app.key(Key::LongOk);
+        app.apply(Nav::Push(Box::new(ui::control::Control::new(false))));
         let first_frame = Instant::now();
         draw_frame(app);
         log(&format!(
