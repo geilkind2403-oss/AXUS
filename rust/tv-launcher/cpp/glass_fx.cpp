@@ -242,6 +242,7 @@ extern "C" void glass_build_rows(const GlassScene *s, int32_t y0, int32_t y1) {
     const float bend = 16.0f * sc;   // how far the picture bends there
     const float shadow = 26.0f * sc; // soft shadow reach
     const float lx = -0.5f, ly = -0.866f; // light from the upper left
+    (void)lx;
 
     const float reach = shadow + 10.0f * sc;
     for (int y = y0; y < y1; y++) {
@@ -300,7 +301,7 @@ extern "C" void glass_build_rows(const GlassScene *s, int32_t y0, int32_t y1) {
             }
             Px g;
             if (video) {
-                g = Px{34.0f * 0.84f, 24.0f * 0.84f, 18.0f * 0.84f, 0.84f * 255.0f};
+                g = Px{10.0f * 0.86f, 9.0f * 0.86f, 8.0f * 0.86f, 0.86f * 255.0f};
             } else {
                 // the lens: near the rim the picture is pulled in from the
                 // middle (magnified, bent); red and blue part a little
@@ -317,22 +318,21 @@ extern "C" void glass_build_rows(const GlassScene *s, int32_t y0, int32_t y1) {
                 }
                 // livelier colour, then a dark tint for legible text
                 float lum = g.r * 0.299f + g.g * 0.587f + g.b * 0.114f;
-                g.r = lum + (g.r - lum) * 1.35f;
-                g.g = lum + (g.g - lum) * 1.35f;
-                g.b = lum + (g.b - lum) * 1.35f;
-                over(g, 18, 24, 38, 0.52f);
+                g.r = lum + (g.r - lum) * 1.1f;
+                g.g = lum + (g.g - lum) * 1.1f;
+                g.b = lum + (g.b - lum) * 1.1f;
+                over(g, 8, 8, 10, 0.66f);
             }
             // a soft inner light along the whole edge, a bright rim where the
             // light falls on it and a faint one opposite
             float glowk = clamp01(1.0f - depth / (18.0f * sc));
-            over(g, 255, 255, 255, glowk * glowk * 0.07f);
-            float rim = clamp01(1.0f - absf(depth - 1.1f * sc) / (1.3f * sc));
-            float lit = nx * lx + ny * ly;
-            float ra = rim * (0.16f + 0.62f * maxf(0.0f, lit) * maxf(0.0f, lit) + 0.22f * maxf(0.0f, -lit));
-            over(g, 255, 255, 255, ra);
+            // no drawn rim: the glass ends in a soft inner light, brighter
+            // where the light falls on it
+            float lit = maxf(0.0f, nx * lx + ny * ly);
+            over(g, 255, 236, 200, glowk * glowk * (0.035f + 0.05f * lit));
             // a sheen over the upper part, like light on a curved surface
             float top = clamp01(1.0f - (py - P.y) / (P.h * 0.42f));
-            over(g, 255, 255, 255, top * top * 0.045f);
+            over(g, 255, 240, 210, top * top * 0.035f);
 
             // glass tiles inside
             for (int ti = 0; ti < nt; ti++) {
@@ -341,19 +341,15 @@ extern "C" void glass_build_rows(const GlassScene *s, int32_t y0, int32_t y1) {
                 float ts = sd_box(px, py, T.x, T.y, T.w, T.h, T.r);
                 float tc = clamp01(0.5f - ts);
                 if (tc <= 0.0f) continue;
-                if (T.kind == GLASS_INSET)
-                    over(g, 0, 4, 14, 0.26f * tc);
-                else if (T.kind == GLASS_TILE_ACTIVE)
-                    over(g, 74, 136, 255, 0.30f * tc);
-                else
-                    over(g, 255, 255, 255, 0.075f * tc);
-                // the tile's own rim: lit on top, a shade below
-                float tr = clamp01(1.0f - absf(-ts - 0.8f * sc) / (1.0f * sc)) * tc;
+                // tiles are a lighter pane, no outline: lit a little more
+                // at the top, like a curved surface
                 float v = clamp01((py - T.y) / T.h);
                 if (T.kind == GLASS_INSET)
-                    over(g, 0, 0, 0, tr * 0.18f);
+                    over(g, 0, 0, 0, 0.3f * tc);
+                else if (T.kind == GLASS_TILE_ACTIVE)
+                    over(g, 214, 168, 72, lerp(0.16f, 0.10f, v) * tc);
                 else
-                    over(g, 255, 255, 255, tr * lerp(0.42f, 0.08f, v));
+                    over(g, 255, 244, 220, lerp(0.085f, 0.045f, v) * tc);
             }
 
             // anti-aliased edge of the panel over what is behind it
@@ -409,10 +405,10 @@ extern "C" void glass_render(const GlassScene *s, uint8_t *dst, int32_t stride, 
             float py = (float)y + 0.5f;
             float v = clamp01((py - F.y) / F.h);
             // colour of the drop, top to bottom (straight RGB, alpha)
-            float cr = lerp(140.0f, 74.0f, v), cg = lerp(186.0f, 124.0f, v), cb = 255.0f;
-            float fa = lerp(0.50f, 0.40f, v);
-            float sheen = clamp01(1.0f - v * 2.2f) * 0.22f;
-            float rim_a = lerp(0.95f, 0.5f, v);
+            // gold glass: warm on top, deeper below, a soft sheen
+            float cr = lerp(246.0f, 196.0f, v), cg = lerp(208.0f, 146.0f, v), cb = lerp(128.0f, 52.0f, v);
+            float fa = lerp(0.42f, 0.32f, v);
+            float sheen = clamp01(1.0f - v * 2.4f) * 0.16f;
             for (int x = fx0i; x < fx1i; x++) {
                 float px = (float)x + 0.5f;
                 float sd = sd_box(px, py, F.x, F.y, F.w, F.h, F.r);
@@ -421,8 +417,8 @@ extern "C" void glass_render(const GlassScene *s, uint8_t *dst, int32_t stride, 
                 if (sd > 0.0f) {
                     // the glow around the drop
                     float t = clamp01(1.0f - sd / glow);
-                    a = t * t * 0.34f * clamp01(sd + 0.5f);
-                    r = 96, gg = 150, b = 255;
+                    a = t * t * 0.30f * clamp01(sd + 0.5f);
+                    r = 230, gg = 178, b = 80;
                     if (a > 0.0f) {
                         uint32_t ai = (uint32_t)(a * 255.0f);
                         uint32_t inv = 255 - ai;
@@ -434,12 +430,10 @@ extern "C" void glass_render(const GlassScene *s, uint8_t *dst, int32_t stride, 
                 }
                 float cov = clamp01(0.5f - sd);
                 if (cov <= 0.0f) continue;
-                float depth = -sd;
-                float rim = clamp01(1.0f - absf(depth - 1.0f * sc) / (1.3f * sc));
-                // fill, then sheen and rim in white (combined, one blend)
+                // fill, then the sheen (combined, one blend)
                 a = fa;
                 r = cr, gg = cg, b = cb;
-                float wa = maxf(sheen, rim * rim_a);
+                float wa = sheen;
                 r = lerp(r, 255.0f, wa), gg = lerp(gg, 255.0f, wa), b = lerp(b, 255.0f, wa);
                 a = a + (1.0f - a) * wa;
                 uint32_t ai = (uint32_t)(a * cov * 255.0f + 0.5f);

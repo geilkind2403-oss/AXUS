@@ -97,6 +97,8 @@ fn prepared() -> &'static Mutex<Option<Prepared>> {
     PREPARED.get_or_init(|| Mutex::new(None))
 }
 
+/// Gold on black glass.
+const GOLD: Rgba = Rgba(232, 194, 112, 255);
 const OPEN_ANIM: f32 = 0.16;
 const GLIDE: f32 = 0.17;
 const PRESS: f32 = 0.18;
@@ -415,27 +417,106 @@ impl Control {
         }
     }
 
-    fn power_icon(c: &mut Canvas, x: f32, y: f32, r: f32, col: Rgba) {
-        let ring: Vec<(f32, f32)> = (0..=24)
+    /// Power: an open ring and a bar (line icon, stroke 2).
+    fn power_icon(c: &mut Canvas, x: f32, y: f32, col: Rgba) {
+        let ring: Vec<(f32, f32)> = (0..=28)
             .map(|i| {
-                let a = 5.0 * std::f32::consts::PI / 4.0
-                    - i as f32 * 3.0 * std::f32::consts::PI / 2.0 / 24.0;
-                (x + a.cos() * r, y + a.sin() * r)
+                let a = -std::f32::consts::FRAC_PI_2
+                    + 0.62
+                    + i as f32 / 28.0 * (2.0 * std::f32::consts::PI - 1.24);
+                (x + a.cos() * 9.0, y + 1.0 + a.sin() * 9.0)
             })
             .collect();
-        c.line(&ring, 2.2, col);
-        c.line(&[(x, y - r * 1.35), (x, y + r * 0.1)], 2.4, col);
+        c.line(&ring, 2.0, col);
+        c.line(&[(x, y - 10.0), (x, y - 1.0)], 2.0, col);
     }
 
+    /// A filled crescent: the part of one disc outside another.
     fn moon_icon(c: &mut Canvas, x: f32, y: f32, col: Rgba) {
-        // a crescent as one stroke: open towards the upper right
-        let arc: Vec<(f32, f32)> = (0..=20)
-            .map(|i| {
-                let a = std::f32::consts::PI * (0.2 + i as f32 / 20.0 * 1.1);
-                (x + a.cos() * 7.0, y + a.sin() * 7.0)
-            })
-            .collect();
-        c.line(&arc, 3.2, col);
+        use std::f32::consts::PI;
+        let (r1, r2, off) = (9.0f32, 7.6f32, (4.6f32, -3.8f32));
+        let mid = (off.1).atan2(off.0) + PI; // away from the cut
+        let mut pts = Vec::new();
+        for i in 0..=60 {
+            let a = mid - PI + i as f32 / 60.0 * 2.0 * PI;
+            let (px, py) = (a.cos() * r1, a.sin() * r1);
+            if (px - off.0).hypot(py - off.1) >= r2 {
+                pts.push((x + px, y + py));
+            }
+        }
+        for i in (0..=60).rev() {
+            let a = mid - PI + i as f32 / 60.0 * 2.0 * PI;
+            let (px, py) = (off.0 + a.cos() * r2, off.1 + a.sin() * r2);
+            if px.hypot(py) <= r1 {
+                pts.push((x + px, y + py));
+            }
+        }
+        c.polygon(&pts, col);
+    }
+
+    /// The other line icons of the menu, all 2 px gold strokes.
+    fn line_icon(c: &mut Canvas, which: usize, x: f32, y: f32, col: Rgba) {
+        match which {
+            // TV: a screen on a small foot
+            4 => {
+                c.stroke_rect(x - 12.0, y - 9.0, 24.0, 16.0, 3.0, 2.0, col);
+                c.line(&[(x - 5.0, y + 11.0), (x + 5.0, y + 11.0)], 2.0, col);
+                c.line(&[(x, y + 7.0), (x, y + 11.0)], 2.0, col);
+            }
+            // weather: a sun
+            5 => {
+                let ring: Vec<(f32, f32)> = (0..=24)
+                    .map(|i| {
+                        let a = i as f32 / 24.0 * std::f32::consts::TAU;
+                        (x + a.cos() * 5.0, y + a.sin() * 5.0)
+                    })
+                    .collect();
+                c.line(&ring, 2.0, col);
+                for i in 0..8 {
+                    let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                    let (dx, dy) = (a.cos(), a.sin());
+                    c.line(
+                        &[(x + dx * 8.5, y + dy * 8.5), (x + dx * 11.5, y + dy * 11.5)],
+                        2.0,
+                        col,
+                    );
+                }
+            }
+            // phone
+            6 => {
+                c.stroke_rect(x - 7.0, y - 11.0, 14.0, 22.0, 3.5, 2.0, col);
+                c.line(&[(x - 2.5, y + 7.0), (x + 2.5, y + 7.0)], 1.8, col);
+            }
+            // home: a house
+            3 => {
+                c.line(
+                    &[(x - 11.0, y - 1.0), (x, y - 10.0), (x + 11.0, y - 1.0)],
+                    2.0,
+                    col,
+                );
+                c.line(
+                    &[
+                        (x - 8.0, y - 3.0),
+                        (x - 8.0, y + 10.0),
+                        (x + 8.0, y + 10.0),
+                        (x + 8.0, y - 3.0),
+                    ],
+                    2.0,
+                    col,
+                );
+                c.line(
+                    &[
+                        (x - 2.5, y + 10.0),
+                        (x - 2.5, y + 4.0),
+                        (x + 2.5, y + 4.0),
+                        (x + 2.5, y + 10.0),
+                    ],
+                    2.0,
+                    col,
+                );
+            }
+            _ => super::icon_gear(c, x, y, 22.0, col),
+        }
     }
 
     /// Text and icons of the menu, transparent (the glass is drawn in C++).
@@ -451,8 +532,8 @@ impl Control {
     fn draw_content(c: &mut Canvas, key: &PanelKey) {
         let (hh, mm, connected, remote_enabled, dnd, over_video, net_label) =
             (key.0, key.1, key.2, key.3, key.4, key.5, &key.6);
-        let fg = Rgba(248, 250, 255, 255);
-        let muted = Rgba(190, 200, 222, 255);
+        let cream = Rgba(246, 236, 214, 255);
+        let muted = Rgba(176, 162, 136, 255);
         let (x, y) = (PANEL.0, PANEL.1);
         // the header is the clock it grew out of, at the same places
         c.text(
@@ -461,22 +542,22 @@ impl Control {
             y + 12.0,
             19,
             Weight::Semi,
-            fg,
+            cream,
             Align::Left,
         );
         c.line(
-            &[(x + 82.0, y + 10.0), (x + 82.0, y + HEADER_H - 10.0)],
+            &[(x + 82.0, y + 12.0), (x + 82.0, y + HEADER_H - 12.0)],
             1.0,
-            Rgba(255, 255, 255, 48),
+            Rgba(GOLD.0, GOLD.1, GOLD.2, 70),
         );
         c.circle(
             x + 99.0,
             y + HEADER_H * 0.5,
             3.2,
             if connected {
-                Rgba(89, 211, 154, 255)
+                GOLD
             } else {
-                Rgba(246, 115, 115, 255)
+                Rgba(236, 110, 96, 255)
             },
         );
         c.text_fit(
@@ -489,15 +570,11 @@ impl Control {
             PANEL.2 - 111.0 - 16.0,
         );
 
-        // the buttons: icon over the label
+        // the buttons: a gold line icon over the label
         let labels = [
             "Ausschalten",
             "Netzwerk",
-            if dnd {
-                "Nicht stören an"
-            } else {
-                "Nicht stören"
-            },
+            if dnd { "Ruhe an" } else { "Nicht stören" },
             if over_video {
                 "Weiter ansehen"
             } else {
@@ -512,39 +589,23 @@ impl Control {
             },
             "Einstellungen",
         ];
-        let icon = Rgba(233, 240, 255, 255);
         for (i, label) in labels.iter().enumerate() {
             let (tx, ty, tw, th) = TILES[i];
-            let (cx, cy) = (tx + tw / 2.0, ty + 24.0);
+            let (cx, cy) = (tx + tw / 2.0, ty + 25.0);
             match i {
-                0 => Self::power_icon(c, cx, cy + 1.0, 8.0, Rgba(255, 140, 140, 255)),
-                1 => draw_wifi(c, cx, cy, Rgba(119, 189, 255, 255)),
-                2 => Self::moon_icon(c, cx, cy, Rgba(170, 196, 255, 255)),
-                3 => super::icon_play(c, cx + 2.0, cy, 18.0, Rgba(126, 194, 255, 255)),
-                4 => {
-                    c.stroke_rect(cx - 12.0, cy - 9.0, 24.0, 16.0, 3.5, 2.0, icon);
-                    c.line(&[(cx - 6.0, cy + 11.0), (cx + 6.0, cy + 11.0)], 2.0, icon);
-                }
-                5 => icon_weather(c, crate::weather::Sky::PartlyCloudy, true, cx, cy, 30.0),
-                6 => {
-                    let col = if remote_enabled {
-                        Rgba(117, 201, 255, 255)
-                    } else {
-                        icon
-                    };
-                    c.stroke_rect(cx - 7.0, cy - 11.0, 14.0, 22.0, 3.5, 2.0, col);
-                    c.circle(cx, cy + 7.0, 1.3, col);
-                }
-                _ => super::icon_gear(c, cx, cy, 22.0, icon),
+                0 => Self::power_icon(c, cx, cy, GOLD),
+                1 => draw_wifi(c, cx, cy - 1.0, GOLD),
+                2 => Self::moon_icon(c, cx, cy, GOLD),
+                _ => Self::line_icon(c, i, cx, cy, GOLD),
             }
             let label = c.ellipsize(label, 11, Weight::Semi, tw - 12.0);
             c.text(
                 &label,
                 cx,
-                ty + th - 22.0,
+                ty + th - 21.0,
                 11,
                 Weight::Semi,
-                icon,
+                cream,
                 Align::Center,
             );
         }
