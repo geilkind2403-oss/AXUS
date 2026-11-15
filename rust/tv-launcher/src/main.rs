@@ -16,6 +16,7 @@ mod remote;
 mod ui;
 mod updater;
 mod weather;
+mod weather_fx;
 mod youtube;
 
 #[cfg(target_os = "linux")]
@@ -819,13 +820,20 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
                 min: 3.0 + i as f32 * 0.5,
                 code: [2, 61, 0, 3, 71, 95, 1, 45][i],
                 rain: (i * 13 % 80) as u32,
+                sunrise: Some(7 * 60 + 21),
+                sunset: Some(16 * 60 + 48),
             })
             .collect();
+        // SHOT_WEATHER_CODE / SHOT_WEATHER_NIGHT: show another sky (development)
+        let code = std::env::var("SHOT_WEATHER_CODE")
+            .ok()
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(2);
         app.cx.weather.set(Ok(weather::Weather {
             temp: 11.4,
             feels: 9.2,
-            code: 2,
-            day: true,
+            code,
+            day: std::env::var_os("SHOT_WEATHER_NIGHT").is_none(),
             wind: 14.0,
             humidity: 71.0,
             hours,
@@ -1016,8 +1024,18 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
     }
     if std::env::var_os("SHOT_WEATHER_ONLY").is_some() {
         app.stack.push(Box::new(ui::weather::WeatherScreen::new()));
-        settle(app, 300);
+        // the living sky is made in the background, fades in, then moves;
+        // SHOT_WEATHER_FRAMES=n also saves n frames of its motion (30 fps)
+        settle(app, 2600);
         shot(app, "08-weather");
+        let frames: usize = std::env::var("SHOT_WEATHER_FRAMES")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        for i in 0..frames {
+            std::thread::sleep(Duration::from_millis(33));
+            shot(app, &format!("08-weather-{i:03}"));
+        }
         return;
     }
     if std::env::var_os("SHOT_SETTINGS_ONLY").is_some() {

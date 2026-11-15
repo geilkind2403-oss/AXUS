@@ -17,6 +17,9 @@ pub struct Day {
     pub min: f32,
     pub code: u32,
     pub rain: u32,
+    /// Minutes after local midnight; None when the service sent nothing.
+    pub sunrise: Option<u16>,
+    pub sunset: Option<u16>,
 }
 
 #[allow(dead_code)]
@@ -38,7 +41,7 @@ pub fn fetch(lat: f64, lon: f64) -> Result<Weather, String> {
         "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&timezone=auto&forecast_days=8\
 &current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,relative_humidity_2m\
 &hourly=temperature_2m,weather_code,precipitation_probability,is_day\
-&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
     );
     let j = crate::net::get_json(&url)?;
     let c = &j["current"];
@@ -78,6 +81,8 @@ pub fn fetch(lat: f64, lon: f64) -> Result<Weather, String> {
                     min: f(&d["temperature_2m_min"][i]),
                     code: d["weather_code"][i].as_u64().unwrap_or(0) as u32,
                     rain: d["precipitation_probability_max"][i].as_u64().unwrap_or(0) as u32,
+                    sunrise: clock_minutes(d["sunrise"][i].as_str().unwrap_or("")),
+                    sunset: clock_minutes(d["sunset"][i].as_str().unwrap_or("")),
                 })
                 .collect()
         })
@@ -93,6 +98,35 @@ pub fn fetch(lat: f64, lon: f64) -> Result<Weather, String> {
         days,
         fetched: std::time::Instant::now(),
     })
+}
+
+/// "2026-11-15T07:21" -> 441 (local minutes after midnight).
+fn clock_minutes(iso: &str) -> Option<u16> {
+    let h: u16 = iso.get(11..13)?.parse().ok()?;
+    let m: u16 = iso.get(14..16)?.parse().ok()?;
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// How strong the sunrise / sunset light is now (0..1): full at the moment
+/// itself, gone 75 minutes before or after.
+pub fn golden_hour(day: &Day, now_min: i32) -> f32 {
+    [day.sunrise, day.sunset]
+        .iter()
+        .flatten()
+        .map(|&m| 1.0 - ((now_min - m as i32).abs() as f32 / 75.0))
+        .fold(0.0f32, f32::max)
+        .clamp(0.0, 1.0)
+}
+
+/// How heavy rain or snow is for a WMO code (0..1), for the animation.
+pub fn intensity(code: u32) -> f32 {
+    match code {
+        51 | 56 | 61 | 71 | 77 | 80 | 85 => 0.35,
+        53 | 63 | 73 | 81 => 0.6,
+        55 | 57 | 66 | 86 | 95 => 0.8,
+        65 | 67 | 75 | 82 | 96 | 99 => 1.0,
+        _ => 0.5,
+    }
 }
 
 /// "2026-11-08" -> 0 = Sunday (Sakamoto).
@@ -149,5 +183,24 @@ mod tests {
     fn weekdays() {
         assert_eq!(super::weekday("2026-11-08"), 0); // a Sunday
         assert_eq!(super::weekday("2024-02-29"), 4);
+    }
+
+    #[test]
+    fn sun_times() {
+        assert_eq!(super::clock_minutes("2026-11-15T07:21"), Some(441));
+        assert_eq!(super::clock_minutes("2026-11-15T16:48"), Some(1008));
+        assert_eq!(super::clock_minutes(""), None);
+        let day = super::Day {
+            weekday: 0,
+            max: 0.0,
+            min: 0.0,
+            code: 0,
+            rain: 0,
+            sunrise: Some(441),
+            sunset: Some(1008),
+        };
+        assert_eq!(super::golden_hour(&day, 1008), 1.0);
+        assert_eq!(super::golden_hour(&day, 720), 0.0);
+        assert!((super::golden_hour(&day, 441 - 30) - 0.6).abs() < 1e-6);
     }
 }

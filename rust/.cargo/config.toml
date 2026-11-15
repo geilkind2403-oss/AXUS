@@ -7,3 +7,5 @@ rustflags = ["-C", "link-self-contained=yes", "-C", "target-cpu=cortex-a53"]
 [env]
 CC_armv7_unknown_linux_musleabihf = "clang"
 CFLAGS_armv7_unknown_linux_musleabihf = "--target=armv7-unknown-linux-musleabihf"
+CXX_armv7_unknown_linux_musleabihf = "clang++"
+CXXFLAGS_armv7_unknown_linux_musleabihf = "--target=armv7-unknown-linux-musleabihf"

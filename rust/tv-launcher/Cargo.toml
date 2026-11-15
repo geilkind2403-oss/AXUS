@@ -17,6 +17,10 @@ libc = "0.2"
 qrcodegen = "1.8"
 symphonia = { version = "0.5", default-features = false, features = ["aac", "mp3", "flac", "pcm", "vorbis"] }
 
+[build-dependencies]
+# already in Cargo.lock (ring uses it): compiles the C++ weather renderer
+cc = "1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 drm = "0.14"
 drm-ffi = "0.9"

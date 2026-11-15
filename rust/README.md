@@ -139,6 +139,18 @@ Layout: `tvcore/` (library scanning shared by both), `tv-server/`, `tv-launcher/
 (`platform/` = KMS, evdev, CEC, ALSA, connman/BlueZ · `player/` = MP4/MKV demux, V4L2
 decoder, audio, A/V sync · `ui/` = screens · `youtube.rs`, `weather.rs`, `news.rs`).
 
+The Weather app's living sky (clouds, rain, snow, fog, stars, lightning, the animated
+icon) is drawn by a small C++ module, `tv-launcher/cpp/weather_fx.cpp`, called from
+`src/weather_fx.rs` and `src/ui/weather.rs`. It is compiled freestanding by `build.rs`
+(no C++ runtime, no system headers), so the launcher stays one static binary. Only the
+upper band of the screen moves; it is split over the Pi's four cores and drops to 30 fps
+by itself when a frame takes longer than 9 ms (`Wetter-Animation` in the log).
+
+```bash
+cargo test --release -p tv-launcher weather_fx_cost -- --ignored --nocapture   # ms per frame at 1080p
+SHOT_SAMPLE=1 SHOT_WEATHER_ONLY=1 SHOT_WEATHER_CODE=95 cargo run -p tv-launcher -- --shot /tmp/shots
+```
+
 ## Not tested on real hardware yet
 
 Everything that only exists on the Pi – KMS planes, the V4L2 decoder, ALSA, CEC – is
