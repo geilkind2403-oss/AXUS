@@ -129,6 +129,30 @@ pub fn launcher_event_path() -> Option<PathBuf> {
     None
 }
 
+/// Waits (up to `max`) until udev has recorded the virtual keyboard as an
+/// input device. The browser's libinput ignores devices udev has not tagged
+/// yet: a keyboard created moments before the browser starts never types.
+pub fn wait_until_tagged(event: &Path, max: std::time::Duration) -> bool {
+    let started = std::time::Instant::now();
+    let Some(name) = event.file_name() else { return false };
+    let dev = Path::new("/sys/class/input").join(name).join("dev");
+    loop {
+        if let Ok(numbers) = std::fs::read_to_string(&dev) {
+            let db = Path::new("/run/udev/data").join(format!("c{}", numbers.trim()));
+            if std::fs::read_to_string(db)
+                .map(|d| d.contains("E:ID_INPUT=1"))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        if started.elapsed() >= max {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// The launcher also monitors evdev devices; ignore its own synthetic device
 /// to avoid feeding injected keys back into Cog forever.
 pub fn is_launcher_device(path: &str) -> bool {

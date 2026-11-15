@@ -89,6 +89,9 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
         return Err("Leeres Eingabeverzeichnis für Cog konnte nicht eingebunden werden".into());
     }
 
+    if !crate::platform::uinput::wait_until_tagged(&host_event, std::time::Duration::from_millis(1500)) {
+        crate::log("Virtuelle Fernbedienung: udev hat sie noch nicht als Tastatur erkannt (Browser startet trotzdem)");
+    }
     let Some(event_name) = host_event.file_name() else {
         return Err("Name des virtuellen Eingabegeräts fehlt".into());
     };
@@ -142,7 +145,27 @@ fn prepare(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn launch(url: &str, drm_fd: Option<i32>) -> Result<Child, String> {
+/// YouTube shows its TV interface (steered with arrow keys, light enough for
+/// a Pi) only to TV browsers; any other browser gets the desktop site, made
+/// for a mouse. Cog says it is a smart TV.
+const TV_USER_AGENT: &str =
+    "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 TV Safari/538.1";
+
+/// Options the launcher adds to Cog: the TV identity and a cookie jar on the
+/// Pi's storage (logins survive). `plain` leaves them out, for a Cog build
+/// that does not know one of them.
+fn extra_options(plain: bool) -> Vec<String> {
+    if plain {
+        return Vec::new();
+    }
+    vec![
+        format!("--user-agent={TV_USER_AGENT}"),
+        "--cookie-store=always".into(),
+        "--cookie-jar=sqlite:/root/.local/share/cog/cookies.db".into(),
+    ]
+}
+
+fn launch(url: &str, drm_fd: Option<i32>, plain: bool) -> Result<Child, String> {
     let root = root();
     let prepare_started = Instant::now();
     prepare(&root)?;
@@ -160,6 +183,11 @@ fn launch(url: &str, drm_fd: Option<i32>) -> Result<Child, String> {
             "-i",
             "HOME=/root",
             "XDG_RUNTIME_DIR=/tmp",
+            // WebKit's page cache and site data on the Pi's storage (the
+            // chroot's /root), not in the tmpfs: YouTube starts faster the
+            // second time and stays logged in
+            "XDG_CACHE_HOME=/root/.cache",
+            "XDG_DATA_HOME=/root/.local/share",
             "LANG=de_DE.UTF-8",
             "TZ=CET-1CEST,M3.5.0,M10.5.0/3",
         ])
@@ -187,12 +215,16 @@ fn launch(url: &str, drm_fd: Option<i32>) -> Result<Child, String> {
     }
     #[cfg(not(target_os = "linux"))]
     let _ = drm_fd;
+    for dir in ["root/.cache", "root/.local/share/cog"] {
+        let _ = std::fs::create_dir_all(root.join(dir));
+    }
     cmd.args([
         "/usr/bin/cog",
         "--platform=drm",
         "--enable-mediasource=true",
         "--enable-webaudio=true",
     ])
+    .args(extra_options(plain))
     .arg(url)
     .stdin(Stdio::null())
     .stdout(log)
@@ -209,6 +241,8 @@ pub struct Browser {
     error: Option<String>,
     frames: u32,
     cpu_governor: Option<String>,
+    /// Started again without the launcher's extra options (Cog refused one).
+    plain: bool,
 }
 
 impl Browser {
@@ -221,6 +255,7 @@ impl Browser {
             error: None,
             frames: 0,
             cpu_governor: None,
+            plain: false,
         }
     }
 
@@ -353,7 +388,7 @@ impl Screen for Browser {
             self.boost_cpu();
             // decoded thumbnails and posters come back when they are needed again
             cx.images.trim();
-            match launch(&self.url, drm_fd) {
+            match launch(&self.url, drm_fd, self.plain) {
                 Ok(c) => {
                     crate::log(&format!(
                         "{} Browserprozess gestartet nach {} ms",
@@ -385,6 +420,20 @@ impl Screen for Browser {
                     .unwrap_or(false);
                 self.child = None;
                 self.stop(cx);
+                // a Cog that does not know one of the extra options: once
+                // more without them instead of an error
+                let refused = std::fs::read_to_string(crate::app::data_dir().join("browser.log"))
+                    .map(|l| {
+                        let l = l.to_lowercase();
+                        l.contains("unknown option") || l.contains("unrecognized option")
+                    })
+                    .unwrap_or(false);
+                if quick && !self.plain && refused {
+                    crate::log("Cog kennt eine Zusatzoption nicht: Start ohne Zusatzoptionen");
+                    self.plain = true;
+                    self.frames = 0;
+                    return Nav::None;
+                }
                 if quick && !status.success() {
                     self.error = Some(format!(
                         "Der Browser ist gleich wieder ausgegangen ({status}). Details: {}",

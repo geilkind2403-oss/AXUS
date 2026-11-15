@@ -540,6 +540,13 @@ fn main() {
     }
 
     platform::input::start_evdev(fwd_input(tx.clone()));
+    // The browser's virtual keyboard exists from the start: udev has long
+    // marked it as a keyboard when YouTube opens, so the browser's input
+    // layer does not skip it.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = platform::uinput::open() {
+        log(&format!("Virtuelle Tastatur: {e} (TV-Fernbedienung geht dann im Browser nicht)"));
+    }
     {
         let t2 = tx.clone();
         platform::cec::start(fwd_input(tx.clone()), move || {
