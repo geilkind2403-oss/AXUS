@@ -67,8 +67,8 @@ impl Settings {
             0 => self.wifi.get().map(|v| v.len()).unwrap_or(0) + 1,
             1 => self.bt.get().map(|v| v.len()).unwrap_or(0) + 1,
             2 => 2,
-            3 => 4,
-            4 => 4,
+            3 => 5,
+            4 => 5,
             5 => 2,
             7 => 1,
             8 => 5,
@@ -191,7 +191,12 @@ impl Settings {
                 cx.reload_channels();
                 cx.toast("Senderliste wird neu geladen");
             }
-            (3, 2) | (3, 3) | (4, 0) | (4, 1) | (4, 2) => self.cycle(cx, 1),
+            (3, 2) | (3, 3) | (4, 0) | (4, 1) | (4, 2) | (4, 4) => self.cycle(cx, 1),
+            (3, 4) => {
+                cx.cfg.livetv_watch.clear();
+                cx.save();
+                cx.toast("Meistgesehen zurückgesetzt");
+            }
             (8, 0) => self.confirm = Some(0),
             (8, 1) => self.confirm = Some(1),
             (8, 2) => self.confirm = Some(2),
@@ -247,6 +252,7 @@ impl Settings {
                 }
             }
             (4, 2) => cx.cfg.sub_size = step(&[0, 1, 2], cx.cfg.sub_size),
+            (4, 4) => cx.cfg.youtube_720p = !cx.cfg.youtube_720p,
             _ => return,
         }
         cx.save();
@@ -412,7 +418,7 @@ impl Screen for Settings {
             }
             Key::Left | Key::Right
                 if (self.section == 3 && self.item >= 2)
-                    || (self.section == 4 && self.item <= 2) =>
+                    || (self.section == 4 && (self.item <= 2 || self.item == 4)) =>
             {
                 self.cycle(cx, if k == Key::Left { -1 } else { 1 });
             }
@@ -452,6 +458,11 @@ impl Screen for Settings {
         } else {
             SECTIONS[self.section]
         };
+        let hint = if self.section == 4 && self.item == 4 {
+            "Schnellere Menüs, etwas weicheres Bild"
+        } else {
+            ""
+        };
         let row_count = self.items(cx);
         view::draw_shell(
             c,
@@ -461,7 +472,7 @@ impl Screen for Settings {
             self.inside,
             row_count,
             heading,
-            "",
+            hint,
         );
         let x = 650.0;
         let w = 570.0;
@@ -557,6 +568,7 @@ impl Screen for Settings {
                         "‹ Startseite ›".into()
                     },
                 ));
+                rows.push(("Meistgesehen zurücksetzen".into(), String::new()));
             }
             4 => {
                 rows.push((
@@ -587,6 +599,14 @@ impl Screen for Settings {
                 ));
                 let mode = screen_mode(cx);
                 rows.push(("Bildschirm".into(), mode));
+                rows.push((
+                    "YouTube in 720p".into(),
+                    if cx.cfg.youtube_720p {
+                        "‹ Ein ›".into()
+                    } else {
+                        "‹ Aus ›".into()
+                    },
+                ));
             }
             5 => {
                 rows.push((
