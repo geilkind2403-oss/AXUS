@@ -23,6 +23,17 @@ const TITLE: [f32; 4] = [PAD, 40.0, 330.0, 124.0];
 const SLOW_MS: f32 = 9.0;
 const FAST_MS: f32 = 5.0;
 
+/// One grid for every card: content from PAD to RIGHT, the same gap
+/// between all cards and the same corners, so every edge lines up.
+const RIGHT: f32 = PAD + 1152.0;
+const GAP: f32 = 16.0;
+const RADIUS: f32 = 22.0;
+/// Top row: three metric cards on the right, the current conditions fill
+/// the rest.
+const METRIC_W: f32 = 180.0;
+const METRIC_X: f32 = RIGHT - 3.0 * METRIC_W - 2.0 * GAP;
+const HERO_W: f32 = METRIC_X - GAP - PAD;
+
 /// The new sky fades in over the still one when its scene is ready.
 const REVEAL: f32 = 0.4;
 
@@ -384,13 +395,21 @@ fn draw_band(c: &mut Canvas, w: &Weather, desc: &str, accent: Rgba, city: &str) 
     c.vgradient(
         PAD,
         142.0,
-        560.0,
+        HERO_W,
         190.0,
-        24.0,
+        RADIUS,
         Rgba(255, 255, 255, 34),
         Rgba(255, 255, 255, 14),
     );
-    c.stroke_rect(PAD, 142.0, 560.0, 190.0, 24.0, 1.0, Rgba(255, 255, 255, 45));
+    c.stroke_rect(
+        PAD,
+        142.0,
+        HERO_W,
+        190.0,
+        RADIUS,
+        1.0,
+        Rgba(255, 255, 255, 45),
+    );
     c.text(
         &format!("{:.0}°", w.temp),
         242.0,
@@ -423,7 +442,7 @@ fn draw_band(c: &mut Canvas, w: &Weather, desc: &str, accent: Rgba, city: &str) 
     );
     // sunrise and sunset, at the right of the card
     if let Some((rise, set)) = today.and_then(|d| Some((d.sunrise?, d.sunset?))) {
-        let x = 494.0;
+        let x = PAD + HERO_W - 130.0;
         c.line(
             &[(x - 20.0, 172.0), (x - 20.0, 302.0)],
             1.0,
@@ -462,9 +481,17 @@ fn draw_band(c: &mut Canvas, w: &Weather, desc: &str, accent: Rgba, city: &str) 
         ),
     ];
     for (i, (label, value, unit)) in metrics.iter().enumerate() {
-        let x = 650.0 + i as f32 * 190.0;
-        c.rect(x, 142.0, 174.0, 190.0, 21.0, Rgba(255, 255, 255, 19));
-        c.stroke_rect(x, 142.0, 174.0, 190.0, 21.0, 1.0, Rgba(255, 255, 255, 32));
+        let x = METRIC_X + i as f32 * (METRIC_W + GAP);
+        c.rect(x, 142.0, METRIC_W, 190.0, RADIUS, Rgba(255, 255, 255, 19));
+        c.stroke_rect(
+            x,
+            142.0,
+            METRIC_W,
+            190.0,
+            RADIUS,
+            1.0,
+            Rgba(255, 255, 255, 32),
+        );
         c.rect(x + 18.0, 161.0, 28.0, 3.0, 1.5, accent);
         c.text(
             label,
@@ -498,7 +525,14 @@ fn draw_band(c: &mut Canvas, w: &Weather, desc: &str, accent: Rgba, city: &str) 
 
 /// Hours and days (still).
 fn draw_lower(c: &mut Canvas, w: &Weather, accent: Rgba) {
-    c.rect(PAD, 356.0, 1152.0, 137.0, 22.0, Rgba(18, 25, 42, 167));
+    c.rect(
+        PAD,
+        356.0,
+        RIGHT - PAD,
+        137.0,
+        RADIUS,
+        Rgba(18, 25, 42, 167),
+    );
     c.text(
         "STUNDENVERLAUF",
         PAD + 22.0,
@@ -562,27 +596,20 @@ fn draw_lower(c: &mut Canvas, w: &Weather, accent: Rgba) {
     let (lo, hi) = days.iter().fold((f32::MAX, f32::MIN), |a, d| {
         (a.0.min(d.min), a.1.max(d.max))
     });
-    let dw = 1152.0 / days.len().max(1) as f32;
+    let n = days.len().max(1) as f32;
+    let dw = (RIGHT - PAD - (n - 1.0) * GAP) / n;
     for (i, d) in days.iter().enumerate() {
-        let x = PAD + dw * i as f32;
+        let x = PAD + (dw + GAP) * i as f32;
         let y = 539.0;
         c.rect(
-            x + 4.0,
+            x,
             y,
-            dw - 8.0,
+            dw,
             134.0,
-            17.0,
+            RADIUS,
             Rgba(255, 255, 255, if i == 0 { 31 } else { 17 }),
         );
-        c.stroke_rect(
-            x + 4.0,
-            y,
-            dw - 8.0,
-            134.0,
-            17.0,
-            1.0,
-            Rgba(255, 255, 255, 25),
-        );
+        c.stroke_rect(x, y, dw, 134.0, RADIUS, 1.0, Rgba(255, 255, 255, 25));
         let name = if i == 0 {
             "HEUTE".to_string()
         } else {
@@ -625,8 +652,8 @@ fn draw_lower(c: &mut Canvas, w: &Weather, accent: Rgba) {
             Rgba(220, 228, 241, 160),
             Align::Center,
         );
-        let bw = dw - 48.0;
-        let bx = x + 24.0;
+        let bw = dw - 40.0;
+        let bx = x + 20.0;
         let span = (hi - lo).max(1.0);
         c.rect(bx, y + 112.0, bw, 5.0, 3.0, Rgba(255, 255, 255, 32));
         let start = (d.min - lo) / span;
