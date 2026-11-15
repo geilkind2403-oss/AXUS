@@ -939,6 +939,13 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         app.key(Key::Info);
         settle(app, 100);
         shot(app, "02-live-tv-search");
+        // the gold channel banner after leaving the list
+        app.key(Key::Info);
+        app.key(Key::Back);
+        app.key(Key::Back);
+        app.key(Key::Info);
+        settle(app, 400);
+        shot(app, "03-live-tv-banner");
         return;
     }
     if std::env::var_os("SHOT_HOME_NAV_ONLY").is_some() {

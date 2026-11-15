@@ -120,6 +120,8 @@ pub struct Kms {
     primary: plane::Handle,
     overlay: Option<plane::Handle>,
     pub mode_size: (u32, u32),
+    /// The YouTube browser has the screen (it may run its own mode, 720p).
+    browser: bool,
     pub hz: u32,
     ui: [UiBuf; 4],
     /// short queue keeps the UI thread independent of the display's vblank wait
@@ -438,6 +440,7 @@ impl Kms {
             primary,
             overlay,
             mode_size: (mw, mh),
+            browser: false,
             hz: mode.vrefresh(),
             ui,
             ui_free: [true; 4],
@@ -573,12 +576,41 @@ impl Kms {
         }
         self.overlay_on = false;
         self.video_on = true;
+        self.browser = true;
         self.card.as_fd().as_raw_fd()
     }
 
     /// Restore the launcher's full-screen menu after Cog exits.
     pub fn end_browser(&mut self) {
+        self.browser = false;
+        // the browser may have switched the TV to 720p: our mode again
+        if self.screen_size() != self.mode_size {
+            if let Err(e) = self.card.set_crtc(
+                self.crtc,
+                Some(self._black.1),
+                (0, 0),
+                &[self.conn],
+                Some(self.mode),
+            ) {
+                crate::log(&format!("Bildschirmmodus nach YouTube nicht wiederhergestellt: {e}"));
+            } else {
+                crate::log("Bildschirmmodus nach YouTube wiederhergestellt");
+            }
+        }
         self.stop_video();
+    }
+
+    /// The size of the mode the screen runs now (the browser may change it).
+    fn screen_size(&self) -> (u32, u32) {
+        self.card
+            .get_crtc(self.crtc)
+            .ok()
+            .and_then(|c| c.mode())
+            .map(|m| {
+                let (w, h) = m.size();
+                (w as u32, h as u32)
+            })
+            .unwrap_or(self.mode_size)
     }
 
     pub fn present_ui(&mut self, bgra: &[u8], visible: bool, mut damage: Damage) {
@@ -587,7 +619,9 @@ impl Kms {
             self.ui_missed |= changed;
             return;
         }
-        let (mw, mh) = self.mode_size;
+        // over the browser the menu plane fills the screen as it runs now
+        // (the display controller scales it, e.g. down to 720p)
+        let (mw, mh) = if self.browser { self.screen_size() } else { self.mode_size };
         if self.video_on {
             let Some(ov) = self.overlay else {
                 self.ui_missed |= changed;

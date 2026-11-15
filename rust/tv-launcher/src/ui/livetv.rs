@@ -995,7 +995,9 @@ impl Screen for LiveTv {
                     Rgba(0, 0, 0, 0),
                     Rgba(0, 0, 0, 200),
                 );
-                c.rect(bx, by, bw, bh, 20.0, Rgba(22, 22, 26, 225));
+                // warm black glass with a soft gold glow, as in the list
+                c.rect(bx - 6.0, by - 6.0, bw + 12.0, bh + 12.0, 26.0, Rgba(214, 160, 70, 18));
+                c.vgradient(bx, by, bw, bh, 20.0, Rgba(30, 24, 14, 232), Rgba(12, 10, 7, 238));
                 let channel_label = match self.standalone_app_id {
                     Some("zdf") => "ZDF".into(),
                     Some("arte") => "ARTE".into(),
@@ -1007,7 +1009,7 @@ impl Screen for LiveTv {
                     by + 30.0,
                     27,
                     Weight::Bold,
-                    color::TEXT,
+                    Rgba(244, 211, 142, 255),
                     Align::Center,
                 );
                 logo(c, cx, &ch, bx + 100.0, by + 16.0, 128.0, 72.0);
@@ -1017,7 +1019,7 @@ impl Screen for LiveTv {
                     by + 22.0,
                     28,
                     Weight::Bold,
-                    color::TEXT,
+                    Rgba(250, 247, 239, 255),
                     bw - 480.0,
                 );
                 let fav = if cx.cfg.livetv_favs.contains(&ch.url) {
@@ -1031,7 +1033,7 @@ impl Screen for LiveTv {
                     by + 62.0,
                     16,
                     Weight::Regular,
-                    color::MUTED,
+                    Rgba(180, 166, 136, 255),
                     Align::Left,
                 );
                 let (hh, mm, _) = crate::app::local_hms();
@@ -1041,7 +1043,7 @@ impl Screen for LiveTv {
                     by + 22.0,
                     28,
                     Weight::Semi,
-                    color::TEXT,
+                    Rgba(250, 247, 239, 255),
                     Align::Right,
                 );
                 c.text(
@@ -1050,7 +1052,7 @@ impl Screen for LiveTv {
                     by + 62.0,
                     14,
                     Weight::Bold,
-                    color::RED,
+                    Rgba(226, 187, 116, 255),
                     Align::Right,
                 );
                 c.offset = (0.0, 0.0);

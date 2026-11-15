@@ -89,7 +89,10 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
         return Err("Leeres Eingabeverzeichnis für Cog konnte nicht eingebunden werden".into());
     }
 
-    if !crate::platform::uinput::wait_until_tagged(&host_event, std::time::Duration::from_millis(1500)) {
+    if !crate::platform::uinput::wait_until_tagged(
+        &host_event,
+        std::time::Duration::from_millis(1500),
+    ) {
         crate::log("Virtuelle Fernbedienung: udev hat sie noch nicht als Tastatur erkannt (Browser startet trotzdem)");
     }
     let Some(event_name) = host_event.file_name() else {
@@ -211,7 +214,17 @@ fn extra_options(plain: bool) -> Vec<String> {
     ]
 }
 
-fn launch(url: &str, drm_fd: Option<i32>, plain: bool) -> Result<Child, String> {
+/// Settings › Bild & Bedienung › "YouTube in 720p": the browser draws the
+/// interface at 1280x720 (less than half the pixels: faster menus); the TV
+/// scales it up. Read by name, so it also works before the switch exists.
+fn youtube_720p(cx: &Ctx) -> bool {
+    serde_json::to_value(&cx.cfg)
+        .ok()
+        .and_then(|v| v.get("youtube_720p").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+fn launch(url: &str, drm_fd: Option<i32>, plain: bool, small: bool) -> Result<Child, String> {
     let root = root();
     let prepare_started = Instant::now();
     prepare(&root)?;
@@ -237,12 +250,15 @@ fn launch(url: &str, drm_fd: Option<i32>, plain: bool) -> Result<Child, String> 
             "LANG=de_DE.UTF-8",
             "TZ=CET-1CEST,M3.5.0,M10.5.0/3",
         ])
-        // Match the launcher output mode so the DRM overlay aligns pixel-for-pixel.
-        .args([
-            "COG_PLATFORM_DRM_MODE_MAX=1920x1080@60",
-            "WEBKIT_GST_ENABLE_HLS_SUPPORT=1",
-            "GST_V4L2_USE_LIBV4L2=0",
-        ]);
+        // the launcher's mode (the menu over YouTube aligns pixel for
+        // pixel), or 720p when chosen in Settings: the launcher sets its
+        // mode again when the browser ends
+        .arg(if small {
+            "COG_PLATFORM_DRM_MODE_MAX=1280x720@60"
+        } else {
+            "COG_PLATFORM_DRM_MODE_MAX=1920x1080@60"
+        })
+        .args(["WEBKIT_GST_ENABLE_HLS_SUPPORT=1", "GST_V4L2_USE_LIBV4L2=0"]);
     #[cfg(target_os = "linux")]
     if let Some(fd) = drm_fd {
         cmd.arg("TV_DRM_SHARED_FD=198")
@@ -434,7 +450,11 @@ impl Screen for Browser {
             self.boost_cpu();
             // decoded thumbnails and posters come back when they are needed again
             cx.images.trim();
-            match launch(&self.url, drm_fd, self.plain) {
+            let small = youtube_720p(cx);
+            if small {
+                crate::log("YouTube in 720p (Einstellungen)");
+            }
+            match launch(&self.url, drm_fd, self.plain, small) {
                 Ok(c) => {
                     crate::log(&format!(
                         "{} Browserprozess gestartet nach {} ms",
