@@ -158,6 +158,19 @@ impl Focus {
         h: f32,
         motion: bool,
     ) -> (f32, f32, f32, f32) {
+        self.move_to_with_tau(x, y, w, h, motion, 0.07)
+    }
+
+    /// Move the focus frame with a screen-specific response time.
+    pub fn move_to_with_tau(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        motion: bool,
+        tau: f32,
+    ) -> (f32, f32, f32, f32) {
         if !self.shown {
             self.x.jump(x);
             self.y.jump(y);
@@ -170,13 +183,19 @@ impl Focus {
             self.y.set(y);
             self.w.set(w);
             self.h.set(h);
+            (
+                self.x.step_with_tau(tau),
+                self.y.step_with_tau(tau),
+                self.w.step_with_tau(tau),
+                self.h.step_with_tau(tau),
+            )
         } else {
             self.x.jump(x);
             self.y.jump(y);
             self.w.jump(w);
             self.h.jump(h);
+            (self.x.v, self.y.v, self.w.v, self.h.v)
         }
-        (self.x.step(), self.y.step(), self.w.step(), self.h.step())
     }
 
     pub fn draw_bounds(&self, c: &mut Canvas, bounds: (f32, f32, f32, f32), r: f32) {
@@ -208,8 +227,11 @@ impl Anim {
     /// Moves towards the target by elapsed time (not per frame), so motion
     /// takes the same ~0.25 s however fast the Pi draws.
     pub fn step(&mut self) -> f32 {
+        self.step_with_tau(0.07)
+    }
+    pub fn step_with_tau(&mut self, tau: f32) -> f32 {
         let d = self.target - self.v;
-        let k = 1.0 - (-frame_dt() / 0.07).exp();
+        let k = 1.0 - (-frame_dt() / tau.max(0.001)).exp();
         let eps = (self.target.abs() * 0.002).max(0.004);
         self.v = if d.abs() < eps {
             self.target

@@ -168,7 +168,7 @@ pub fn start(tx: Sender<InputMsg>, on_standby: impl Fn() + Send + 'static) {
                                     let long = back_long.clone();
                                     let tx = tx.clone();
                                     std::thread::spawn(move || {
-                                        std::thread::sleep(std::time::Duration::from_secs(3));
+                                        std::thread::sleep(super::input::LONG_BACK_HOLD);
                                         if held.load(std::sync::atomic::Ordering::Relaxed) {
                                             long.store(true, std::sync::atomic::Ordering::Relaxed);
                                             let _ = super::input::route(&tx, Key::LongBack);

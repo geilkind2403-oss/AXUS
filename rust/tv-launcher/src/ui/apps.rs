@@ -3,10 +3,11 @@
 use super::*;
 use crate::app::{load, Ctx, Nav, Screen, Slot};
 use crate::gfx::{Canvas, Image, Rgba};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-const ENTRY_DURATION: Duration = Duration::from_millis(480);
+const ENTRY_DURATION: Duration = Duration::from_millis(250);
 const LAUNCH_ANIMATION_SECONDS: f32 = 0.72;
 
 const APPS: [(&str, &str); 5] = [
@@ -26,6 +27,7 @@ pub(super) struct AppAssets {
 }
 
 static APP_ASSETS: OnceLock<AppAssets> = OnceLock::new();
+static APP_ASSETS_WARMING: AtomicBool = AtomicBool::new(false);
 
 fn warm_glass() -> Option<Image> {
     // Build the annulus as a tiny, cached software material rather than a
@@ -160,6 +162,22 @@ fn cached_assets() -> AppAssets {
             center_well: center_well(),
         })
         .clone()
+}
+
+/// Build the wheel's material and app badges during Home idle time.
+pub fn prewarm(cx: &Ctx) {
+    if APP_ASSETS.get().is_some()
+        || APP_ASSETS_WARMING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    drop(load(&cx.tx, || {
+        let assets = cached_assets();
+        APP_ASSETS_WARMING.store(false, Ordering::Release);
+        assets
+    }));
 }
 
 pub struct Apps {

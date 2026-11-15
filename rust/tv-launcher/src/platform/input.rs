@@ -4,6 +4,8 @@
 //! later (a Bluetooth keyboard that connects after boot) are picked up.
 use std::sync::mpsc::Sender;
 
+pub const LONG_BACK_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Up,
@@ -264,7 +266,7 @@ pub fn start_evdev(tx: Sender<InputMsg>) {
                                 let long = back_long.clone();
                                 let tx = tx.clone();
                                 std::thread::spawn(move || {
-                                    std::thread::sleep(std::time::Duration::from_secs(3));
+                                    std::thread::sleep(LONG_BACK_HOLD);
                                     if held.load(std::sync::atomic::Ordering::Relaxed) {
                                         long.store(true, std::sync::atomic::Ordering::Relaxed);
                                         let _ = tx.send(InputMsg::Key(Key::LongBack));

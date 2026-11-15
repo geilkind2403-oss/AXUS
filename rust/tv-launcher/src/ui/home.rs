@@ -22,8 +22,6 @@ pub struct Home {
     last_focus_rect: Option<(f32, f32, f32, f32)>,
     /// the arrange-mode outlines are on the kept picture (wipe them next frame)
     edit_drawn: bool,
-    ambient_focus: usize,
-    focus_changed_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -116,8 +114,6 @@ impl Home {
             news_overlay_key: None,
             last_focus_rect: None,
             edit_drawn: false,
-            ambient_focus: last_media_tile.min(5),
-            focus_changed_at: Instant::now(),
         }
     }
 
@@ -138,61 +134,6 @@ impl Home {
         self.tile_images[i] = Some(self.tile_canvas.snapshot());
         self.tile_image_sources[i] = sources;
         self.tile_cache_keys[i] = Some(tile_cache_key(cx, content, &self.tile_image_sources[i]));
-    }
-
-    /// What the backdrop glows with: the focused tile's picture or colour.
-    fn ambient(&self, cx: &mut Ctx, focus: usize) -> crate::gfx::Ambient {
-        use crate::gfx::Ambient;
-        let img = |cx: &mut Ctx, src: &str| {
-            if src.is_empty() {
-                None
-            } else {
-                cx.images.get(src, 760, 520)
-            }
-        };
-        match focus {
-            0 => Ambient::Color(Rgba::hex(0xd0202c)),
-            1 => Ambient::Color(Rgba::hex(0x2a7fd8)),
-            2 => {
-                let pick = films_pick(cx);
-                let src = pick
-                    .map(|f| {
-                        if f.banner.is_empty() {
-                            f.icon
-                        } else {
-                            f.banner
-                        }
-                    })
-                    .unwrap_or_default();
-                img(cx, &src)
-                    .map(Ambient::Image)
-                    .unwrap_or(Ambient::Color(Rgba::hex(0xc8963c)))
-            }
-            3 => match cx.weather.get() {
-                Some(Ok(w)) if !w.day => Ambient::Color(Rgba::hex(0x2c3a8a)),
-                _ => Ambient::Color(Rgba::hex(0x3d8be0)),
-            },
-            4 => {
-                let src = cx.news.with(|items| {
-                    let Some(items) = items.as_ref() else {
-                        return String::new();
-                    };
-                    let n = items.len().min(6);
-                    if n == 0 {
-                        String::new()
-                    } else {
-                        // Home shows the lead headline; the News page contains
-                        // the full list. Avoid replacing this large tile on a
-                        // timer while the user is navigating the launcher.
-                        items[0].image.clone()
-                    }
-                });
-                img(cx, &src)
-                    .map(Ambient::Image)
-                    .unwrap_or(Ambient::Color(Rgba::hex(0x0b4fa3)))
-            }
-            _ => Ambient::Color(Rgba::hex(0x6b6b78)),
-        }
     }
 
     fn open(&self, cx: &mut Ctx) -> Nav {
@@ -252,7 +193,6 @@ impl Screen for Home {
             self.moving = None;
             if self.editing && self.focus >= 6 {
                 self.focus = if self.focus == 6 { 0 } else { 2 };
-                self.focus_changed_at = Instant::now();
             }
             self.edit_started = self.editing.then(Instant::now);
             cx.toast(if self.editing {
@@ -278,9 +218,13 @@ impl Screen for Home {
                     if tile_size(self.order[from]) == tile_size(self.order[self.focus]) {
                         self.moving = None;
                         self.order.swap(from, self.focus);
+                        // Tile sizes match, so their already-rendered card
+                        // images can move with them instead of being rebuilt.
+                        self.tile_images.swap(from, self.focus);
+                        self.tile_image_sources.swap(from, self.focus);
+                        self.tile_cache_keys.swap(from, self.focus);
                         cx.cfg.home_order = self.order.map(|v| v as u8);
                         cx.save();
-                        self.tile_cache_keys = [None; 6];
                         self.base_cache = LayerCache::default();
                         self.base_image = None;
                         cx.toast("Kachel verschoben");
@@ -303,9 +247,6 @@ impl Screen for Home {
                     (Key::Up, 5) => 2,
                     _ => f,
                 };
-            }
-            if self.focus != f {
-                self.focus_changed_at = Instant::now();
             }
             return Nav::None;
         }
@@ -349,9 +290,6 @@ impl Screen for Home {
             (Key::Menu, _) => return Nav::Push(Box::new(super::settings::Settings::new(cx))),
             _ => f,
         };
-        if self.focus != f {
-            self.focus_changed_at = Instant::now();
-        }
         Nav::None
     }
 
@@ -372,17 +310,7 @@ impl Screen for Home {
                 self.refresh_tile_cache(cx, i);
             }
         }
-        // Let rapid remote navigation finish before changing the full-screen
-        // ambience; the focus itself can then move over a retained base layer.
-        if self.focus < 6
-            && self.ambient_focus != self.order[self.focus]
-            && self.focus_changed_at.elapsed() >= std::time::Duration::from_millis(280)
-        {
-            self.ambient_focus = self.order[self.focus];
-        }
-        // the black-gold light field of Settings behind the tiles (cached
-        // once; no new backdrop per focused tile)
-        let _ = self.ambient_focus;
+        // Keep the warm gold backdrop stable; only the focused content changes.
         c.ambient(crate::gfx::Ambient::LiquidGold);
         // The greeting and date are stable for the whole day, so they stay in
         // the retained base. Fast-changing status is drawn below as an overlay.
@@ -479,7 +407,7 @@ impl Screen for Home {
         }
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
+            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
             super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
             self.last_focus_rect = Some(bounds);
         } else {
@@ -525,7 +453,7 @@ impl Screen for Home {
         self.last_focus_rect = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
+            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
             super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
         }
         draw_home_status(
