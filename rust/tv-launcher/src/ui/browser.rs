@@ -110,6 +110,49 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Script the browser's extension runs in every YouTube page: the quick
+/// panel (browser/control.js) and, before it, tricks that make YouTube's
+/// TV interface react at once on a Pi 3. Written into the bundle at every
+/// start, so it is up to date without rebuilding the browser.
+const CONTROL_JS: &str = include_str!("../../../../browser/control.js");
+const SPEED_JS: &str = r#"(() => {
+  if (window.__tvSpeedInstalled) return;
+  window.__tvSpeedInstalled = true;
+  // Focus moves, row slides and zooms are animated for 0.2-0.3 s; on a
+  // Pi 3 they stutter and make every key press feel slow. 1 ms instead of
+  // none keeps the page's transitionend/animationend events firing.
+  // Blur filters and large shadows are among the costliest things to draw.
+  const css = `
+    *:not(#tv-quick-panel):not(#tv-quick-panel *),
+    *:not(#tv-quick-panel):not(#tv-quick-panel *)::before,
+    *:not(#tv-quick-panel):not(#tv-quick-panel *)::after {
+      transition-duration: 1ms !important; transition-delay: 0s !important;
+      animation-duration: 1ms !important; animation-delay: 0s !important;
+      scroll-behavior: auto !important;
+      backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+      filter: none !important; box-shadow: none !important; text-shadow: none !important;
+    }`;
+  const style = document.createElement('style');
+  style.id = 'tv-speed';
+  style.textContent = css;
+  (document.head || document.documentElement).appendChild(style);
+})();
+"#;
+
+fn install_page_script(root: &Path) {
+    let dir = root.join("usr/lib/tv-control");
+    if !dir.is_dir() {
+        return;
+    }
+    let script = format!("{SPEED_JS}\n{CONTROL_JS}");
+    let path = dir.join("control.js");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
+        if let Err(e) = std::fs::write(&path, script) {
+            crate::log(&format!("Browser-Skript nicht geschrieben: {e}"));
+        }
+    }
+}
+
 /// /dev, /proc, /sys, /run/udev and a fresh /tmp inside the bundle.
 fn prepare(root: &Path) -> Result<(), String> {
     let mounts: [(&str, &str, &[&str]); 5] = [
@@ -137,6 +180,7 @@ fn prepare(root: &Path) -> Result<(), String> {
         }
     }
     isolate_browser_input(root)?;
+    install_page_script(root);
     // name resolution as the host has it right now
     let resolv = std::fs::read("/etc/resolv.conf")
         .or_else(|_| std::fs::read("/run/connman/resolv.conf"))
@@ -161,6 +205,8 @@ fn extra_options(plain: bool) -> Vec<String> {
     vec![
         format!("--user-agent={TV_USER_AGENT}"),
         "--cookie-store=always".into(),
+        // no smooth scrolling: the Pi draws far fewer frames per key press
+        "--enable-smooth-scrolling=false".into(),
         "--cookie-jar=sqlite:/root/.local/share/cog/cookies.db".into(),
     ]
 }
