@@ -11,11 +11,13 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/weather_fx.h");
     println!("cargo:rerun-if-changed=cpp/glass_fx.cpp");
     println!("cargo:rerun-if-changed=cpp/glass_fx.h");
+    println!("cargo:rerun-if-changed=cpp/tvlist_fx.cpp");
     let mut fx = cc::Build::new();
     fx.cpp(true)
         .cpp_link_stdlib(None)
         .file("cpp/weather_fx.cpp")
         .file("cpp/glass_fx.cpp")
+        .file("cpp/tvlist_fx.cpp")
         .include("cpp")
         // the effects run every frame: optimised even in debug builds
         .opt_level(3)

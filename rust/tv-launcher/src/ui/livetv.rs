@@ -10,6 +10,22 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The channel list in the style of Settings: the same column of rows on the
+/// right, the title above it, the hints below; on the left the running
+/// channel keeps playing in a window. Drawn by `cpp/tvlist_fx.cpp` over a
+/// black-gold wave; Rust draws only the text, once per key press.
+const ROW_X: f32 = 650.0;
+const ROW_W: f32 = 570.0;
+const ROW_Y: f32 = 154.0;
+const ROW_H: f32 = 43.0;
+const ROW_STEP: f32 = 55.0;
+const ROW_R: f32 = 15.0;
+const VISIBLE: usize = 9;
+/// The video window: 16:9, its top on the first row, its left on the page edge.
+const PIP: (f32, f32, f32, f32, f32) = (64.0, ROW_Y, 544.0, 306.0, 18.0);
+/// How often watching time is written to the settings file (SD card).
+const WATCH_SAVE: Duration = Duration::from_secs(120);
+
 /// What the guide lists. Worked out when the channel list, the favourites,
 /// the group or the search changes -- not on every frame: sorting a few
 /// thousand channels into groups thirty times a second cost more than the
@@ -48,6 +64,20 @@ pub struct LiveTv {
     guide_in: Anim,
     banner_in: Anim,
     guide_data: GuideData,
+    /// The channel list (C++ picture), its text and where its focus is.
+    tvl: Option<crate::tvlist_fx::TvList>,
+    text_key: Option<u64>,
+    first: usize,
+    focus_y: f32,
+    guide_since: Instant,
+    last_frame: Instant,
+    /// What the frame shows now: the wave's step, the text, the focus.
+    wave_step: Option<u64>,
+    drawn_key: Option<u64>,
+    drawn_focus: Option<f32>,
+    /// Watching time not yet counted, and when it was last saved.
+    watch_from: Option<Instant>,
+    watch_saved: Instant,
 }
 
 const BANNER: Duration = Duration::from_millis(4500);
@@ -113,6 +143,17 @@ impl LiveTv {
             guide_in: Anim::default(),
             banner_in: Anim::default(),
             guide_data: GuideData::default(),
+            tvl: None,
+            text_key: None,
+            first: 0,
+            focus_y: ROW_Y,
+            guide_since: Instant::now(),
+            last_frame: Instant::now(),
+            wave_step: None,
+            drawn_key: None,
+            drawn_focus: None,
+            watch_from: None,
+            watch_saved: Instant::now(),
         }
     }
 
@@ -175,7 +216,25 @@ impl LiveTv {
         (g.groups.clone(), g.rows.clone())
     }
 
+    /// Adds the time the current channel has been on screen to its count.
+    fn count_watching(&mut self, cx: &mut Ctx, save: bool) {
+        if self.standalone_app_id.is_some() {
+            return;
+        }
+        if let (Some(from), Some(ch)) = (self.watch_from.take(), self.current.as_ref()) {
+            let secs = from.elapsed().as_secs();
+            if secs > 0 {
+                *cx.cfg.livetv_watch.entry(ch.url.clone()).or_insert(0) += secs;
+            }
+        }
+        if save {
+            cx.save();
+            self.watch_saved = Instant::now();
+        }
+    }
+
     fn tune(&mut self, ch: Channel, cx: &mut Ctx) {
+        self.count_watching(cx, false);
         self.player = None; // stop the old stream first (decoder + sound are single)
         self.no_signal = None;
         self.retried = false;
@@ -240,6 +299,149 @@ impl LiveTv {
         let next = list[((i + dir).rem_euclid(n)) as usize].clone();
         self.zap = Some((next, Instant::now()));
         self.banner_until = Instant::now() + BANNER;
+    }
+
+    fn open_guide(&mut self) {
+        self.guide_since = Instant::now();
+        self.wave_step = None;
+        self.drawn_focus = None;
+        self.first = self.list.sel.saturating_sub(VISIBLE / 2);
+        self.focus_y = ROW_Y + (self.list.sel - self.first) as f32 * ROW_STEP;
+        self.text_key = None;
+    }
+
+    fn close_guide(&mut self) {
+        self.guide = false;
+        #[cfg(target_os = "linux")]
+        crate::platform::kms::set_video_window(None);
+        self.text_key = None;
+        if let Some(t) = self.tvl.as_mut() {
+            // the text layer is a whole frame: not kept while unused
+            t.set_text(std::sync::Arc::new(tiny_skia::Pixmap::new(1, 1).unwrap()));
+        }
+        self.tvl = None;
+    }
+
+    /// The list as drawn by C++ (Settings' column, the video window, the
+    /// wave). Returns false when it cannot be drawn (no memory): the old
+    /// guide is drawn instead.
+    fn draw_list(&mut self, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channel>>) -> bool {
+        let (gs, chs) = self.guide_rows(all, &cx.cfg.livetv_favs);
+        let (pw, ph) = (c.pm.width(), c.pm.height());
+        let scale = pw as f32 / crate::gfx::W as f32;
+        if self.tvl.is_none() {
+            let Some(mut t) = crate::tvlist_fx::TvList::new(pw, ph, scale) else {
+                return false;
+            };
+            t.set_hole(Some(PIP));
+            self.tvl = Some(t);
+            self.text_key = None;
+        }
+        #[cfg(target_os = "linux")]
+        crate::platform::kms::set_video_window(Some((
+            PIP.0 / crate::gfx::W as f32,
+            PIP.1 / crate::gfx::H as f32,
+            PIP.2 / crate::gfx::W as f32,
+            PIP.3 / crate::gfx::H as f32,
+        )));
+        // keep the focus in view, Settings-like: the column moves only when
+        // the focus would leave it
+        let sel = self.list.sel.min(chs.len().saturating_sub(1));
+        if sel < self.first {
+            self.first = sel;
+        } else if sel >= self.first + VISIBLE {
+            self.first = sel + 1 - VISIBLE;
+        }
+        self.first = self.first.min(chs.len().saturating_sub(VISIBLE));
+        let target = ROW_Y + (sel - self.first.min(sel)) as f32 * ROW_STEP;
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.08);
+        self.last_frame = now;
+        let k = dt / (0.075 + dt);
+        self.focus_y += (target - self.focus_y) * k;
+        if (target - self.focus_y).abs() < 0.25 {
+            self.focus_y = target;
+        }
+
+        // the text, drawn again only when something in it changed
+        let playing = self
+            .current
+            .as_ref()
+            .map(|c| c.url.clone())
+            .unwrap_or_default();
+        let (hh, mm, _) = crate::app::local_hms();
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (
+                Arc::as_ptr(&chs) as usize,
+                self.first,
+                sel,
+                self.group,
+                &self.query,
+                &playing,
+            )
+                .hash(&mut h);
+            (
+                cx.cfg.livetv_favs.len(),
+                hh,
+                mm,
+                cx.net.revision(),
+                self.no_signal.is_some(),
+            )
+                .hash(&mut h);
+            h.finish()
+        };
+        if self.text_key != Some(key) {
+            self.text_key = Some(key);
+            c.invalidate();
+            c.clear(Rgba(0, 0, 0, 0));
+            draw_list_text(self, c, cx, &gs, &chs, sel);
+            c.finish();
+            let rows: Vec<(f32, f32, f32, f32, bool)> = (self.first
+                ..(self.first + VISIBLE).min(chs.len()))
+                .map(|i| {
+                    let y = ROW_Y + (i - self.first) as f32 * ROW_STEP;
+                    (ROW_X, y, ROW_W, ROW_H, chs[i].url == playing)
+                })
+                .collect();
+            let t = self.tvl.as_mut().unwrap();
+            t.set_rows(&rows, ROW_R);
+            t.set_text(c.snapshot());
+        }
+        // The wave drifts in steps of 1/15 s: a whole new frame 15 times a
+        // second. In between only the strip the focus moved through.
+        let step = (now.duration_since(self.guide_since).as_secs_f32() * 15.0).floor() as u64;
+        let focus = (!chs.is_empty()).then_some([ROW_X, self.focus_y, ROW_W, ROW_H, ROW_R]);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let t = self.tvl.as_mut().unwrap();
+        let full = self.wave_step != Some(step) || self.drawn_key != self.text_key;
+        if full {
+            t.advance(step as f32 / 15.0);
+            t.render(c.pm.data_mut(), focus, threads);
+            c.mark_damage_rect(0.0, 0.0, crate::gfx::W as f32, crate::gfx::H as f32);
+        } else if self.drawn_focus != Some(self.focus_y) {
+            let glow = 14.0;
+            let a = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
+            let b = self.drawn_focus.unwrap_or(self.focus_y).max(self.focus_y) + ROW_H + glow;
+            t.render_rows(
+                c.pm.data_mut(),
+                (a.max(0.0) * scale) as usize,
+                (b * scale).ceil() as usize,
+                focus,
+                threads,
+            );
+            c.mark_damage_rect(0.0, a, crate::gfx::W as f32, b - a);
+        } else {
+            return true; // nothing moved
+        }
+        self.wave_step = Some(step);
+        self.drawn_key = self.text_key;
+        self.drawn_focus = Some(self.focus_y);
+        c.request_present();
+        true
     }
 
     fn overlay_visible(&self) -> bool {
@@ -315,7 +517,9 @@ impl Screen for LiveTv {
             || self.keyboard.is_some()
     }
     fn motion_over_video(&self) -> bool {
-        self.guide_in.moving()
+        // the list's wave moves: 30 pictures a second while it is open
+        (self.guide && self.standalone_app_id.is_none())
+            || self.guide_in.moving()
             || self.banner_in.moving()
             || (self.guide && (self.list.moving() || self.group_list.moving()))
     }
@@ -351,18 +555,28 @@ impl Screen for LiveTv {
     }
 
     fn poll(&mut self, cx: &mut Ctx) -> Nav {
-        // first start: the last channel (or the first)
+        // first start: the most watched channel (else the last, else the first)
         if self.current.is_none() && self.player.is_none() && self.no_signal.is_none() {
             let all = self.channels(cx);
             if !all.is_empty() {
                 let last = cx.cfg.livetv_last.clone();
-                let ch = all
-                    .iter()
-                    .find(|c| c.url == last)
+                let ch = crate::livetv::most_watched(&all, &cx.cfg.livetv_watch)
+                    .or_else(|| all.iter().find(|c| c.url == last))
                     .cloned()
                     .unwrap_or_else(|| all[0].clone());
                 self.tune(ch, cx);
             }
+        }
+        // watching time: counted from the first picture, saved now and then
+        let showing = self.player.is_some() && !self.waiting();
+        if showing && self.watch_from.is_none() {
+            self.watch_from = Some(Instant::now());
+        } else if !showing && self.watch_from.is_some() {
+            self.count_watching(cx, false);
+        }
+        if self.watch_from.is_some() && self.watch_saved.elapsed() >= WATCH_SAVE {
+            self.count_watching(cx, true);
+            self.watch_from = Some(Instant::now());
         }
         if let Some((ch, at)) = &self.zap {
             if at.elapsed() > Duration::from_millis(400) {
@@ -434,40 +648,41 @@ impl Screen for LiveTv {
         }
         if self.guide {
             let (gs, chs) = self.guide_rows(&all, &cx.cfg.livetv_favs);
-            match (k, self.col) {
-                (Key::Back, _) | (Key::Menu, _) => self.guide = false,
-                (Key::Info, _) => {
+            match k {
+                Key::Back | Key::Menu => self.close_guide(),
+                Key::Info => {
                     self.keyboard = Some(Keyboard::new("Sender suchen", &self.query, false));
                 }
-                (Key::Char(ch), _) => {
+                Key::Char(ch) => {
                     let mut kb = Keyboard::new("Sender suchen", &self.query, false);
                     kb.text.push(ch);
                     self.keyboard = Some(kb);
                 }
-                (Key::Backspace, _) => {
+                Key::Backspace => {
                     self.query.pop();
                     self.list.sel = 0;
                 }
-                (Key::Red, _) => {
+                Key::Red => {
                     self.query.clear();
                     self.list.sel = 0;
                 }
-                (Key::Left, 1) => self.col = 0,
-                (Key::Right, 0) | (Key::Ok, 0) => {
-                    self.col = 1;
-                    if let Some(current) = &self.current {
-                        self.list.sel = chs.iter().position(|c| c.url == current.url).unwrap_or(0);
+                // left/right: the previous / next group (Favoriten, Alle, countries)
+                Key::Left | Key::Right if !gs.is_empty() => {
+                    let n = gs.len();
+                    self.group = if k == Key::Left {
+                        (self.group + n - 1) % n
                     } else {
-                        self.list.sel = 0;
-                    }
+                        (self.group + 1) % n
+                    };
+                    self.group_list.sel = self.group;
+                    let (_, rows) = self.guide_rows(&all, &cx.cfg.livetv_favs);
+                    self.list.sel = self
+                        .current
+                        .as_ref()
+                        .and_then(|cur| rows.iter().position(|c| c.url == cur.url))
+                        .unwrap_or(0);
                 }
-                (Key::Up | Key::Down | Key::ChUp | Key::ChDown, 0) => {
-                    if self.group_list.key(k, gs.len()) {
-                        self.group = self.group_list.sel;
-                        self.list.sel = 0;
-                    }
-                }
-                (Key::Play | Key::Green | Key::Yellow, 1) => {
+                Key::Play | Key::Green | Key::Yellow => {
                     if let Some(ch) = chs.get(self.list.sel) {
                         let favs = &mut cx.cfg.livetv_favs;
                         if let Some(i) = favs.iter().position(|u| *u == ch.url) {
@@ -480,20 +695,31 @@ impl Screen for LiveTv {
                         cx.save();
                     }
                 }
-                (Key::Ok, 1) => {
+                // OK: another channel plays in the window; OK on the playing
+                // one goes back to the full picture
+                Key::Ok => {
                     if let Some(ch) = chs.get(self.list.sel).cloned() {
-                        self.guide = false;
-                        self.tune(ch, cx);
+                        if self
+                            .current
+                            .as_ref()
+                            .map(|c| c.url == ch.url)
+                            .unwrap_or(false)
+                        {
+                            self.close_guide();
+                        } else {
+                            self.tune(ch, cx);
+                        }
                     }
                 }
-                (Key::Home, _) => {
+                Key::Home => {
+                    self.count_watching(cx, true);
+                    self.close_guide();
                     self.player = None;
                     return Nav::Home;
                 }
-                (k, 1) => {
+                k => {
                     self.list.key(k, chs.len());
                 }
-                _ => {}
             }
             return Nav::None;
         }
@@ -503,10 +729,12 @@ impl Screen for LiveTv {
                     self.digits.clear();
                     return Nav::None;
                 }
+                self.count_watching(cx, true);
                 self.player = None;
                 return Nav::Pop;
             }
             Key::Home => {
+                self.count_watching(cx, true);
                 self.player = None;
                 return Nav::Home;
             }
@@ -515,6 +743,7 @@ impl Screen for LiveTv {
                 self.col = 1;
                 self.group = 0;
                 self.list.sel = 0;
+                self.open_guide();
             }
             Key::Green => {
                 if let Some(ch) = self.current.clone() {
@@ -545,6 +774,7 @@ impl Screen for LiveTv {
                     self.list.sel = chs.iter().position(|c| c.url == cur.url).unwrap_or(0);
                 }
                 self.group_list.sel = self.group;
+                self.open_guide();
             }
             Key::Info => self.banner_until = Instant::now() + BANNER,
             Key::PlayPause | Key::Pause | Key::Play => {
@@ -558,6 +788,20 @@ impl Screen for LiveTv {
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
+        // the channel list: drawn by C++ over the whole frame
+        if self.guide && self.keyboard.is_none() && self.standalone_app_id.is_none() {
+            let all = self.channels(cx);
+            if !all.is_empty() && self.draw_list(c, cx, &all) {
+                return;
+            }
+        }
+        if self.tvl.is_some() {
+            // the list was just left (search keyboard, or closed)
+            self.tvl = None;
+            #[cfg(target_os = "linux")]
+            crate::platform::kms::set_video_window(None);
+            c.invalidate();
+        }
         c.clear(Rgba(0, 0, 0, 0));
         let (w, h) = (crate::gfx::W as f32, crate::gfx::H as f32);
         let all: Arc<Vec<Channel>> = if self.standalone_app_id.is_some() {
@@ -873,6 +1117,171 @@ impl Screen for LiveTv {
     }
 }
 
+/// The list's text, in Settings' places and colours: title and hint above
+/// the column, the rows, the hints below; the running channel under its
+/// window.
+fn draw_list_text(
+    s: &LiveTv,
+    c: &mut Canvas,
+    cx: &mut Ctx,
+    gs: &Arc<Vec<(String, String, usize)>>,
+    chs: &Arc<Vec<Channel>>,
+    sel: usize,
+) {
+    let cream = Rgba(250, 247, 239, 255);
+    let soft = Rgba(238, 233, 223, 255);
+    let muted = Rgba(180, 166, 136, 255);
+    let gold = Rgba(226, 187, 116, 255);
+    status(c, cx);
+    c.text(
+        "Live TV",
+        1220.0,
+        70.0,
+        34,
+        Weight::Bold,
+        cream,
+        Align::Right,
+    );
+    let group = gs
+        .get(s.group)
+        .map(|g| g.1.as_str())
+        .unwrap_or("Alle Sender");
+    let hint = if s.query.is_empty() {
+        format!("‹  {group}  ›     ·     {} Sender", chs.len())
+    } else {
+        format!("Suche „{}“  ·  {} Treffer", s.query, chs.len())
+    };
+    c.text(
+        &hint,
+        1220.0,
+        112.0,
+        15,
+        Weight::Regular,
+        muted,
+        Align::Right,
+    );
+    let playing = s.current.as_ref().map(|c| c.url.as_str()).unwrap_or("");
+    if chs.is_empty() {
+        c.text(
+            if s.group == 0 {
+                "Noch keine Favoriten: ▶ auf einem Sender"
+            } else {
+                "Keine Sender"
+            },
+            ROW_X + 22.0,
+            ROW_Y + 11.0,
+            18,
+            Weight::Regular,
+            muted,
+            Align::Left,
+        );
+    }
+    for i in s.first..(s.first + VISIBLE).min(chs.len()) {
+        let ch = &chs[i];
+        let y = ROW_Y + (i - s.first) as f32 * ROW_STEP;
+        let focused = i == sel;
+        c.text(
+            &ch.number.to_string(),
+            ROW_X + 58.0,
+            y + 12.0,
+            15,
+            Weight::Semi,
+            if focused {
+                Rgba(244, 211, 142, 255)
+            } else {
+                Rgba(205, 171, 105, 220)
+            },
+            Align::Right,
+        );
+        let fav = cx.cfg.livetv_favs.contains(&ch.url);
+        let live = ch.url == playing;
+        let right = 22.0 + if live { 48.0 } else { 0.0 } + if fav { 26.0 } else { 0.0 };
+        c.text_fit(
+            &ch.name,
+            ROW_X + 76.0,
+            y + 11.0,
+            18,
+            if focused {
+                Weight::Semi
+            } else {
+                Weight::Regular
+            },
+            if focused {
+                Rgba(255, 250, 236, 255)
+            } else {
+                soft
+            },
+            ROW_W - 76.0 - right - 8.0,
+        );
+        let mut x = ROW_X + ROW_W - 22.0;
+        if live {
+            c.text("LIVE", x, y + 14.0, 12, Weight::Bold, gold, Align::Right);
+            x -= 48.0;
+        }
+        if fav {
+            c.text("★", x, y + 11.0, 16, Weight::Regular, gold, Align::Right);
+        }
+    }
+    // a thin gold scroll bar, as in Settings
+    if chs.len() > VISIBLE {
+        let (top, len) = (153.0, 484.0);
+        c.rect(
+            ROW_X + ROW_W - 3.0,
+            top,
+            2.0,
+            len,
+            1.0,
+            Rgba(192, 157, 91, 35),
+        );
+        let thumb = (len * VISIBLE as f32 / chs.len() as f32).max(24.0);
+        let k = s.first as f32 / (chs.len() - VISIBLE) as f32;
+        c.rect(
+            ROW_X + ROW_W - 3.0,
+            top + k * (len - thumb),
+            2.0,
+            thumb,
+            1.0,
+            Rgba(226, 187, 116, 170),
+        );
+    }
+    // under the window: what plays
+    let (px, py) = (PIP.0, PIP.1 + PIP.3 + 22.0);
+    if let Some(ch) = s.current.as_ref() {
+        c.text("JETZT", px, py, 12, Weight::Bold, gold, Align::Left);
+        c.text_fit(&ch.name, px, py + 20.0, 26, Weight::Bold, cream, PIP.2);
+        let state = if s.no_signal.is_some() {
+            "Kein Signal".to_string()
+        } else if s.waiting() {
+            "Wird geladen …".to_string()
+        } else {
+            format!(
+                "{}  ·  {}",
+                ch.number,
+                crate::livetv::country_name(&ch.group)
+            )
+        };
+        c.text(
+            &state,
+            px,
+            py + 58.0,
+            15,
+            Weight::Regular,
+            muted,
+            Align::Left,
+        );
+    }
+    c.text(
+        "↑↓ Sender    ·    ←→ Gruppe    ·    OK Ansehen    ·    ▶ Favorit    ·    Zurück",
+        1220.0,
+        680.0,
+        13,
+        Weight::Semi,
+        Rgba(169, 151, 111, 235),
+        Align::Right,
+    );
+}
+
+#[allow(dead_code)]
 fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channel>>) {
     let (w, h) = (crate::gfx::W as f32, crate::gfx::H as f32);
     let rail_w = 910.0;

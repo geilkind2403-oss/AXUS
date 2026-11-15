@@ -172,7 +172,41 @@ pub fn load(url: &str) -> Result<(Vec<Channel>, String), String> {
     if ch.is_empty() {
         return Err("Die Senderliste ist leer".into());
     }
+    // kept for the next start: Live TV opens at once, before the network
+    let dir = crate::app::data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let tmp = dir.join("livetv-cache.m3u.tmp");
+    if std::fs::write(&tmp, format!("#CACHE-SOURCE:{url}\n").into_bytes().into_iter().chain(b).collect::<Vec<u8>>()).is_ok() {
+        let _ = std::fs::rename(tmp, cache_path());
+    }
     Ok((ch, url.to_string()))
+}
+
+fn cache_path() -> PathBuf {
+    crate::app::data_dir().join("livetv-cache.m3u")
+}
+
+/// The list the last download brought, for the address `url` (the same
+/// address as configured now), read from the Pi's storage: no network.
+pub fn load_cached(url: &str) -> Option<(Vec<Channel>, String)> {
+    let want = if url.trim().is_empty() { DEFAULT_URL } else { url.trim() };
+    let b = std::fs::read(cache_path()).ok()?;
+    let text = String::from_utf8_lossy(&b);
+    let first = text.lines().next()?;
+    if first.strip_prefix("#CACHE-SOURCE:") != Some(want) {
+        return None;
+    }
+    let ch = parse_m3u(&text);
+    (!ch.is_empty()).then(|| (ch, format!("{want} (gespeichert)")))
+}
+
+/// The channel watched longest (seconds per address), if any was watched.
+pub fn most_watched<'a>(ch: &'a [Channel], watch: &std::collections::HashMap<String, u64>) -> Option<&'a Channel> {
+    ch.iter()
+        .filter_map(|c| watch.get(&c.url).map(|s| (c, *s)))
+        .filter(|(_, s)| *s > 0)
+        .max_by_key(|(_, s)| *s)
+        .map(|(c, _)| c)
 }
 
 /// Groups for the guide: Favoriten, Alle, then by country (Germany first).
@@ -237,6 +271,12 @@ mod tests {
         assert_eq!(c[2].group, "Musik");
         let g = groups(&c);
         assert_eq!(g[2].1, "Deutschland");
+        let mut watch = std::collections::HashMap::new();
+        assert!(most_watched(&c, &watch).is_none());
+        watch.insert("https://x/b.m3u8".to_string(), 900u64);
+        watch.insert("http://x/c.m3u8".to_string(), 60u64);
+        watch.insert("https://gone/x.m3u8".to_string(), 99_999u64);
+        assert_eq!(most_watched(&c, &watch).unwrap().name, "ORF 1");
         assert_eq!(in_group(&c, "fav", &["http://x/c.m3u8".into()]).len(), 1);
     }
 }

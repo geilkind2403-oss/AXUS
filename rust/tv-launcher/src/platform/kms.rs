@@ -98,6 +98,18 @@ pub struct VideoFrameDesc {
     pub offsets: [u32; 4],
 }
 
+/// Where the video plays: x, y, w, h as parts of the screen (0..1), or full
+/// screen. A menu sets it; the next frame the decoder shows takes it.
+static VIDEO_WINDOW: std::sync::Mutex<Option<(f32, f32, f32, f32)>> = std::sync::Mutex::new(None);
+
+pub fn set_video_window(w: Option<(f32, f32, f32, f32)>) {
+    *VIDEO_WINDOW.lock().unwrap() = w;
+}
+
+fn video_window() -> Option<(f32, f32, f32, f32)> {
+    *VIDEO_WINDOW.lock().unwrap()
+}
+
 pub struct Kms {
     card: Card,
     crtc: crtc::Handle,
@@ -753,13 +765,21 @@ impl Kms {
             return;
         };
         let (mw, mh) = self.mode_size;
+        // full screen, or the window a menu asked for (scaled by the display
+        // controller: costs the CPU nothing)
+        let (bx, by, bw, bh) = video_window()
+            .map(|(x, y, w, h)| {
+                let k = |v: f32, m: u32| (v * m as f32).round() as u32;
+                (k(x, mw), k(y, mh), k(w, mw).max(2), k(h, mh).max(2))
+            })
+            .unwrap_or((0, 0, mw, mh));
         let aspect = crop.0 as f32 * sar / crop.1 as f32;
-        let (mut w, mut h) = (mw, (mw as f32 / aspect).round() as u32);
-        if h > mh {
-            h = mh;
-            w = (mh as f32 * aspect).round() as u32;
+        let (mut w, mut h) = (bw, (bw as f32 / aspect).round() as u32);
+        if h > bh {
+            h = bh;
+            w = (bh as f32 * aspect).round() as u32;
         }
-        let (x, y) = ((mw - w) / 2, (mh - h) / 2);
+        let (x, y) = (bx + (bw - w) / 2, by + (bh - h) / 2);
         if !self.video_on {
             self.video_on = true;
             // The menu frame on the primary plane would flash: blank it first.

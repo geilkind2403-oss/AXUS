@@ -15,6 +15,7 @@ mod platform;
 mod player;
 mod remote;
 mod ui;
+mod tvlist_fx;
 mod updater;
 mod weather;
 mod weather_fx;

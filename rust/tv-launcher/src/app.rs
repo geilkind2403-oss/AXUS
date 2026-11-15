@@ -38,6 +38,8 @@ pub struct Config {
     pub livetv_favs: Vec<String>,
     pub livetv_last: String,
     pub livetv_max_h: u32,
+    /// Seconds watched per channel address: Live TV opens on the most watched.
+    pub livetv_watch: HashMap<String, u64>,
     /// open Live TV right after switching on
     pub start_livetv: bool,
     /// minutes without a key until the screensaver (0 = never)
@@ -70,6 +72,7 @@ impl Default for Config {
             livetv_favs: Vec::new(),
             livetv_last: String::new(),
             livetv_max_h: 720,
+            livetv_watch: HashMap::new(),
             start_livetv: false,
             screensaver_min: 10,
             sub_size: 1,
@@ -474,8 +477,23 @@ pub type KmsHandle = Arc<Mutex<crate::platform::kms::Kms>>;
 pub type KmsHandle = Arc<Mutex<()>>;
 
 impl Ctx {
+    /// The channel list: at once from the copy on the Pi's storage, then
+    /// fresh from the network in the background (a failed download keeps
+    /// the stored list).
     pub fn reload_channels(&mut self) {
         let url = self.cfg.livetv_url.clone();
+        if let Some((list, from)) = crate::livetv::load_cached(&url) {
+            let slot = Slot::empty();
+            slot.set(Ok((Arc::new(list), from)));
+            self.channels = slot;
+            refresh(
+                &self.tx,
+                &self.channels,
+                move || crate::livetv::load(&url).map(|(list, from)| (Arc::new(list), from)),
+                |r| r.is_ok(),
+            );
+            return;
+        }
         self.channels = load(&self.tx, move || {
             crate::livetv::load(&url).map(|(list, from)| (Arc::new(list), from))
         });
