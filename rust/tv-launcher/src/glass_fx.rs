@@ -5,6 +5,7 @@ use std::os::raw::c_void;
 
 pub const TILE: i32 = 0;
 pub const TILE_ACTIVE: i32 = 1;
+#[allow(dead_code)] // a status well; the menu has none at the moment
 pub const INSET: i32 = 2;
 
 #[repr(C)]

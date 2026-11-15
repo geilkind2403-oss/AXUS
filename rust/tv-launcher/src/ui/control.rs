@@ -103,37 +103,44 @@ const PRESS: f32 = 0.18;
 
 /// Screen area the menu owns (panel and its shadow); main.rs restores and
 /// presents exactly this.
-pub const REGION: (f32, f32, f32, f32) = (968.0, 66.0, 312.0, 614.0);
-const PANEL: (f32, f32, f32, f32) = (992.0, 90.0, 224.0, 552.0);
-const PANEL_R: f32 = 22.0;
+pub const REGION: (f32, f32, f32, f32) = (968.0, 0.0, 312.0, 410.0);
+/// The menu grows out of the clock: the clock's column and top (992, 20;
+/// 224 wide), down to the bottom of the tile under it (130 + 244 = 374).
+const PANEL: (f32, f32, f32, f32) = (992.0, 20.0, 224.0, 354.0);
+/// The clock's corners (a 46 high capsule).
+const PANEL_R: f32 = 23.0;
+/// The clock itself becomes the header: same height, same content.
+const HEADER_H: f32 = 46.0;
 const PAD: f32 = 12.0;
 const GAP: f32 = 8.0;
 const TILE_R: f32 = PANEL_R - PAD;
+/// Two columns: 2 * 96 + 8 = 224 - 2 * 12.
 const COL_W: f32 = (PANEL.2 - 2.0 * PAD - GAP) / 2.0;
 const IN_X: f32 = PANEL.0 + PAD;
-const IN_W: f32 = PANEL.2 - 2.0 * PAD;
-const ROW_H: f32 = 48.0;
-const SQUARE: f32 = COL_W;
-const STATUS_Y: f32 = 154.0;
-const STATUS_H: f32 = 44.0;
-const ROW1: f32 = STATUS_Y + STATUS_H + GAP;
-const ROW2: f32 = ROW1 + ROW_H + GAP;
-const ROW3: f32 = ROW2 + ROW_H + GAP;
-const GRID1: f32 = ROW3 + ROW_H + GAP;
-const GRID2: f32 = GRID1 + SQUARE + GAP;
-const ROW_POWER: f32 = GRID2 + SQUARE + GAP;
+const COL2: f32 = IN_X + COL_W + GAP;
+/// Four rows under the header: 4 * 66 + 3 * 8 = 374 - 12 - (66 + 8).
+const GRID_Y: f32 = PANEL.1 + HEADER_H + GAP;
+const ROW_H: f32 = (PANEL.1 + PANEL.3 - PAD - GRID_Y - 3.0 * GAP) / 4.0;
+const fn row(r: f32) -> f32 {
+    GRID_Y + r * (ROW_H + GAP)
+}
 
-/// The focusable tiles in screen coordinates: 0 power, 1 network, 2 do not
-/// disturb, 3 home/resume, 4 live TV, 5 weather, 6 phone, 7 settings.
+/// The focusable tiles in screen coordinates, by action: 0 power,
+/// 1 network, 2 do not disturb, 3 home/resume, 4 live TV, 5 weather,
+/// 6 phone, 7 settings. On screen, two by two:
+///   network | do not disturb
+///   live TV | weather
+///   phone   | settings
+///   home    | power
 const TILES: [(f32, f32, f32, f32); 8] = [
-    (IN_X, ROW_POWER, IN_W, ROW_H),
-    (IN_X, ROW1, IN_W, ROW_H),
-    (IN_X, ROW2, IN_W, ROW_H),
-    (IN_X, ROW3, IN_W, ROW_H),
-    (IN_X, GRID1, SQUARE, SQUARE),
-    (IN_X + COL_W + GAP, GRID1, SQUARE, SQUARE),
-    (IN_X, GRID2, SQUARE, SQUARE),
-    (IN_X + COL_W + GAP, GRID2, SQUARE, SQUARE),
+    (COL2, row(3.0), COL_W, ROW_H),
+    (IN_X, row(0.0), COL_W, ROW_H),
+    (COL2, row(0.0), COL_W, ROW_H),
+    (IN_X, row(3.0), COL_W, ROW_H),
+    (IN_X, row(1.0), COL_W, ROW_H),
+    (COL2, row(1.0), COL_W, ROW_H),
+    (IN_X, row(2.0), COL_W, ROW_H),
+    (COL2, row(2.0), COL_W, ROW_H),
 ];
 
 fn local(r: (f32, f32, f32, f32), radius: f32, kind: i32) -> Rect {
@@ -256,7 +263,10 @@ impl Control {
 
     /// The glass for Home as it is now has been built.
     pub fn glass_ready() -> bool {
-        matches!(&*prepared().lock().unwrap_or_else(|e| e.into_inner()), Some(Prepared { fx: Some(_), .. }))
+        matches!(
+            &*prepared().lock().unwrap_or_else(|e| e.into_inner()),
+            Some(Prepared { fx: Some(_), .. })
+        )
     }
 
     /// Home changes: the prepared glass shows an old picture.
@@ -443,112 +453,56 @@ impl Control {
             (key.0, key.1, key.2, key.3, key.4, key.5, &key.6);
         let fg = Rgba(248, 250, 255, 255);
         let muted = Rgba(190, 200, 222, 255);
-        let accent = Rgba(128, 187, 255, 255);
-        // header
-        c.text(
-            "Schnellmenü",
-            IN_X,
-            101.0,
-            20,
-            Weight::Bold,
-            fg,
-            Align::Left,
-        );
-        c.text(
-            if over_video {
-                "WIEDERGABE"
-            } else {
-                "STARTSEITE"
-            },
-            IN_X,
-            129.0,
-            10,
-            Weight::Semi,
-            accent,
-            Align::Left,
-        );
-        // status well: time, network
-        let sy = STATUS_Y;
+        let (x, y) = (PANEL.0, PANEL.1);
+        // the header is the clock it grew out of, at the same places
         c.text(
             &format!("{hh:02}:{mm:02}"),
-            IN_X + 12.0,
-            sy + 12.0,
-            17,
-            Weight::Bold,
+            x + 18.0,
+            y + 12.0,
+            19,
+            Weight::Semi,
             fg,
             Align::Left,
         );
         c.line(
-            &[
-                (IN_X + 70.0, sy + 10.0),
-                (IN_X + 70.0, sy + STATUS_H - 10.0),
-            ],
+            &[(x + 82.0, y + 10.0), (x + 82.0, y + HEADER_H - 10.0)],
             1.0,
             Rgba(255, 255, 255, 48),
         );
         c.circle(
-            IN_X + 82.0,
-            sy + STATUS_H / 2.0,
-            3.5,
+            x + 99.0,
+            y + HEADER_H * 0.5,
+            3.2,
             if connected {
-                Rgba(91, 216, 166, 255)
+                Rgba(89, 211, 154, 255)
             } else {
                 Rgba(246, 115, 115, 255)
             },
         );
         c.text_fit(
             net_label,
-            IN_X + 92.0,
-            sy + 15.0,
+            x + 111.0,
+            y + 16.0,
             12,
-            Weight::Semi,
-            fg,
-            IN_W - 104.0,
+            Weight::Regular,
+            muted,
+            PANEL.2 - 111.0 - 16.0,
         );
 
-        // wide rows: icon on the left, two lines of text
-        let row = |c: &mut Canvas, i: usize, title: &str, sub: &str| {
-            let (x, y, _, h) = TILES[i];
-            c.text(title, x + 42.0, y + 8.0, 13, Weight::Semi, fg, Align::Left);
-            c.text_fit(
-                sub,
-                x + 42.0,
-                y + h - 21.0,
-                11,
-                Weight::Regular,
-                muted,
-                IN_W - 54.0,
-            );
-        };
-        let icon_at = |i: usize| (TILES[i].0 + 22.0, TILES[i].1 + TILES[i].3 / 2.0);
-        let (ix, iy) = icon_at(1);
-        draw_wifi(c, ix, iy, Rgba(119, 189, 255, 255));
-        row(c, 1, "Netzwerk", net_label);
-        let (ix, iy) = icon_at(2);
-        Self::moon_icon(c, ix, iy, Rgba(170, 196, 255, 255));
-        row(c, 2, "Nicht stören", if dnd { "Ein" } else { "Aus" });
-        let (ix, iy) = icon_at(3);
-        super::icon_play(c, ix + 2.0, iy, 18.0, Rgba(126, 194, 255, 255));
-        row(
-            c,
-            3,
+        // the buttons: icon over the label
+        let labels = [
+            "Ausschalten",
+            "Netzwerk",
+            if dnd {
+                "Nicht stören an"
+            } else {
+                "Nicht stören"
+            },
             if over_video {
                 "Weiter ansehen"
             } else {
-                "Zur Startseite"
+                "Startseite"
             },
-            if over_video {
-                "Menü schließen"
-            } else {
-                "Launcher anzeigen"
-            },
-        );
-        let (ix, iy) = icon_at(0);
-        Self::power_icon(c, ix, iy + 1.0, 8.0, Rgba(255, 140, 140, 255));
-        row(c, 0, "Ausschalten", "Fernseher aus");
-
-        // square tiles: icon over the label
-        let labels = [
             "Live TV",
             "Wetter",
             if remote_enabled {
@@ -558,31 +512,36 @@ impl Control {
             },
             "Einstellungen",
         ];
-        for (n, label) in labels.iter().enumerate() {
-            let (x, y, w, h) = TILES[4 + n];
-            let (cx, cy) = (x + w / 2.0, y + h / 2.0 - 10.0);
-            let icon = Rgba(233, 240, 255, 255);
-            match n {
-                0 => {
-                    c.stroke_rect(cx - 13.0, cy - 10.0, 26.0, 18.0, 3.5, 2.0, icon);
-                    c.line(&[(cx - 6.0, cy + 12.0), (cx + 6.0, cy + 12.0)], 2.0, icon);
+        let icon = Rgba(233, 240, 255, 255);
+        for (i, label) in labels.iter().enumerate() {
+            let (tx, ty, tw, th) = TILES[i];
+            let (cx, cy) = (tx + tw / 2.0, ty + 24.0);
+            match i {
+                0 => Self::power_icon(c, cx, cy + 1.0, 8.0, Rgba(255, 140, 140, 255)),
+                1 => draw_wifi(c, cx, cy, Rgba(119, 189, 255, 255)),
+                2 => Self::moon_icon(c, cx, cy, Rgba(170, 196, 255, 255)),
+                3 => super::icon_play(c, cx + 2.0, cy, 18.0, Rgba(126, 194, 255, 255)),
+                4 => {
+                    c.stroke_rect(cx - 12.0, cy - 9.0, 24.0, 16.0, 3.5, 2.0, icon);
+                    c.line(&[(cx - 6.0, cy + 11.0), (cx + 6.0, cy + 11.0)], 2.0, icon);
                 }
-                1 => icon_weather(c, crate::weather::Sky::PartlyCloudy, true, cx, cy, 34.0),
-                2 => {
+                5 => icon_weather(c, crate::weather::Sky::PartlyCloudy, true, cx, cy, 30.0),
+                6 => {
                     let col = if remote_enabled {
                         Rgba(117, 201, 255, 255)
                     } else {
                         icon
                     };
-                    c.stroke_rect(cx - 8.0, cy - 13.0, 16.0, 26.0, 4.0, 2.0, col);
-                    c.circle(cx, cy + 9.0, 1.4, col);
+                    c.stroke_rect(cx - 7.0, cy - 11.0, 14.0, 22.0, 3.5, 2.0, col);
+                    c.circle(cx, cy + 7.0, 1.3, col);
                 }
-                _ => super::icon_gear(c, cx, cy, 24.0, icon),
+                _ => super::icon_gear(c, cx, cy, 22.0, icon),
             }
+            let label = c.ellipsize(label, 11, Weight::Semi, tw - 12.0);
             c.text(
-                label,
+                &label,
                 cx,
-                y + h - 26.0,
+                ty + th - 22.0,
                 11,
                 Weight::Semi,
                 icon,
@@ -593,11 +552,7 @@ impl Control {
 
     /// The tiles of the glass (their state changes the glass, not the text).
     fn glass_tiles(dnd: bool, remote: bool) -> Vec<Rect> {
-        let mut v = vec![local(
-            (IN_X, STATUS_Y, IN_W, STATUS_H),
-            TILE_R,
-            glass_fx::INSET,
-        )];
+        let mut v = Vec::with_capacity(TILES.len());
         for i in 0..TILES.len() {
             let active = (i == 2 && dnd) || (i == 6 && remote);
             v.push(local(
@@ -811,13 +766,28 @@ impl Screen for Control {
         };
         let Some(area) = area else { return };
         let start = ry * stride + rx * 4;
-        g.glass.render(
-            &mut c.pm.data_mut()[start..],
-            stride,
-            Some(focus),
-            open,
-            area,
-        );
+        let dst = &mut c.pm.data_mut()[start..];
+        if open < 1.0 {
+            // grows down out of the clock: above the edge the menu, below
+            // it still Home (opacity 0 shows what was behind)
+            let edge = PANEL.1 + HEADER_H + (PANEL.3 - HEADER_H) * open - REGION.1;
+            g.glass.render(
+                dst,
+                stride,
+                Some(focus),
+                1.0,
+                (area.0, area.1, area.2, edge - area.1),
+            );
+            g.glass.render(
+                dst,
+                stride,
+                None,
+                0.0,
+                (area.0, edge, area.2, area.1 + area.3 - edge),
+            );
+        } else {
+            g.glass.render(dst, stride, Some(focus), 1.0, area);
+        }
         c.mark_damage_rect(REGION.0 + area.0, REGION.1 + area.1, area.2, area.3);
         c.request_present();
         self.last_focus = Some(focus);
