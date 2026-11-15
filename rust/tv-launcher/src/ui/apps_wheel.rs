@@ -132,7 +132,7 @@ pub(super) fn draw_static(
 
 pub(super) fn draw_dynamic(
     canvas: &mut Canvas,
-    animation: &Animation,
+    animation: &mut Animation,
     focus: usize,
     title: &str,
     detail: &str,
@@ -140,18 +140,11 @@ pub(super) fn draw_dynamic(
     launch: Option<f32>,
     assets: Option<&AppAssets>,
 ) {
-    // C++ uses this pass only to read the last state; no animation is advanced.
-    let mut state = Animation {
-        rotation: animation.rotation,
-        target: animation.target,
-        elapsed: animation.elapsed,
-        last_focus: animation.last_focus,
-        initialized: animation.initialized,
-        moving: animation.moving,
-    };
+    // Advance the inexpensive wheel state while redrawing only the moving
+    // icons and focus. The retained glass/background stays untouched.
     draw(
         canvas,
-        &mut state,
+        animation,
         focus,
         title,
         detail,
