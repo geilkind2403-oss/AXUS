@@ -209,7 +209,7 @@ impl Home {
             },
             3 => Nav::Push(Box::new(super::weather::WeatherScreen::new())),
             4 => Nav::Push(Box::new(super::news::NewsScreen::new())),
-            _ => Nav::Push(Box::new(super::apps::Apps::new(&cx.cfg.last_app_id))),
+            _ => Nav::Push(Box::new(super::settings::Settings::new(cx))),
         }
     }
 }
@@ -310,11 +310,11 @@ impl Screen for Home {
             return match self.focus {
                 6 => Nav::Push(Box::new(super::weather::WeatherScreen::new())),
                 7 => Nav::Push(Box::new(super::control::Control::new(false))),
-                _ => Nav::Push(Box::new(super::apps::Apps::wheel(&cx.cfg.last_app_id))),
+                _ => Nav::Push(Box::new(super::apps::Apps::wheel(cx, &cx.cfg.last_app_id))),
             };
         }
         self.focus = match (k, f) {
-            // top row: YouTube, Live TV, Filme -- bottom row: Wetter, Nachrichten, Apps
+            // top row: YouTube, Live TV, Filme -- bottom row: Wetter, Nachrichten, Einstellungen
             (Key::Right, 0..=1) | (Key::Right, 3..=4) => f + 1,
             (Key::Left, 1..=2) | (Key::Left, 4..=5) => f - 1,
             (Key::Down, 0) => 3,
@@ -969,11 +969,9 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
         4 => draw_news_tile_background(c, cx, t),
         _ => {
             let (cx, cy) = (t.x + t.w / 2.0, t.y + t.h * 0.36);
-            for (dx, dy) in [(-14.0, -14.0), (14.0, -14.0), (-14.0, 14.0), (14.0, 14.0)] {
-                c.rect(cx + dx - 9.0, cy + dy - 9.0, 18.0, 18.0, 5.0, color::MUTED);
-            }
-            label(c, t, "Apps", "Apps · Einstellungen");
-            home_chip(c, t.x + 18.0, t.y + 18.0, "MENÜ", Rgba(83, 105, 154, 220));
+            super::icon_gear(c, cx, cy, 86.0, Rgba(226, 187, 116, 245));
+            label(c, t, "Einstellungen", "System · Bild · Bedienung");
+            home_chip(c, t.x + 18.0, t.y + 18.0, "SYSTEM", Rgba(128, 96, 42, 220));
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Screens and the widgets they share.
 pub mod apps;
+mod apps_wheel;
 pub mod browser;
 pub mod control;
 pub mod films;

@@ -1,114 +1,241 @@
-//! Remote-first catalog of installed and web-based TV apps.
+//! Fast app switcher. Rust owns input and launches; the C++ wheel is only a
+//! lightweight renderer over images cached once for the life of the process.
 use super::*;
-use crate::app::{Ctx, Nav, Screen};
-use crate::gfx::{color, Align, Canvas, Image, Rgba, Weight};
-use std::time::Instant;
+use crate::app::{load, Ctx, Nav, Screen, Slot};
+use crate::gfx::{Canvas, Image, Rgba};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
+const ENTRY_DURATION: Duration = Duration::from_millis(480);
 const LAUNCH_ANIMATION_SECONDS: f32 = 0.72;
 
-const APPS: [(&str, &str, &str); 6] = [
-    ("YouTube TV", "YouTube-TV-Oberfläche", "youtube"),
-    (
-        "Prime Video",
-        "Webseite; Videowiedergabe unbestätigt",
-        "prime",
-    ),
-    (
-        "ARD Mediathek",
-        "Nicht verfügbar · WebKit-Fehler am Pi",
-        "ard",
-    ),
-    ("ZDF Live", "Native HLS · Bild/Ton-Test", "zdf"),
-    ("ARTE Live", "Native HLS-Wiedergabe · 720p am Pi", "arte"),
-    (
-        "Einstellungen",
-        "System, Bild und Fernbedienung",
-        "settings",
-    ),
+const APPS: [(&str, &str); 5] = [
+    ("YouTube TV", "youtube"),
+    ("Prime Video", "prime"),
+    ("ARD Mediathek", "ard"),
+    ("ZDF Live", "zdf"),
+    ("ARTE Live", "arte"),
 ];
+
+#[derive(Clone, Default)]
+pub(super) struct AppAssets {
+    pub icons: [Option<Image>; 4],
+    pub glass: Option<Image>,
+    pub logo_glow: Option<Image>,
+    pub center_well: Option<Image>,
+}
+
+static APP_ASSETS: OnceLock<AppAssets> = OnceLock::new();
+
+fn warm_glass() -> Option<Image> {
+    // Build the annulus as a tiny, cached software material rather than a
+    // fixed outlined PNG. Broad, angle-dependent reflections and a soft rim
+    // let the warm backdrop show through like liquid glass. This runs once on
+    // the asset worker; navigation frames only composite the finished texture.
+    const SIZE: usize = 512;
+    let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
+    let data = texture.data_mut();
+    let smooth = |a: f32, b: f32, x: f32| {
+        let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let glow = |x: f32| (-x * x).exp();
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - SIZE as f32 * 0.5;
+            let dy = y as f32 + 0.5 - SIZE as f32 * 0.5;
+            let radius = (dx * dx + dy * dy).sqrt();
+            let angle = dy.atan2(dx);
+            let outer = smooth(256.0, 246.0, radius);
+            let inner = smooth(106.0, 116.0, radius);
+            let mask = outer * inner;
+            if mask < 0.003 {
+                continue;
+            }
+
+            let top_left = glow((angle + 2.15) / 0.72);
+            let top_right = glow((angle + 0.62) / 0.82);
+            let lower_glint = glow((angle - 1.45) / 0.92);
+            let outer_rim = glow((radius - 249.0) / 6.5);
+            let inner_rim = glow((radius - 114.0) / 6.0);
+            let sheen = (0.10 + top_left * 0.56 + top_right * 0.39 + lower_glint * 0.17)
+                .clamp(0.0, 1.0);
+            let alpha = (mask * (33.0 + sheen * 39.0 + outer_rim * sheen * 63.0
+                + inner_rim * sheen * 35.0)) as u32;
+            let warm = (1.0 - (dy / 256.0).clamp(-1.0, 1.0) * 0.10).clamp(0.0, 1.0);
+            let red = (181.0 + 70.0 * sheen * warm).clamp(0.0, 255.0) as u32;
+            let green = (159.0 + 62.0 * sheen * warm).clamp(0.0, 255.0) as u32;
+            let blue = (117.0 + 53.0 * sheen * warm).clamp(0.0, 255.0) as u32;
+            let offset = (y * SIZE + x) * 4;
+            data[offset] = (blue * alpha / 255) as u8;
+            data[offset + 1] = (green * alpha / 255) as u8;
+            data[offset + 2] = (red * alpha / 255) as u8;
+            data[offset + 3] = alpha.min(255) as u8;
+        }
+    }
+    Some(Arc::new(texture))
+}
+
+fn logo_glow() -> Option<Image> {
+    const SIZE: usize = 128;
+    let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
+    for (index, pixel) in texture.data_mut().chunks_exact_mut(4).enumerate() {
+        let x = (index % SIZE) as f32 + 0.5 - SIZE as f32 * 0.5;
+        let y = (index / SIZE) as f32 + 0.5 - SIZE as f32 * 0.5;
+        let r = (x * x + y * y).sqrt() / (SIZE as f32 * 0.5);
+        let alpha = (68.0 * (-r * r * 8.0).exp()) as u32;
+        pixel[0] = (117 * alpha / 255) as u8;
+        pixel[1] = (187 * alpha / 255) as u8;
+        pixel[2] = (255 * alpha / 255) as u8;
+        pixel[3] = alpha as u8;
+    }
+    Some(Arc::new(texture))
+}
+
+fn center_well() -> Option<Image> {
+    const SIZE: usize = 256;
+    let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
+    let data = texture.data_mut();
+    let smooth = |a: f32, b: f32, x: f32| {
+        let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - SIZE as f32 * 0.5;
+            let dy = y as f32 + 0.5 - SIZE as f32 * 0.5;
+            let r = (dx * dx + dy * dy).sqrt() / (SIZE as f32 * 0.5);
+            let coverage = 1.0 - smooth(0.78, 1.0, r);
+            if coverage <= 0.001 {
+                continue;
+            }
+            let inner_glow = (-((r - 0.91) / 0.075).powi(2)).exp();
+            let alpha = (213.0 * coverage) as u32;
+            let red = (9.0 + inner_glow * 35.0) as u32;
+            let green = (10.0 + inner_glow * 29.0) as u32;
+            let blue = (12.0 + inner_glow * 18.0) as u32;
+            let offset = (y * SIZE + x) * 4;
+            data[offset] = (blue * alpha / 255) as u8;
+            data[offset + 1] = (green * alpha / 255) as u8;
+            data[offset + 2] = (red * alpha / 255) as u8;
+            data[offset + 3] = alpha.min(255) as u8;
+        }
+    }
+    Some(Arc::new(texture))
+}
+
+fn softened_icon(bytes: &[u8]) -> Option<Image> {
+    let mut image = crate::gfx::decode_image(bytes, 128, 128)?;
+    let data = Arc::make_mut(&mut image).data_mut();
+    for y in 0..128usize {
+        for x in 0..128usize {
+            let dx = x as f32 + 0.5 - 64.0;
+            let dy = y as f32 + 0.5 - 64.0;
+            // Circular, feathered app badges avoid sharp square corners in
+            // both the wheel and the launch zoom animation.
+            let distance = dx.hypot(dy) - 52.0;
+            let edge = (distance / 12.0).clamp(0.0, 1.0);
+            let coverage = 1.0 - edge * edge * (3.0 - 2.0 * edge);
+            let pixel = &mut data[(y * 128 + x) * 4..(y * 128 + x + 1) * 4];
+            for channel in pixel {
+                *channel = (*channel as f32 * coverage).round() as u8;
+            }
+        }
+    }
+    Some(image)
+}
+
+fn cached_assets() -> AppAssets {
+    APP_ASSETS
+        .get_or_init(|| AppAssets {
+            icons: [
+                include_bytes!("../../assets/apps/youtube.png").as_slice(),
+                include_bytes!("../../assets/apps/prime.png").as_slice(),
+                include_bytes!("../../assets/apps/ard.png").as_slice(),
+                include_bytes!("../../assets/apps/zdf.png").as_slice(),
+            ]
+            .map(softened_icon),
+            glass: warm_glass(),
+            logo_glow: logo_glow(),
+            center_well: center_well(),
+        })
+        .clone()
+}
+
 pub struct Apps {
     focus: usize,
-    wheel: bool,
-    grid_focus: Focus,
-    wheel_rotation: Anim,
-    icons: [Option<Image>; 5],
-    glass: Option<Image>,
+    assets: Slot<AppAssets>,
+    loaded_assets: Option<AppAssets>,
+    browser_installed: bool,
+    wheel: apps_wheel::Animation,
+    wheel_base: Option<Image>,
+    previous_items: Option<[(f32, f32); 5]>,
     launch_started: Option<Instant>,
+    entry_started: Instant,
+    entry_backdrop: Option<Image>,
 }
 
 impl Apps {
-    pub fn new(last_app_id: &str) -> Self {
-        Self::with_mode(last_app_id, false)
-    }
-
-    pub fn wheel(last_app_id: &str) -> Self {
-        Self::with_mode(last_app_id, true)
-    }
-
-    fn with_mode(last_app_id: &str, wheel: bool) -> Self {
+    pub fn wheel(cx: &Ctx, last_app_id: &str) -> Self {
         let focus = APPS
             .iter()
-            .position(|app| app.2 == last_app_id)
-            .filter(|&i| i != 2)
+            .position(|app| app.1 == last_app_id)
+            .filter(|&index| index != 2)
             .unwrap_or(0);
-        let mut wheel_rotation = Anim::default();
-        wheel_rotation.jump(focus as f32 * std::f32::consts::TAU / APPS.len() as f32);
-        let icon_bytes: [Option<&[u8]>; 5] = [
-            Some(include_bytes!("../../assets/apps/youtube.png")),
-            Some(include_bytes!("../../assets/apps/prime.png")),
-            Some(include_bytes!("../../assets/apps/ard.png")),
-            Some(include_bytes!("../../assets/apps/zdf.png")),
-            None,
-        ];
-        let icons =
-            icon_bytes.map(|bytes| bytes.and_then(|b| crate::gfx::decode_image(b, 128, 128)));
-        let glass = crate::gfx::decode_image(
-            include_bytes!("../../assets/apps/milk-glass.png"),
-            512,
-            512,
-        );
         Self {
             focus,
-            wheel,
-            grid_focus: Focus::default(),
-            wheel_rotation,
-            icons,
-            glass,
+            // An un-cached first visit never blocks the remote or Home frame.
+            // Reopening returns the shared, already-decoded Arc image handles.
+            assets: load(&cx.tx, cached_assets),
+            loaded_assets: None,
+            browser_installed: super::browser::installed(),
+            wheel: apps_wheel::Animation::default(),
+            wheel_base: None,
+            previous_items: None,
             launch_started: None,
+            entry_started: Instant::now(),
+            entry_backdrop: None,
         }
     }
 
     fn open(&self, cx: &mut Ctx) -> Nav {
-        if self.focus == 5 {
-            return Nav::Push(Box::new(super::settings::Settings::new(cx)));
+        match self.focus {
+            4 => Nav::Push(Box::new(super::livetv::LiveTv::new_arte(cx))),
+            3 => Nav::Push(Box::new(super::livetv::LiveTv::new_zdf(cx))),
+            2 => Nav::None,
+            0 | 1 if !self.browser_installed => Nav::None,
+            0 => Nav::Push(Box::new(super::browser::Browser::new(
+                super::browser::YOUTUBE_TV,
+            ))),
+            1 => Nav::Push(Box::new(super::browser::Browser::new(
+                super::browser::PRIME_VIDEO,
+            ))),
+            _ => Nav::None,
         }
-        if self.focus == 4 {
-            return Nav::Push(Box::new(super::livetv::LiveTv::new_arte(cx)));
-        }
-        if self.focus == 3 {
-            return Nav::Push(Box::new(super::livetv::LiveTv::new_zdf(cx)));
-        }
-        if !super::browser::installed() {
-            return Nav::None;
-        }
-        let url = match self.focus {
-            0 => super::browser::YOUTUBE_TV,
-            1 => super::browser::PRIME_VIDEO,
-            2 => return Nav::None,
-            3 => super::browser::ZDF_STREAMING,
-            _ => super::browser::ARTE_LIVE,
-        };
-        Nav::Push(Box::new(super::browser::Browser::new(url)))
     }
 
-    fn move_focus(&mut self, key: Key) {
-        self.focus = match key {
-            Key::Left => (self.focus + APPS.len() - 1) % APPS.len(),
-            Key::Right => (self.focus + 1) % APPS.len(),
-            Key::Up if self.focus >= 3 => self.focus - 3,
-            Key::Down if self.focus < 3 => self.focus + 3,
-            _ => self.focus,
-        };
+    fn entry_progress(&self) -> Option<f32> {
+        let elapsed = self.entry_started.elapsed();
+        (self.entry_backdrop.is_some() && elapsed < ENTRY_DURATION)
+            .then_some(elapsed.as_secs_f32() / ENTRY_DURATION.as_secs_f32())
+    }
+
+    fn detail(&self) -> (&'static str, Rgba) {
+        match self.focus {
+            0 | 1 if !self.browser_installed => (
+                "Browser-Addon fehlt",
+                Rgba::hex(0xe5bd78),
+            ),
+            0 => ("Suchen und ansehen", Rgba::hex(0xe7d6af)),
+            1 => ("Prime Video öffnen", Rgba::hex(0xe7d6af)),
+            2 => (
+                "ARD am Pi nicht verfügbar",
+                Rgba::hex(0xe5bd78),
+            ),
+            3 => ("Native HLS-Wiedergabe", Rgba::hex(0x9cdbbd)),
+            4 => ("Native HLS-Wiedergabe", Rgba::hex(0xe7d6af)),
+            _ => ("App auswählen", Rgba::hex(0xe7d6af)),
+        }
     }
 }
 
@@ -118,75 +245,109 @@ impl Screen for Apps {
     }
 
     fn key(&mut self, key: Key, cx: &mut Ctx) -> Nav {
-        if self.wheel {
-            if self.launch_started.is_some() {
-                return Nav::None;
-            }
-            match key {
-                Key::Left => {
-                    self.focus = (self.focus + APPS.len() - 1) % APPS.len();
-                    self.wheel_rotation.set(
-                        self.wheel_rotation.target - std::f32::consts::TAU / APPS.len() as f32,
-                    );
-                }
-                Key::Right => {
-                    self.focus = (self.focus + 1) % APPS.len();
-                    self.wheel_rotation.set(
-                        self.wheel_rotation.target + std::f32::consts::TAU / APPS.len() as f32,
-                    );
-                }
-                Key::Up | Key::Back => return Nav::Pop,
-                Key::Ok if self.focus == 2 => {
-                    cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus")
-                }
-                Key::Ok if self.focus <= 1 && !super::browser::installed() => {
-                    cx.toast("Web-App-Unterstützung ist nicht installiert")
-                }
-                Key::Ok => self.launch_started = Some(Instant::now()),
-                Key::Home => return Nav::Pop,
-                _ => {}
-            }
+        if self.launch_started.is_some() || self.entry_progress().is_some() {
             return Nav::None;
         }
         match key {
-            Key::Up | Key::Left | Key::Right => self.move_focus(key),
-            Key::Down => self.move_focus(key),
+            Key::Left => self.focus = (self.focus + APPS.len() - 1) % APPS.len(),
+            Key::Right => self.focus = (self.focus + 1) % APPS.len(),
+            Key::Up | Key::Back | Key::Home => return Nav::Pop,
             Key::Ok if self.focus == 2 => {
                 cx.toast("ARD-Webseite löst auf diesem Pi einen WebKit-Fehler aus")
             }
-            Key::Ok if self.focus <= 1 && !super::browser::installed() => {
+            Key::Ok if self.focus <= 1 && !self.browser_installed => {
                 cx.toast("Web-App-Unterstützung ist nicht installiert")
             }
-            Key::Ok => return self.open(cx),
-            Key::Back | Key::Home => return Nav::Pop,
+            Key::Ok => self.launch_started = Some(Instant::now()),
             _ => {}
         }
         Nav::None
     }
 
     fn animating(&self, _: &Ctx) -> bool {
-        if self.wheel {
-            self.wheel_rotation.moving() || self.launch_started.is_some()
-        } else {
-            self.grid_focus.moving()
-        }
+        self.wheel.moving() || self.launch_started.is_some() || self.entry_progress().is_some()
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
-        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x121722)));
-        super::status(c, cx);
-        if self.wheel {
-            let rotation = self.wheel_rotation.step();
-            let launch = self
-                .launch_started
-                .map(|started| (self.focus, started.elapsed().as_secs_f32() / LAUNCH_ANIMATION_SECONDS));
-            draw_wheel(c, self.focus, rotation, &self.icons, self.glass.as_ref(), launch);
-        } else {
-            draw_app_grid(c, self.focus, &mut self.grid_focus, &self.icons);
+        let entry = self.entry_progress();
+        let launch = self
+            .launch_started
+            .map(|started| started.elapsed().as_secs_f32() / LAUNCH_ANIMATION_SECONDS);
+        if launch.is_some() || (entry.is_none() && self.wheel_base.is_none()) {
+            c.ambient(crate::gfx::Ambient::LiquidGold);
         }
+        if entry.is_none() && launch.is_some() {
+            super::status(c, cx);
+        }
+        if self.loaded_assets.is_none() {
+            self.loaded_assets = self.assets.get();
+            if self.loaded_assets.is_some() {
+                self.wheel_base = None;
+            }
+        }
+        let (detail, detail_color) = self.detail();
+        if entry.is_some() || launch.is_some() {
+            if entry.is_some() {
+                self.wheel_base = None;
+                self.previous_items = None;
+            }
+            if launch.is_some() {
+                super::status(c, cx);
+            }
+            apps_wheel::draw_full(
+                c,
+                &mut self.wheel,
+                self.focus,
+                APPS[self.focus].0,
+                detail,
+                detail_color,
+                launch,
+                entry,
+                self.loaded_assets.as_ref(),
+            );
+            return;
+        }
+
+        let refresh_base = self.wheel_base.is_none();
+        if refresh_base {
+            super::status(c, cx);
+            apps_wheel::draw_static(
+                c,
+                &mut self.wheel,
+                self.focus,
+                APPS[self.focus].0,
+                detail,
+                detail_color,
+                self.loaded_assets.as_ref(),
+            );
+            c.finish();
+            if let (Some(base), Some(positions)) = (self.wheel_base.as_ref(), self.previous_items) {
+                restore_items(c, base, &positions);
+            }
+            self.wheel_base = Some(c.snapshot());
+        } else if let (Some(base), Some(positions)) =
+            (self.wheel_base.as_ref(), self.previous_items)
+        {
+            restore_items(c, base, &positions);
+        }
+        apps_wheel::draw_dynamic(
+            c,
+            &self.wheel,
+            self.focus,
+            APPS[self.focus].0,
+            detail,
+            detail_color,
+            None,
+            self.loaded_assets.as_ref(),
+        );
+        c.finish_pending_region(420.0, 150.0, 440.0, 440.0);
+        self.previous_items = Some(self.wheel.item_positions());
     }
 
     fn poll(&mut self, cx: &mut Ctx) -> Nav {
+        if self.entry_started.elapsed() >= ENTRY_DURATION {
+            self.entry_backdrop = None;
+        }
         if self
             .launch_started
             .is_some_and(|started| started.elapsed().as_secs_f32() >= LAUNCH_ANIMATION_SECONDS)
@@ -196,247 +357,30 @@ impl Screen for Apps {
         }
         Nav::None
     }
-}
 
-fn draw_app_grid(c: &mut Canvas, focus: usize, grid_focus: &mut Focus, icons: &[Option<Image>; 5]) {
-    c.text(
-        "Apps",
-        PAD,
-        42.0,
-        38,
-        Weight::Bold,
-        color::TEXT,
-        Align::Left,
-    );
-    c.text(
-        "Wähle eine App zum Öffnen",
-        PAD,
-        86.0,
-        17,
-        Weight::Regular,
-        color::MUTED,
-        Align::Left,
-    );
-    let xs = [240.0, 640.0, 1040.0];
-    let ys = [230.0, 425.0];
-    for i in 0..APPS.len() {
-        let (title, _, _) = APPS[i];
-        let (x, y) = (xs[i % 3], ys[i / 3]);
-        draw_app_icon(c, icons, i, x, y, 72.0);
-        c.text_fit(
-            title,
-            x,
-            y + 67.0,
-            19,
-            Weight::Bold,
-            if i == 2 { color::MUTED } else { color::TEXT },
-            240.0,
-        );
+    fn overlay(&self) -> bool {
+        self.entry_started.elapsed() < ENTRY_DURATION
     }
-    let (fx, fy) = (xs[focus % 3], ys[focus / 3]);
-    let (fx, fy, fw, fh) = grid_focus.move_to(fx - 62.0, fy - 62.0, 124.0, 124.0, true);
-    let glow = app_accent(focus);
-    c.circle(
-        fx + fw * 0.5,
-        fy + fh * 0.5,
-        fw * 0.5,
-        Rgba(glow.0, glow.1, glow.2, 26),
-    );
-    c.circle(
-        fx + fw * 0.5,
-        fy + fh * 0.5,
-        fw * 0.5 - 7.0,
-        Rgba(18, 22, 31, 255),
-    );
-    draw_app_icon(c, icons, focus, fx + fw * 0.5, fy + fh * 0.5, 72.0);
-    let (detail, detail_color) = app_details(focus);
-    c.text_fit(
-        detail,
-        640.0,
-        555.0,
-        15,
-        Weight::Regular,
-        detail_color,
-        820.0,
-    );
-    c.text(
-        "Pfeile wählen · OK öffnen · Zurück zum Hauptmenü",
-        PAD,
-        681.0,
-        14,
-        Weight::Regular,
-        color::MUTED,
-        Align::Left,
-    );
-}
 
-fn draw_wheel(
-    c: &mut Canvas,
-    focus: usize,
-    rotation: f32,
-    icons: &[Option<Image>; 5],
-    glass: Option<&Image>,
-    launch: Option<(usize, f32)>,
-) {
-    c.text(
-        "App-Kreis",
-        PAD,
-        42.0,
-        38,
-        Weight::Bold,
-        color::TEXT,
-        Align::Left,
-    );
-    c.text_fit(
-        &format!("{} · Links/rechts wählen · OK starten", APPS[focus].0),
-        PAD,
-        86.0,
-        17,
-        Weight::Regular,
-        color::MUTED,
-        620.0,
-    );
-    let (cx, cy, orbit) = (640.0f32, 372.0f32, 164.0f32);
-    // A textured milk-glass ring leaves its center genuinely transparent.
-    if let Some(glass) = glass {
-        c.image_fit(glass, cx - 239.0, cy - 239.0, 478.0, 478.0, 0.0, false, 1.0);
-    } else {
-        c.circle(cx, cy, 239.0, Rgba(230, 239, 255, 18));
-        c.circle(cx, cy, 232.0, Rgba(204, 218, 242, 82));
-        c.circle(cx, cy, 108.0, Rgba::hex(0x121722));
+    fn needs_backdrop(&self) -> bool {
+        self.entry_started.elapsed() < ENTRY_DURATION
     }
-    for i in 0..APPS.len() {
-        let angle = -std::f32::consts::FRAC_PI_2
-            + i as f32 * std::f32::consts::TAU / APPS.len() as f32
-            - rotation;
-        let (x, y) = (cx + angle.cos() * orbit, cy + angle.sin() * orbit);
-        if launch.is_some_and(|(launch_focus, _)| launch_focus == i) {
-            continue;
-        }
-        let accent = app_accent(i);
-        let selected = i == focus;
-        // The icons themselves form the six equally spaced points inside the
-        // lens. Keep the glow and icon bubbles the same size so they all stay
-        // inside the annulus, even at the selected position.
-        c.circle(
-            x,
-            y,
-            44.0,
-            Rgba(accent.0, accent.1, accent.2, if selected { 52 } else { 24 }),
-        );
-        draw_app_icon(c, icons, i, x, y, 62.0);
+
+    fn set_transition_backdrop(&mut self, image: Image) {
+        self.entry_backdrop = Some(image);
     }
-    if let Some((launch_focus, progress)) = launch {
-        let progress = progress.clamp(0.0, 1.0);
-        let pull_end = 0.64;
-        let accent = app_accent(launch_focus);
-        if progress < pull_end {
-            let t = ease(progress / pull_end);
-            let y = 128.0 + (cy - 128.0) * t;
-            let size = 62.0 + 44.0 * t;
-            c.circle(cx, y, size * 0.76, Rgba(accent.0, accent.1, accent.2, 28));
-            c.circle(cx, y, size * 0.62, Rgba(232, 241, 255, 55));
-            draw_app_icon(c, icons, launch_focus, cx, y, size);
-        } else {
-            // The selected app blooms out of the glass hub, then the normal
-            // screen transition reveals the app itself.
-            let t = ease((progress - pull_end) / (1.0 - pull_end));
-            c.circle(
-                cx,
-                cy,
-                92.0 + 680.0 * t,
-                Rgba(accent.0, accent.1, accent.2, (24.0 + 44.0 * t) as u8),
-            );
-            draw_app_icon(c, icons, launch_focus, cx, cy, 106.0 + 122.0 * t);
-        }
-    }
-    if launch.is_none() {
-        c.text(
-            "← / → AUSWÄHLEN · OK STARTEN · ↑ ZURÜCK",
-            640.0,
-            674.0,
-            14,
-            Weight::Bold,
-            color::MUTED,
-            Align::Center,
-        );
+
+    fn transition_backdrop(&self) -> Option<(Image, f32)> {
+        self.entry_backdrop
+            .as_ref()
+            .zip(self.entry_progress())
+            .map(|(image, progress)| (image.clone(), progress))
     }
 }
 
-fn app_details(index: usize) -> (&'static str, Rgba) {
-    match index {
-        0 if !super::browser::installed() => (
-            "YouTube TV · Browser-Unterstützung nicht installiert",
-            Rgba::hex(0xe5a66d),
-        ),
-        1 if !super::browser::installed() => (
-            "Prime Video · Browser-Unterstützung nicht installiert",
-            Rgba::hex(0xe5a66d),
-        ),
-        2 => (
-            "ARD Mediathek · derzeit wegen eines WebKit-Fehlers deaktiviert",
-            Rgba::hex(0xe5a66d),
-        ),
-        3 => ("ZDF Live · native HLS-Wiedergabe", Rgba::hex(0x8dd5b0)),
-        4 => ("ARTE Live · native HLS-Wiedergabe", Rgba::hex(0x8dd5b0)),
-        5 => (
-            "Einstellungen · WLAN, Bild, Ton und Bedienung",
-            Rgba::hex(0x91baff),
-        ),
-        _ => ("App auswählen", Rgba::hex(0x91baff)),
-    }
-}
-
-fn draw_app_icon(
-    c: &mut Canvas,
-    icons: &[Option<Image>; 5],
-    index: usize,
-    x: f32,
-    y: f32,
-    size: f32,
-) {
-    if let Some(Some(image)) = icons.get(index) {
-        c.image_fit(
-            image,
-            x - size * 0.5,
-            y - size * 0.5,
-            size,
-            size,
-            size * 0.18,
-            false,
-            1.0,
-        );
-    } else {
-        draw_badge(c, index, x, y, size);
-    }
-}
-
-fn app_accent(index: usize) -> Rgba {
-    match index {
-        0 => Rgba::hex(0xf0444b),
-        1 => Rgba::hex(0x54bfff),
-        2 => Rgba::hex(0x9bb4dc),
-        3 => Rgba::hex(0x9a72ff),
-        4 => Rgba::hex(0xe5e8ef),
-        _ => Rgba::hex(0x8eb5ff),
-    }
-}
-
-fn draw_badge(c: &mut Canvas, app: usize, x: f32, y: f32, size: f32) {
-    match app {
-        4 => {
-            c.circle(x, y, size * 0.5, Rgba::hex(0x151515));
-            c.text(
-                "ARTE",
-                x,
-                y - size * 0.12,
-                (size * 0.27) as u32,
-                Weight::Bold,
-                color::WHITE,
-                Align::Center,
-            );
-        }
-        5 => super::icon_gear(c, x, y, size * 0.94, Rgba::hex(0xe8eaf0)),
-        _ => c.circle(x, y, size * 0.42, Rgba::hex(0x262a35)),
+fn restore_items(canvas: &mut Canvas, base: &Image, positions: &[(f32, f32); 5]) {
+    canvas.restore_rect(base, 540.0, 310.0, 200.0, 120.0);
+    for &(x, y) in positions {
+        canvas.restore_rect(base, x - 56.0, y - 56.0, 112.0, 112.0);
     }
 }

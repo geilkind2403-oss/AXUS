@@ -42,9 +42,11 @@ fn main() {
 
     // The Settings view (C++ presentation layer).
     println!("cargo:rerun-if-changed=src/ui/native/settings_view.cpp");
+    println!("cargo:rerun-if-changed=src/ui/native/apps_wheel.cpp");
     let mut cpp = cc::Build::new();
     cpp.cpp(true)
         .file("src/ui/native/settings_view.cpp")
+        .file("src/ui/native/apps_wheel.cpp")
         .flag_if_supported("-std=c++17")
         .flag("-ffreestanding")
         .flag("-nostdinc")

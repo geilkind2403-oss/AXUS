@@ -190,6 +190,11 @@ pub trait Screen {
     fn app_id(&self) -> Option<&'static str> {
         None
     }
+    /// Lets brief overlay transitions reuse the exact pixels already on screen.
+    fn set_transition_backdrop(&mut self, _image: Image) {}
+    fn transition_backdrop(&self) -> Option<(Image, f32)> {
+        None
+    }
 }
 
 /// A value a background thread fills in.

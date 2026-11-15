@@ -97,6 +97,27 @@ const FADE: f32 = if cfg!(target_arch = "arm") {
 // included a wide margin around the panel and added avoidable work per key.
 const CONTROL_DAMAGE: (f32, f32, f32, f32) = ui::control::REGION;
 
+fn feather_transition_edge(mut image: gfx::Image) -> gfx::Image {
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let pixels = Arc::make_mut(&mut image).data_mut();
+    let fade_height = (height / 10).max(1);
+    for y in height - fade_height..height {
+        let t = if fade_height <= 1 {
+            0.0
+        } else {
+            (height - 1 - y) as f32 / (fade_height - 1) as f32
+        };
+        let opacity = t * t * (3.0 - 2.0 * t);
+        for pixel in pixels[y * width * 4..(y + 1) * width * 4].chunks_exact_mut(4) {
+            for channel in pixel {
+                *channel = (*channel as f32 * opacity).round() as u8;
+            }
+        }
+    }
+    image
+}
+
 impl App {
     fn top(&mut self) -> &mut Box<dyn Screen> {
         self.stack.last_mut().unwrap()
@@ -158,7 +179,12 @@ impl App {
         };
         match nav {
             Nav::None => return,
-            Nav::Push(s) => self.stack.push(s),
+            Nav::Push(mut s) => {
+                if self.top().name() == "home" && s.name() == "apps" {
+                    s.set_transition_backdrop(feather_transition_edge(self.canvas.snapshot()));
+                }
+                self.stack.push(s);
+            }
             Nav::Pop => {
                 if self.stack.len() > 1 {
                     self.stack.pop();
@@ -291,7 +317,15 @@ impl App {
         // A glass overlay keeps its own pixels: the screen below is drawn
         // again only when the glass needs a new picture of it.
         if s.overlay() && s.needs_backdrop() {
-            if let Some(base) = self.stack.last_mut() {
+            if let Some((image, progress)) = s.transition_backdrop() {
+                // Move one already-rasterized Home image up as the C++ wheel
+                // spins in. The short entrance adds no full Home redraws.
+                self.canvas.ambient(gfx::Ambient::LiquidGold);
+                self.canvas.offset = (0.0, -progress.clamp(0.0, 1.0) * 720.0);
+                self.canvas.image_exact(&image, 0.0, 0.0);
+                self.canvas.offset = (0.0, 0.0);
+                self.canvas.finish();
+            } else if let Some(base) = self.stack.last_mut() {
                 let use_partial_restore = s.name() == "control"
                     && !s.video()
                     && self.cx.toast.is_none()
@@ -975,9 +1009,11 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         // a notification over the retained Home (and Apps) picture must
         // leave nothing behind once it has faded
         if std::env::var_os("SHOT_TOAST_APPS").is_some() {
-            app.stack
-                .push(Box::new(ui::apps::Apps::new(&app.cx.cfg.last_app_id)));
-            settle(app, 400);
+            app.apply(Nav::Push(Box::new(ui::apps::Apps::wheel(
+                &app.cx,
+                &app.cx.cfg.last_app_id,
+            ))));
+            settle(app, 600);
         }
         app.key(Key::VolUp);
         settle(app, 1000);
@@ -1213,47 +1249,36 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         return;
     }
     if std::env::var_os("SHOT_APPS_ONLY").is_some() {
-        let mut apps = if std::env::var_os("SHOT_APPS_WHEEL_ONLY").is_some() {
-            ui::apps::Apps::wheel(&app.cx.cfg.last_app_id)
-        } else {
-            ui::apps::Apps::new(&app.cx.cfg.last_app_id)
-        };
+        let initial = app.cx.cfg.last_media_tile.min(5);
+        if initial < 3 {
+            app.key(Key::Down);
+        }
+        app.key(Key::Down);
+        settle(app, 180);
+        shot(app, "02-home-wheel-button-focused");
+        app.key(Key::Ok);
         if std::env::var_os("SHOT_APPS_FOCUS_PRIME").is_some() {
-            app.cx.now = Instant::now();
-            let _ = apps.key(Key::Down, &mut app.cx);
+            settle(app, 500);
+            app.key(Key::Right);
         }
         if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
+            settle(app, 500);
             for _ in 0..3 {
-                let _ = apps.key(Key::Right, &mut app.cx);
+                app.key(Key::Right);
             }
         }
-        app.stack.push(Box::new(apps));
-        if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline
-                && app
-                    .stack
-                    .last()
-                    .map(|screen| screen.animating(&app.cx))
-                    .unwrap_or(false)
-            {
-                draw_frame(app);
-                std::thread::sleep(Duration::from_millis(16));
-            }
-        }
-        settle(app, 0);
-        shot(app, "02-apps");
+        settle(app, 180);
+        shot(app, "03-wheel-entering");
+        settle(app, 500);
+        shot(app, "04-app-wheel");
         if std::env::var_os("SHOT_APPS_WHEEL_LAUNCH").is_some() {
             app.key(Key::Ok);
             settle(app, 220);
-            shot(app, "03-app-launching");
+            shot(app, "05-app-launching");
             return;
         }
         if std::env::var_os("SHOT_APPS_BENCH").is_some() {
-            // Exercise real remote navigation across the Apps grid at 60 Hz,
-            // including the long move to Settings and its animated focus ring.
-            // Let the screen's ambient crossfade and first retained-layer build
-            // finish before measuring steady-state navigation frames.
+            // Exercise the cached C++ wheel's steady-state remote navigation.
             let warm_ms = std::env::var("SHOT_APPS_PREWARM_MS")
                 .ok()
                 .and_then(|value| value.parse().ok())
@@ -1268,11 +1293,11 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             const N: usize = 60;
             const FRAME_MS: f64 = 1000.0 / 60.0;
             let route = [
-                Key::Down,
-                Key::Down,
                 Key::Right,
-                Key::Up,
-                Key::Up,
+                Key::Left,
+                Key::Right,
+                Key::Left,
+                Key::Right,
                 Key::Left,
             ];
             for i in 0..N {
@@ -1296,7 +1321,7 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             let wall = bench_start.elapsed().as_secs_f64() * 1000.0;
             let (record, raster) = *TIMES.lock().unwrap();
             log(&format!(
-                "Apps 60-Hz Navigation: {:.1} ms Render im Schnitt, max {:.1} ms, über 16,7 ms: {over_budget}/{N}, Takt {:.1} ms/Bild",
+                "App wheel 60-Hz Navigation: {:.1} ms Render im Schnitt, max {:.1} ms, über 16,7 ms: {over_budget}/{N}, Takt {:.1} ms/Bild",
                 render_total_ms / N as f64,
                 render_max_ms,
                 wall / N as f64,
@@ -1310,20 +1335,22 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         return;
     }
     if std::env::var_os("SHOT_SETTINGS_ROUTE").is_some() {
-        let mut apps = ui::apps::Apps::new(&app.cx.cfg.last_app_id);
-        for key in [Key::Down, Key::Down, Key::Right] {
-            let nav = apps.key(key, &mut app.cx);
-            if !matches!(nav, Nav::None) {
-                log("Settings-Routenprüfung: unerwartete Navigation im Apps-Raster");
-                return;
-            }
+        let route: &[Key] = match app.cx.cfg.last_media_tile.min(5) {
+            0 => &[Key::Down, Key::Right, Key::Right],
+            1 => &[Key::Down, Key::Right],
+            2 => &[Key::Down],
+            3 => &[Key::Right, Key::Right],
+            4 => &[Key::Right],
+            _ => &[],
+        };
+        for &key in route {
+            app.key(key);
         }
-        app.stack.push(Box::new(apps));
         settle(app, 180);
-        shot(app, "02-apps-settings-focused");
+        shot(app, "02-home-settings-focused");
         app.key(Key::Ok);
         let route = app.stack.last().map(|s| s.name()).unwrap_or("empty");
-        log(&format!("Settings-Routenprüfung: Apps > OK = {route}"));
+        log(&format!("Home-Einstellungen: Kachel > OK = {route}"));
         let settings_wait = std::env::var("SHOT_SETTINGS_WAIT_MS")
             .ok()
             .and_then(|v| v.parse().ok())
