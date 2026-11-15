@@ -1,11 +1,15 @@
 //! Headlines from the Tagesschau app API (editorial order, kicker, photos),
 //! the RSS feed as fallback. Article text comes from the item's details JSON.
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewsItem {
     pub title: String,
     pub topline: String,
+    pub category: String,
     pub date: String,
     pub image: String,
     pub details: String,
@@ -20,6 +24,16 @@ fn https(v: &Value) -> String {
 }
 
 pub fn fetch() -> Vec<NewsItem> {
+    let items = fetch_online();
+    if !items.is_empty() {
+        save_cache(&items);
+        items
+    } else {
+        load_cached().unwrap_or_default()
+    }
+}
+
+fn fetch_online() -> Vec<NewsItem> {
     let mut items = Vec::new();
     if let Ok(j) = crate::net::get_json("https://www.tagesschau.de/api2u/homepage/") {
         for n in j["news"].as_array().into_iter().flatten() {
@@ -39,6 +53,7 @@ pub fn fetch() -> Vec<NewsItem> {
             items.push(NewsItem {
                 title: n["title"].as_str().unwrap_or("").trim().into(),
                 topline: n["topline"].as_str().unwrap_or("").trim().into(),
+                category: category_code(n["ressort"].as_str().unwrap_or("")),
                 date: n["date"].as_str().unwrap_or("").into(),
                 image,
                 details: https(&n["details"]),
@@ -73,6 +88,7 @@ pub fn fetch() -> Vec<NewsItem> {
                 }
                 items.push(NewsItem {
                     title,
+                    category: "inland".into(),
                     date: tag("pubDate"),
                     first_sentence: tag("description"),
                     ..Default::default()
@@ -84,6 +100,39 @@ pub fn fetch() -> Vec<NewsItem> {
         }
     }
     items
+}
+
+fn category_code(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "inland" | "ausland" | "wirtschaft" | "sport" | "wissenschaft" | "panorama" | "kultur" => {
+            value.trim().to_lowercase()
+        }
+        _ => "sonstiges".into(),
+    }
+}
+
+fn cache_path() -> PathBuf {
+    crate::app::data_dir().join("news-cache.json")
+}
+
+fn save_cache(items: &[NewsItem]) {
+    if let Ok(bytes) = serde_json::to_vec(items) {
+        let dir = crate::app::data_dir();
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let tmp = dir.join("news-cache.json.tmp");
+            if std::fs::write(&tmp, bytes).is_ok() {
+                let _ = std::fs::rename(tmp, cache_path());
+            }
+        }
+    }
+}
+
+/// Headlines saved by the most recent successful refresh, available offline
+/// before a new request to Tagesschau completes.
+pub fn load_cached() -> Option<Vec<NewsItem>> {
+    let bytes = std::fs::read(cache_path()).ok()?;
+    let items: Vec<NewsItem> = serde_json::from_slice(&bytes).ok()?;
+    (!items.is_empty()).then_some(items)
 }
 
 pub fn unescape(s: &str) -> String {
