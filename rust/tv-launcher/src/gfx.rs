@@ -1001,10 +1001,20 @@ impl Canvas {
     pub fn ambient(&mut self, src: Ambient) {
         self.backdrop();
         let key = src.key();
+        let liquid_gold = matches!(&src, Ambient::LiquidGold);
         let ready = self.ambient_pm(key, Some(&src)).is_some();
-        // switch (and start the fade) only once the new one exists; until then the old one stays
-        if key != self.ambient_now.0 && (ready || key == 0) {
-            self.ambient_now = (key, self.ambient_now.0, std::time::Instant::now());
+        // Normally switch only after the new image is ready. The gold glass
+        // theme switches to the neutral backdrop immediately to avoid flashing
+        // an unrelated color from the previous screen.
+        if key != self.ambient_now.0 && (ready || key == 0 || liquid_gold) {
+            // Settings should never flash the previous screen's unrelated
+            // colors while its tiny cached gold light field is being prepared.
+            let previous = if liquid_gold && !ready {
+                0
+            } else {
+                self.ambient_now.0
+            };
+            self.ambient_now = (key, previous, std::time::Instant::now());
         }
         let k = if AMBIENT_FADE == 0.0 {
             1.0
@@ -1931,6 +1941,8 @@ pub enum Ambient {
     None,
     Image(Image),
     Color(Rgba),
+    /// Cached, low-resolution black-and-gold light field for glass surfaces.
+    LiquidGold,
 }
 
 impl Ambient {
@@ -1948,6 +1960,7 @@ impl Ambient {
             Ambient::Color(c) => {
                 0x8000_0000_0000_0000 | (c.0 as u64) << 16 | (c.1 as u64) << 8 | c.2 as u64
             }
+            Ambient::LiquidGold => 0x8000_0000_4c49_5155,
         }
     }
 }
@@ -1990,6 +2003,51 @@ fn ambient_small(src: &Ambient) -> Option<Pixmap> {
                 p[3] = a as u8;
             }
             box_blur(&mut sm, 4);
+            Some(sm)
+        }
+        Ambient::LiquidGold => {
+            // Three broad golden light fields and one soft reflection create
+            // useful variation behind translucent controls. This tiny image
+            // is blurred and cached once; idle frames reuse the full backdrop.
+            let mut sm = Pixmap::new(48, 27)?;
+            for (i, p) in sm.data_mut().chunks_exact_mut(4).enumerate() {
+                let (x, y) = ((i % 48) as f32 / 47.0, (i / 48) as f32 / 26.0);
+                let glow = |cx: f32, cy: f32, sx: f32, sy: f32| {
+                    let dx = (x - cx) / sx;
+                    let dy = (y - cy) / sy;
+                    (-2.0 * (dx * dx + dy * dy)).exp()
+                };
+                let upper = 0.38 * glow(0.08, 0.12, 0.52, 0.52);
+                let middle = 0.31 * glow(0.78, 0.30, 0.44, 0.42);
+                let lower = 0.20 * glow(0.58, 0.88, 0.62, 0.38);
+                let center = 0.18 * glow(0.48, 0.55, 0.46, 0.30);
+                let reflection_y = 0.19 + x * 0.16;
+                let reflection_a =
+                    0.15 * (-((y - reflection_y) / 0.035).powi(2)).exp() * (1.0 - x * 0.55);
+                let reflection_b =
+                    0.20 * (-((y - (0.68 - x * 0.22)) / 0.055).powi(2)).exp() * (0.35 + x * 0.65);
+                let liquid_wave_a = 0.40
+                    * (-((y - (0.26 + 0.12 * (x * 5.0).sin())) / 0.045).powi(2)).exp()
+                    * (0.35 + x * 0.65);
+                let liquid_wave_b = 0.29
+                    * (-((y - (0.77 - 0.10 * (x * 4.0).sin())) / 0.065).powi(2)).exp()
+                    * (1.0 - x * 0.38);
+                let alpha = ((upper
+                    + middle
+                    + lower
+                    + center
+                    + reflection_a
+                    + reflection_b
+                    + liquid_wave_a
+                    + liquid_wave_b)
+                    .clamp(0.0, 0.86)
+                    * 255.0) as u32;
+                p[0] = div255(78 * alpha) as u8;
+                p[1] = div255(175 * alpha) as u8;
+                p[2] = div255(232 * alpha) as u8;
+                p[3] = alpha as u8;
+            }
+            box_blur(&mut sm, 1);
             Some(sm)
         }
         Ambient::None => None,

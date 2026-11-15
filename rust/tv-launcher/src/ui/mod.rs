@@ -226,6 +226,11 @@ pub fn title(c: &mut Canvas, s: &str) {
 
 /// Compact system status capsule: clock, network and optional phone remote.
 pub fn status(c: &mut Canvas, cx: &Ctx) {
+    status_with_phone_accent(c, cx, Rgba::hex(0x75c9ff));
+}
+
+/// Draw the shared status capsule with a screen-specific remote-control tint.
+pub fn status_with_phone_accent(c: &mut Canvas, cx: &Ctx, phone_accent: Rgba) {
     let (hour, minute, _) = crate::app::local_hms();
     let right = crate::gfx::W as f32 - PAD;
     let (x, y, w, capsule_h) = (right - 284.0, 20.0, 284.0, 46.0);
@@ -293,7 +298,7 @@ pub fn status(c: &mut Canvas, cx: &Ctx) {
         color::BORDER.alpha(0.9),
     );
     let phone = if cx.cfg.remote_enabled {
-        Rgba::hex(0x75c9ff)
+        phone_accent
     } else {
         color::MUTED
     };

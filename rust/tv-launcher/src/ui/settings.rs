@@ -1,4 +1,6 @@
 //! Settings: network, bluetooth, PC server, sound, phone remote, place, system.
+mod view;
+
 use super::*;
 use crate::app::{load, Ctx, Nav, Screen, Slot};
 use crate::gfx::{color, Align, Canvas, Rgba, Weight};
@@ -15,18 +17,6 @@ const SECTIONS: [&str; 9] = [
     "Handy als Fernbedienung",
     "Ort fürs Wetter",
     "System",
-];
-
-const SECTION_HINTS: [&str; 9] = [
-    "Verbindung und verfügbare Netzwerke",
-    "Geräte suchen und verbinden",
-    "Filme vom Computer abspielen",
-    "Senderliste und Wiedergabe",
-    "Anzeige, Timer und Untertitel",
-    "Ausgabe und Lautstärke",
-    "Den Launcher mit dem Handy steuern",
-    "Wetter für deinen Standort",
-    "Gerät und Wartung",
 ];
 
 enum Edit {
@@ -48,9 +38,7 @@ pub struct Settings {
     update: Slot<Result<crate::updater::UpdateInfo, String>>,
     kb: Option<(Keyboard, Edit)>,
     confirm: Option<usize>,
-    sec_bar: Anim,
-    item_bar: Anim,
-    item_scroll: Anim,
+    native_view: view::Animation,
 }
 
 impl Settings {
@@ -69,15 +57,13 @@ impl Settings {
             update: Slot::empty(),
             kb: None,
             confirm: None,
-            sec_bar: Anim::default(),
-            item_bar: Anim::default(),
-            item_scroll: Anim::default(),
+            native_view: view::Animation::default(),
         }
     }
 
     fn items(&self, cx: &Ctx) -> usize {
         match self.section {
-            9 => 4,
+            9 => SECTIONS.len(),
             0 => self.wifi.get().map(|v| v.len()).unwrap_or(0) + 1,
             1 => self.bt.get().map(|v| v.len()).unwrap_or(0) + 1,
             2 => 2,
@@ -109,9 +95,9 @@ impl Settings {
 
     fn activate(&mut self, cx: &mut Ctx) -> Nav {
         if self.section == 9 {
-            self.section = [0, 2, 3, 7][self.item.min(3)];
+            self.section = self.item.min(SECTIONS.len() - 1);
             self.item = 0;
-            self.inside = false;
+            self.inside = true;
             self.enter_section(cx);
             return Nav::None;
         }
@@ -344,10 +330,7 @@ impl Screen for Settings {
         "settings"
     }
     fn animating(&self, _: &Ctx) -> bool {
-        self.kb.is_some()
-            || self.sec_bar.moving()
-            || self.item_bar.moving()
-            || self.item_scroll.moving()
+        self.kb.is_some() || self.native_view.moving()
     }
     fn text(&mut self, s: &str, cx: &mut Ctx) {
         if let Some((kb, _)) = self.kb.as_mut() {
@@ -386,6 +369,16 @@ impl Screen for Settings {
         if k == Key::Home {
             return Nav::Home;
         }
+        if self.section == 9 && !self.inside {
+            match k {
+                Key::Back => return Nav::Pop,
+                Key::Up if self.item > 0 => self.item -= 1,
+                Key::Down if self.item + 1 < SECTIONS.len() => self.item += 1,
+                Key::Right | Key::Ok => return self.activate(cx),
+                _ => {}
+            }
+            return Nav::None;
+        }
         if !self.inside {
             match k {
                 Key::Back if self.section == 9 => return Nav::Pop,
@@ -411,7 +404,12 @@ impl Screen for Settings {
         }
         let n = self.items(cx);
         match k {
-            Key::Back => self.inside = false,
+            Key::Back => {
+                let section = self.section;
+                self.section = 9;
+                self.inside = false;
+                self.item = section;
+            }
             Key::Left | Key::Right
                 if (self.section == 3 && self.item >= 2)
                     || (self.section == 4 && self.item <= 2) =>
@@ -430,7 +428,12 @@ impl Screen for Settings {
                 crate::platform_audio::VOLUME.store(v, Relaxed);
                 cx.save();
             }
-            Key::Left => self.inside = false,
+            Key::Left => {
+                let section = self.section;
+                self.section = 9;
+                self.inside = false;
+                self.item = section;
+            }
             Key::Up if self.item > 0 => self.item -= 1,
             Key::Down if self.item + 1 < n => self.item += 1,
             Key::Ok => return self.activate(cx),
@@ -440,157 +443,36 @@ impl Screen for Settings {
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
-        c.ambient(crate::gfx::Ambient::Color(Rgba::hex(0x3d4f8f)));
-        title(c, "Einstellungen");
-        status(c, cx);
-        c.rect(47.0, 102.0, 355.0, 550.0, 22.0, Rgba(18, 23, 38, 188));
-        c.stroke_rect(
-            47.0,
-            102.0,
-            355.0,
-            550.0,
-            22.0,
-            1.0,
-            Rgba(156, 179, 255, 27),
-        );
-        c.text(
-            "ZURÜCK  Übersicht / Schließen    ·    OK  Auswählen",
-            PAD,
-            674.0,
-            13,
-            Weight::Semi,
-            color::MUTED,
-            Align::Left,
-        );
-        c.text(
-            "KATEGORIEN",
-            64.0,
-            111.0,
-            11,
-            Weight::Bold,
-            color::MUTED,
-            Align::Left,
-        );
-        c.rect(447.0, 102.0, 780.0, 550.0, 22.0, Rgba(22, 27, 43, 208));
-        c.stroke_rect(
-            447.0,
-            102.0,
-            780.0,
-            550.0,
-            22.0,
-            1.0,
-            Rgba(156, 179, 255, 35),
-        );
-        c.rect(465.0, 121.0, 4.0, 36.0, 2.0, color::ACCENT);
-        c.text(
-            if self.section == 9 {
-                "Übersicht"
-            } else {
-                SECTIONS[self.section]
-            },
-            485.0,
-            116.0,
-            24,
-            Weight::Bold,
-            color::TEXT,
-            Align::Left,
-        );
-        c.text(
-            if self.section == 9 {
-                "Status und wichtige Einstellungen auf einen Blick"
-            } else {
-                SECTION_HINTS[self.section]
-            },
-            485.0,
-            148.0,
-            14,
-            Weight::Regular,
-            color::MUTED,
-            Align::Left,
-        );
-        c.line(
-            &[(466.0, 169.0), (1206.0, 169.0)],
-            1.0,
-            Rgba(255, 255, 255, 27),
-        );
-        // the selection bar glides between sections
-        let target = if self.section < SECTIONS.len() {
-            142.0 + self.section as f32 * 54.0
+        // A softly layered, cached gold light field gives glass something to
+        // pick up while keeping the left side free of UI and CPU blur passes.
+        c.ambient(crate::gfx::Ambient::LiquidGold);
+        status_with_phone_accent(c, cx, Rgba(231, 190, 103, 255));
+        let heading = if self.section == 9 {
+            "Einstellungen"
         } else {
-            -100.0
+            SECTIONS[self.section]
         };
-        if self.sec_bar.v == 0.0 {
-            self.sec_bar.jump(target);
-        }
-        self.sec_bar.set(target);
-        let sb = self.sec_bar.step();
-        c.rect(
-            PAD - 12.0,
-            sb,
-            340.0,
-            46.0,
-            12.0,
-            if self.inside {
-                Rgba(91, 130, 239, 62)
-            } else {
-                Rgba(72, 115, 234, 230)
-            },
+        let row_count = self.items(cx);
+        view::draw_shell(
+            c,
+            &mut self.native_view,
+            self.section,
+            self.item,
+            self.inside,
+            row_count,
+            heading,
+            "",
         );
-        let near = (sb - target).abs() < 28.0;
-        for (i, s) in SECTIONS.iter().enumerate() {
-            let y = 142.0 + i as f32 * 54.0;
-            let f = i == self.section && near;
-            let ic = if f && !self.inside {
-                color::WHITE
-            } else {
-                color::MUTED
-            };
-            section_icon(c, i, PAD + 16.0, y + 22.0, ic);
-            c.text(
-                s,
-                PAD + 40.0,
-                y + 11.0,
-                18,
-                if f { Weight::Semi } else { Weight::Regular },
-                if f && !self.inside {
-                    color::WHITE
-                } else {
-                    color::TEXT
-                },
-                Align::Left,
-            );
-        }
-        let x = 460.0;
-        let w = 756.0;
+        let x = 650.0;
+        let w = 570.0;
         let mut rows: Vec<(String, String)> = Vec::new();
         match self.section {
             9 => {
-                let (online, _, network) = cx.net.get().unwrap_or_default();
-                let live = match cx.channels.get() {
-                    Some(Ok((channels, _))) => format!("{} Sender verfügbar", channels.len()),
-                    Some(Err(_)) => "Senderliste nicht erreichbar".into(),
-                    None => "Senderliste wird geladen".into(),
-                };
-                rows.push((
-                    "Netzwerk".into(),
-                    if online {
-                        format!("Verbunden · {network}")
-                    } else {
-                        "Nicht verbunden".into()
-                    },
-                ));
-                rows.push((
-                    "Filmserver".into(),
-                    if cx.cfg.film_server.is_empty() {
-                        "Noch nicht eingerichtet".into()
-                    } else {
-                        cx.cfg.film_server.clone()
-                    },
-                ));
-                rows.push(("Live TV".into(), live));
-                rows.push(("Wetter".into(), cx.cfg.city.clone()));
-                detail_card(c, x + 16.0, 448.0, w - 32.0, "SCHNELLZUGRIFF", "Direkt zu einer Einstellung",
-                    "Wähle einen Status oben und drücke OK, um die zugehörige Einstellung zu öffnen. Mit Links kommst du zurück zur Kategorienliste.");
+                rows.extend(
+                    SECTIONS
+                        .iter()
+                        .map(|name| ((*name).to_string(), String::new())),
+                );
             }
             0 => {
                 let (ok, _, name) = cx.net.get().unwrap_or_default();
@@ -621,25 +503,6 @@ impl Screen for Settings {
                     }
                     None => rows.push(("Suche …".into(), String::new())),
                 }
-                if self.wifi.get().map(|list| list.len()).unwrap_or(0) <= 1 {
-                    detail_card(
-                        c,
-                        x + 16.0,
-                        310.0,
-                        w - 32.0,
-                        "VERBINDUNG",
-                        if ok {
-                            "Mit dem Netzwerk verbunden"
-                        } else {
-                            "WLAN einrichten"
-                        },
-                        if ok {
-                            "Der Launcher kann Wetter, Nachrichten und Online-Apps abrufen. Wähle ein anderes Netzwerk aus der Liste, wenn du wechseln möchtest."
-                        } else {
-                            "Wähle ein Netzwerk aus der Liste. Bei geschützten Netzwerken erscheint die Bildschirmtastatur für das Passwort."
-                        },
-                    );
-                }
             }
             1 => {
                 rows.push((
@@ -658,10 +521,6 @@ impl Screen for Settings {
                         },
                     ));
                 }
-                if self.bt.get().map(|list| list.len()).unwrap_or(0) <= 1 {
-                    detail_card(c, x + 16.0, 310.0, w - 32.0, "ZUBEHÖR", "Fernbedienung und Kopfhörer",
-                        "Aktiviere den Kopplungsmodus am Gerät und starte die Suche. Gefundene Geräte erscheinen oben in der Liste.");
-                }
             }
             2 => {
                 rows.push((
@@ -673,8 +532,6 @@ impl Screen for Settings {
                     },
                 ));
                 rows.push(("Verbindung testen".into(), String::new()));
-                detail_card(c, x + 16.0, 310.0, w - 32.0, "MEDIATHEK", "Mehr Formate über den PC",
-                    "Starte tv-server auf dem Computer und trage seine Adresse oben ein. Der Server wandelt Videos um, die der Pi 3 nicht direkt abspielen kann.");
             }
             3 => {
                 let src = match cx.channels.get() {
@@ -700,7 +557,6 @@ impl Screen for Settings {
                         "‹ Startseite ›".into()
                     },
                 ));
-                c.paragraph("Eigene Liste: eine .m3u-Datei nach /storage/tv-launcher/livetv/ oder auf den USB-Stick legen. 720p läuft auf dem Pi 3 am ruhigsten.", x + 18.0, 452.0, w - 36.0, 15, Weight::Regular, color::MUTED, 22.0, 4);
             }
             4 => {
                 rows.push((
@@ -731,7 +587,6 @@ impl Screen for Settings {
                 ));
                 let mode = screen_mode(cx);
                 rows.push(("Bildschirm".into(), mode));
-                c.paragraph("Der Ausschalt-Timer beendet die Wiedergabe und schaltet den Fernseher über HDMI aus.", x + 18.0, 452.0, w - 36.0, 15, Weight::Regular, color::MUTED, 22.0, 3);
             }
             5 => {
                 rows.push((
@@ -743,41 +598,17 @@ impl Screen for Settings {
                     },
                 ));
                 rows.push(("Lautstärke".into(), format!("‹ {} % ›", cx.cfg.volume)));
-                detail_card(c, x + 16.0, 310.0, w - 32.0, "AUDIO", "Klang über den Fernseher",
-                    "HDMI gibt den Ton direkt an den Fernseher aus. Für kabelgebundene Lautsprecher kannst du auf die Kopfhörerbuchse wechseln.");
             }
             6 => {
                 let url = cx.remote_url.clone();
-                c.text(
-                    "Mit dem Handy im selben WLAN öffnen:",
-                    x,
-                    192.0,
-                    18,
-                    Weight::Regular,
-                    color::MUTED,
-                    Align::Left,
-                );
-                c.text(&url, x, 224.0, 30, Weight::Bold, color::TEXT, Align::Left);
-                c.paragraph(
-                    "Steuerkreuz, OK, Zurück, Lautstärke und Texteingabe – alles vom Handy aus.",
-                    x,
-                    274.0,
-                    w,
-                    17,
-                    Weight::Regular,
-                    color::MUTED,
-                    26.0,
-                    3,
-                );
-                draw_qr(c, &url, x, 340.0, 240.0);
+                c.text(&url, x, 192.0, 26, Weight::Bold, color::TEXT, Align::Left);
+                draw_qr(c, &url, x, 240.0, 240.0);
             }
             7 => {
                 rows.push((
                     "Ort ändern".into(),
                     format!("{} ({:.2}, {:.2})", cx.cfg.city, cx.cfg.lat, cx.cfg.lon),
                 ));
-                detail_card(c, x + 16.0, 310.0, w - 32.0, "WETTER", "Lokale Vorhersage",
-                    "Gib deinen Ort ein. Wetter, Temperatur und Vorhersage auf der Startseite werden danach für diesen Standort geladen.");
             }
             _ => {
                 rows.push(("Neu starten".into(), String::new()));
@@ -791,8 +622,6 @@ impl Screen for Settings {
                     None => "Noch nicht geprüft · OK zum Suchen".into(),
                 };
                 rows.push(("Software-Update suchen".into(), update_status));
-                detail_card(c, x + 16.0, 464.0, w - 32.0, "WARTUNG", "Software aktualisieren",
-                    "Sucht das neueste Release auf GitHub und prüft die SHA-256-Prüfsumme. OK startet die Installation; bei Startproblemen wird die vorige Version wiederhergestellt. Für dieses private Repo TV_UPDATE_TOKEN (Contents: Read-only) in /storage/tv-launcher/env eintragen.");
                 let temp = system::cpu_temp()
                     .map(|t| format!(" · CPU {t:.0} °C"))
                     .unwrap_or_default();
@@ -812,71 +641,14 @@ impl Screen for Settings {
                 );
             }
         }
-        // Keep the selected row inside the right pane when the Wi-Fi list is
-        // longer than the screen. Ten rows fit between the header and footer.
-        const VISIBLE_ROWS: usize = 8;
-        let first_row = if self.inside {
-            self.item.saturating_sub(VISIBLE_ROWS - 1)
-        } else {
-            0
-        };
-        let scroll_target = first_row as f32 * 57.0;
-        if !self.inside {
-            self.item_scroll.jump(0.0);
-            self.item_bar.jump(182.0);
-        } else {
-            self.item_scroll.set(scroll_target);
-        }
-        let scroll = self.item_scroll.step();
-        let selected_y = 182.0 + self.item as f32 * 57.0 - scroll;
-        if self.item_bar.v == 0.0 {
-            self.item_bar.jump(selected_y);
-        }
-        self.item_bar.set(selected_y);
-        let ib = self.item_bar.step();
-        let near = (ib - selected_y).abs() < 28.0;
-        // a long list (WLAN networks) scrolls inside its pane
-        c.clip_y(Some((180.0, 634.0)));
-        for (i, _) in rows.iter().enumerate() {
-            let y = 182.0 + i as f32 * 57.0 - scroll;
-            if y + 50.0 >= 182.0 && y <= 622.0 {
-                c.rect(x, y, w, 50.0, 12.0, Rgba(255, 255, 255, 12));
-            }
-        }
-        if self.inside && !rows.is_empty() {
-            c.rect(x, ib, w, 50.0, 12.0, Rgba(66, 108, 220, 230));
-            c.stroke_rect(x, ib, w, 50.0, 12.0, 1.2, Rgba(185, 205, 255, 210));
-        }
-        for (i, (a, b)) in rows.iter().enumerate() {
-            let y = 182.0 + i as f32 * 57.0 - scroll;
-            if y + 50.0 < 182.0 || y > 622.0 {
-                continue;
-            }
-            let f = self.inside && i == self.item && near;
-            c.text_fit(
-                a,
-                x + 18.0,
-                y + 13.0,
-                18,
-                Weight::Semi,
-                if f { color::WHITE } else { color::TEXT },
-                w * 0.55,
-            );
-            c.text_fit(
-                b,
-                x + w * 0.58,
-                y + 14.0,
-                16,
-                Weight::Regular,
-                if f {
-                    Rgba(226, 235, 255, 255)
-                } else {
-                    color::MUTED
-                },
-                w * 0.4,
-            );
-        }
-        c.clip_y(None);
+        view::draw_rows(
+            c,
+            &self.native_view,
+            self.section,
+            self.item,
+            self.inside,
+            &rows,
+        );
         if let Some(r) = self.busy.get() {
             let (msg, col) = match r {
                 Ok(m) => (m, color::GREEN),
@@ -897,6 +669,15 @@ impl Screen for Settings {
         if let Some(which) = self.confirm {
             c.rect(0.0, 0.0, 1280.0, 720.0, 0.0, Rgba(0, 0, 0, 190));
             c.rect(340.0, 250.0, 600.0, 200.0, 22.0, color::PANEL_SOLID);
+            c.stroke_rect(
+                340.0,
+                250.0,
+                600.0,
+                200.0,
+                22.0,
+                1.2,
+                Rgba(218, 177, 94, 150),
+            );
             let update_question;
             let q = match which {
                 0 => "Jetzt neu starten?",
@@ -929,63 +710,25 @@ impl Screen for Settings {
                 360.0,
                 17,
                 Weight::Regular,
-                color::MUTED,
+                Rgba(190, 171, 132, 255),
                 Align::Center,
             );
         }
         if let Some((kb, _)) = &self.kb {
             c.rect(0.0, 0.0, 1280.0, 720.0, 0.0, Rgba(0, 0, 0, 200));
             c.rect(190.0, 150.0, 900.0, 470.0, 24.0, color::PANEL_SOLID);
+            c.stroke_rect(
+                190.0,
+                150.0,
+                900.0,
+                470.0,
+                24.0,
+                1.2,
+                Rgba(218, 177, 94, 150),
+            );
             kb.draw(c, 220.0, 176.0, 840.0, cx.t());
         }
     }
-}
-
-/// Context card in the open space below the current section's controls.
-fn detail_card(c: &mut Canvas, x: f32, y: f32, w: f32, eyebrow: &str, heading: &str, body: &str) {
-    let h = if y > 400.0 { 156.0 } else { 218.0 };
-    c.vgradient(
-        x,
-        y,
-        w,
-        h,
-        18.0,
-        Rgba(42, 68, 119, 243),
-        Rgba(30, 44, 75, 243),
-    );
-    c.stroke_rect(x, y, w, h, 18.0, 1.0, Rgba(139, 184, 255, 81));
-    c.circle(x + w - 61.0, y + 62.0, 49.0, Rgba(112, 167, 255, 35));
-    c.circle(x + w - 61.0, y + 62.0, 28.0, Rgba(112, 167, 255, 25));
-    c.rect(x + 22.0, y + 23.0, 3.0, 18.0, 1.5, Rgba(128, 190, 255, 255));
-    c.text(
-        eyebrow,
-        x + 36.0,
-        y + 24.0,
-        12,
-        Weight::Bold,
-        Rgba(157, 203, 255, 255),
-        Align::Left,
-    );
-    c.text(
-        heading,
-        x + 24.0,
-        y + 60.0,
-        23,
-        Weight::Bold,
-        color::TEXT,
-        Align::Left,
-    );
-    c.paragraph(
-        body,
-        x + 24.0,
-        y + 103.0,
-        w - 85.0,
-        16,
-        Weight::Regular,
-        Rgba(213, 222, 242, 255),
-        23.0,
-        4,
-    );
 }
 
 /// Small line icons for the section list.
