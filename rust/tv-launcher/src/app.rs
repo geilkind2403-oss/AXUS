@@ -48,6 +48,8 @@ pub struct Config {
     pub sub_size: u32,
     /// Whether the phone remote's web server is available on the local network.
     pub remote_enabled: bool,
+    /// Load YouTube's TV interface in 720p for faster menus on low-power devices.
+    pub youtube_720p: bool,
     /// Suppress nonessential on-screen notifications.
     pub do_not_disturb: bool,
 }
@@ -77,6 +79,7 @@ impl Default for Config {
             screensaver_min: 10,
             sub_size: 1,
             remote_enabled: true,
+            youtube_720p: false,
             do_not_disturb: false,
         }
     }
