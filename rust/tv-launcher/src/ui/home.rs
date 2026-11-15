@@ -34,6 +34,9 @@ struct Tile {
     h: f32,
 }
 
+/// Home's accent: the warm gold of Settings, Live TV and the fast menu.
+const GOLD: Rgba = Rgba(226, 187, 116, 255);
+
 const TILES: [Tile; 6] = [
     // Medium, large, small across the first row.
     Tile {
@@ -377,8 +380,10 @@ impl Screen for Home {
         {
             self.ambient_focus = self.order[self.focus];
         }
-        let amb = self.ambient(cx, self.ambient_focus);
-        c.ambient(amb);
+        // the black-gold light field of Settings behind the tiles (cached
+        // once; no new backdrop per focused tile)
+        let _ = self.ambient_focus;
+        c.ambient(crate::gfx::Ambient::LiquidGold);
         // The greeting and date are stable for the whole day, so they stay in
         // the retained base. Fast-changing status is drawn below as an overlay.
         let tm = crate::app::local_tm();
@@ -576,10 +581,10 @@ fn draw_home_status(
         color::BORDER.alpha(0.9),
     );
     if focus == 6 {
-        c.stroke_rect(weather_x, y, weather_w, 46.0, 23.0, 2.0, color::ACCENT);
+        c.stroke_rect(weather_x, y, weather_w, 46.0, 23.0, 2.0, GOLD);
     }
     if focus == 7 {
-        c.stroke_rect(status_x, y, status_w, 46.0, 23.0, 2.0, color::ACCENT);
+        c.stroke_rect(status_x, y, status_w, 46.0, 23.0, 2.0, GOLD);
     }
     c.rect(
         status_x,
@@ -654,7 +659,7 @@ fn draw_home_status(
         color::BORDER.alpha(0.9),
     );
     let phone = if cx.cfg.remote_enabled {
-        color::ACCENT
+        GOLD
     } else {
         color::MUTED
     };
@@ -689,7 +694,7 @@ fn draw_home_status(
 fn draw_app_wheel_button(c: &mut Canvas, focused: bool) {
     let (x, y, w, h) = (525.0, 661.0, 230.0, 46.0);
     if focused {
-        c.circle(640.0, y + h * 0.5, 35.0, Rgba(97, 137, 220, 38));
+        c.circle(640.0, y + h * 0.5, 35.0, Rgba(214, 160, 70, 34));
     }
     c.rect(
         x,
@@ -698,7 +703,7 @@ fn draw_app_wheel_button(c: &mut Canvas, focused: bool) {
         h,
         23.0,
         if focused {
-            Rgba::hex(0x34476d)
+            Rgba(76, 57, 25, 235)
         } else {
             Rgba::hex(0x20232c)
         },
@@ -711,13 +716,13 @@ fn draw_app_wheel_button(c: &mut Canvas, focused: bool) {
         23.0,
         if focused { 2.5 } else { 1.2 },
         if focused {
-            Rgba::hex(0xb9d0ff)
+            Rgba(226, 187, 116, 200)
         } else {
-            Rgba(178, 202, 255, 95)
+            Rgba(226, 187, 116, 60)
         },
     );
     // Tiny bearing mark on the button mirrors the launcher wheel.
-    c.circle(554.0, 684.0, 14.0, Rgba::hex(0x758bb7));
+    c.circle(554.0, 684.0, 14.0, Rgba(196, 160, 96, 255));
     c.circle(554.0, 684.0, 10.0, Rgba::hex(0x20232c));
     c.circle(554.0, 684.0, 5.0, Rgba::hex(0x9eafd2));
     c.text(
@@ -1180,7 +1185,7 @@ fn draw_films_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
             (t.w - 48.0) * p,
             4.0,
             2.0,
-            color::ACCENT,
+            GOLD,
         );
     }
 }
@@ -1346,7 +1351,7 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
             t.y + 58.0,
             14,
             Weight::Semi,
-            color::ACCENT,
+            GOLD,
             w,
         );
     }

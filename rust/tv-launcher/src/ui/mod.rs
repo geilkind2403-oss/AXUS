@@ -57,6 +57,8 @@ pub fn focus_ring_fast(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32) {
     c.mark_damage_rect(x - 7.0, y + h - 1.0, w + 14.0, 8.0);
     c.mark_damage_rect(x - 7.0, y + 1.0, 8.0, (h - 2.0).max(0.0));
     c.mark_damage_rect(x + w - 1.0, y + 1.0, 8.0, (h - 2.0).max(0.0));
+    // a soft gold glow instead of a hard white frame (the look of the
+    // fast menu and the lists): a wide faint halo, a warm gold edge
     c.rounded_stroke_rect(
         x - 6.0,
         y - 6.0,
@@ -64,9 +66,9 @@ pub fn focus_ring_fast(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32) {
         h + 12.0,
         28.0,
         6.0,
-        Rgba(160, 190, 255, 40),
+        Rgba(214, 160, 70, 56),
     );
-    c.rounded_stroke_rect(x - 3.0, y - 3.0, w + 6.0, h + 6.0, 25.0, 3.0, color::WHITE);
+    c.rounded_stroke_rect(x - 3.0, y - 3.0, w + 6.0, h + 6.0, 25.0, 3.0, Rgba(232, 194, 112, 235));
 }
 
 /// A glass panel: translucent fill, a light top edge and a hairline border,
