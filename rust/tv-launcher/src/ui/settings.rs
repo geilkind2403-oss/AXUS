@@ -4,11 +4,11 @@ mod view;
 use super::*;
 use crate::app::{load, Ctx, Nav, Screen, Slot};
 use crate::gfx::{color, Align, Canvas, Rgba, Weight};
-use crate::platform::system::{self, BtDevice, Wifi};
+use crate::platform::system::{self, BtDevice, Lan, Wifi};
 use std::sync::atomic::Ordering::Relaxed;
 
 const SECTIONS: [&str; 9] = [
-    "WLAN",
+    "Netzwerk",
     "Bluetooth",
     "PC-Server",
     "Live TV",
@@ -32,6 +32,9 @@ pub struct Settings {
     item: usize,
     wifi: Slot<Vec<Wifi>>,
     wifi_requested: bool,
+    lan: Slot<Lan>,
+    /// the network a "forget it?" question is about
+    forget: Option<Wifi>,
     bt: Slot<Vec<BtDevice>>,
     bt_requested: bool,
     busy: Slot<Result<String, String>>,
@@ -51,6 +54,8 @@ impl Settings {
             // running when the Settings screen appears.
             wifi: load(&cx.tx, system::wifi_scan),
             wifi_requested: true,
+            lan: load(&cx.tx, system::lan_status),
+            forget: None,
             bt: Slot::empty(),
             bt_requested: false,
             busy: Slot::empty(),
@@ -64,7 +69,8 @@ impl Settings {
     fn items(&self, cx: &Ctx) -> usize {
         match self.section {
             9 => SECTIONS.len(),
-            0 => self.wifi.get().map(|v| v.len()).unwrap_or(0) + 1,
+            // status, cable, search, the networks, reset
+            0 => self.wifi.get().map(|v| v.len()).unwrap_or(0) + 4,
             1 => self.bt.get().map(|v| v.len()).unwrap_or(0) + 1,
             2 => 2,
             3 => 5,
@@ -81,9 +87,12 @@ impl Settings {
 
     fn enter_section(&mut self, cx: &mut Ctx) {
         match self.section {
-            0 if !self.wifi_requested && !self.wifi.is_set() => {
-                self.wifi_requested = true;
-                self.wifi = load(&cx.tx, system::wifi_scan);
+            0 => {
+                if !self.wifi_requested && !self.wifi.is_set() {
+                    self.wifi_requested = true;
+                    self.wifi = load(&cx.tx, system::wifi_scan);
+                }
+                self.lan = load(&cx.tx, system::lan_status);
             }
             1 if !self.bt_requested && !self.bt.is_set() => {
                 self.bt_requested = true;
@@ -103,21 +112,41 @@ impl Settings {
         }
         match (self.section, self.item) {
             (0, 0) => {
+                self.wifi = load(&cx.tx, system::wifi_scan);
+                self.lan = load(&cx.tx, system::lan_status);
+                cx.toast("Netzwerkstatus wird aktualisiert");
+            }
+            (0, 1) => {
+                cx.toast("LAN wird neu verbunden …");
+                let (wifi, lan) = (self.wifi.clone(), self.lan.clone());
+                self.busy = load(&cx.tx, move || {
+                    let r = system::lan_reconnect();
+                    lan.set(system::lan_status());
+                    wifi.set(system::wifi_scan());
+                    r
+                });
+            }
+            (0, 2) => {
                 self.wifi_requested = true;
                 self.wifi = load(&cx.tx, system::wifi_scan);
+                cx.toast("Suche nach Netzwerken …");
             }
             (0, i) => {
-                if let Some(w) = self.wifi.get().and_then(|v| v.get(i - 1).cloned()) {
-                    if w.secured && !w.connected {
+                let list = self.wifi.get().unwrap_or_default();
+                match list.get(i - 3).cloned() {
+                    Some(w) if w.connected => {
+                        self.forget = Some(w);
+                        self.confirm = Some(5);
+                    }
+                    Some(w) if w.secured => {
                         self.kb = Some((
                             Keyboard::new(&format!("Passwort für „{}“", w.name), "", true),
                             Edit::WifiPass(w),
                         ));
-                    } else {
-                        let tx = cx.tx.clone();
-                        self.busy = load(&tx, move || {
-                            system::wifi_connect(&w, "").map(|_| "Verbunden".to_string())
-                        });
+                    }
+                    Some(w) => self.connect_wifi(w, String::new(), cx),
+                    None => {
+                        self.confirm = Some(4);
                     }
                 }
             }
@@ -217,6 +246,41 @@ impl Settings {
         Nav::None
     }
 
+    /// Only rows that open something (a keyboard, a list) get the arrow;
+    /// actions and choices do not.
+    fn chevron(&self, row: usize, n_wifi: usize) -> bool {
+        match self.section {
+            9 => true,
+            // the networks, but not the connected one (OK forgets it)
+            0 => {
+                row >= 3
+                    && row < 3 + n_wifi
+                    && !self
+                        .wifi
+                        .get()
+                        .and_then(|v| v.get(row - 3).map(|w| w.connected))
+                        .unwrap_or(false)
+            }
+            // film server address, channel list address, place
+            2 => row == 0,
+            3 => row == 0,
+            7 => row == 0,
+            _ => false,
+        }
+    }
+
+    /// Connects in the background and reports the result on the panel.
+    fn connect_wifi(&mut self, w: Wifi, pass: String, cx: &mut Ctx) {
+        cx.toast(format!("Verbinde mit {} …", w.name));
+        let (wifi, lan) = (self.wifi.clone(), self.lan.clone());
+        self.busy = load(&cx.tx, move || {
+            let r = system::wifi_connect(&w, &pass);
+            wifi.set(system::wifi_scan());
+            lan.set(system::lan_status());
+            r
+        });
+    }
+
     /// Left/Right (or OK) on a choice row.
     fn cycle(&mut self, cx: &mut Ctx, dir: i32) {
         let step = |list: &[u32], cur: u32| -> u32 {
@@ -277,19 +341,7 @@ impl Settings {
             }
         };
         match e {
-            Edit::WifiPass(w) => {
-                self.busy = load(&cx.tx, move || {
-                    system::wifi_connect(&w, &text)
-                        .map(|_| "Verbindet … (ein paar Sekunden)".to_string())
-                });
-                let tx = cx.tx.clone();
-                let slot = self.wifi.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(6));
-                    slot.set(system::wifi_scan());
-                    let _ = tx.send(crate::app::Msg::Redraw);
-                });
-            }
+            Edit::WifiPass(w) => self.connect_wifi(w, text, cx),
             Edit::FilmServer => {
                 cx.cfg.film_server = norm(&text, 8420);
                 cx.save();
@@ -363,6 +415,27 @@ impl Screen for Settings {
                     0 => system::reboot(),
                     1 => system::poweroff(),
                     2 => system::switch_to_kodi(),
+                    4 => {
+                        cx.toast("Netzwerk wird zurückgesetzt …");
+                        let (wifi, lan) = (self.wifi.clone(), self.lan.clone());
+                        self.busy = load(&cx.tx, move || {
+                            let r = system::network_reset();
+                            wifi.set(system::wifi_scan());
+                            lan.set(system::lan_status());
+                            r
+                        });
+                    }
+                    5 => {
+                        if let Some(w) = self.forget.take() {
+                            let (wifi, lan) = (self.wifi.clone(), self.lan.clone());
+                            self.busy = load(&cx.tx, move || {
+                                let r = system::wifi_forget(&w);
+                                wifi.set(system::wifi_scan());
+                                lan.set(system::lan_status());
+                                r
+                            });
+                        }
+                    }
                     _ => match crate::updater::apply_staged_update() {
                         Ok(()) => cx.toast("Update wird installiert; der Launcher startet neu"),
                         Err(e) => cx.toast(e),
@@ -370,6 +443,7 @@ impl Screen for Settings {
                 }
             }
             self.confirm = None;
+            self.forget = None;
             return Nav::None;
         }
         if k == Key::Home {
@@ -486,34 +560,53 @@ impl Screen for Settings {
                 );
             }
             0 => {
-                let (ok, _, name) = cx.net.get().unwrap_or_default();
+                let (ok, kind, name) = cx.net.get().unwrap_or_default();
+                let lan = self.lan.get();
                 rows.push((
-                    "Netzwerke suchen".into(),
-                    if ok {
-                        format!("Verbunden: {name}")
-                    } else {
+                    "Verbindung".into(),
+                    if !ok {
                         "Nicht verbunden".into()
+                    } else if kind == "wifi" {
+                        format!("WLAN · {name}")
+                    } else {
+                        format!("LAN · {name}")
                     },
                 ));
-                match self.wifi.get() {
-                    Some(list) => {
-                        for wf in list {
-                            rows.push((
-                                format!(
-                                    "{}{}",
-                                    wf.name,
-                                    if wf.secured { " · geschützt" } else { "" }
-                                ),
-                                if wf.connected {
-                                    "Verbunden".into()
-                                } else {
-                                    format!("{} %", wf.strength)
-                                },
-                            ));
-                        }
-                    }
-                    None => rows.push(("Suche …".into(), String::new())),
+                rows.push((
+                    "LAN-Kabel".into(),
+                    match lan {
+                        Some(l) if l.connected => format!("Verbunden · {}", l.ip),
+                        Some(l) if l.cable => "Kabel steckt, keine Adresse".into(),
+                        Some(_) => "Kein Kabel erkannt".into(),
+                        None => "wird geprüft …".into(),
+                    },
+                ));
+                rows.push((
+                    "Netzwerke suchen".into(),
+                    if self.wifi.is_set() {
+                        String::new()
+                    } else {
+                        "Suche …".into()
+                    },
+                ));
+                for wf in self.wifi.get().unwrap_or_default() {
+                    rows.push((
+                        format!(
+                            "{}{}",
+                            wf.name,
+                            if wf.secured { " · geschützt" } else { "" }
+                        ),
+                        if wf.connected {
+                            "Verbunden · OK vergisst".into()
+                        } else {
+                            format!("{} %", wf.strength)
+                        },
+                    ));
                 }
+                rows.push((
+                    "Netzwerk zurücksetzen".into(),
+                    "wenn nichts mehr verbindet".into(),
+                ));
             }
             1 => {
                 rows.push((
@@ -661,6 +754,8 @@ impl Screen for Settings {
                 );
             }
         }
+        let n_wifi = self.wifi.get().map(|v| v.len()).unwrap_or(0);
+        let chevrons: Vec<bool> = (0..rows.len()).map(|i| self.chevron(i, n_wifi)).collect();
         view::draw_rows(
             c,
             &self.native_view,
@@ -668,6 +763,7 @@ impl Screen for Settings {
             self.item,
             self.inside,
             &rows,
+            &chevrons,
         );
         if let Some(r) = self.busy.get() {
             let (msg, col) = match r {
@@ -703,6 +799,14 @@ impl Screen for Settings {
                 0 => "Jetzt neu starten?",
                 1 => "Jetzt ausschalten?",
                 2 => "Den Launcher beenden und Kodi starten?",
+                4 => "Netzwerk zurücksetzen? Gespeicherte WLANs werden gelöscht.",
+                5 => {
+                    update_question = format!(
+                        "„{}“ vergessen und trennen?",
+                        self.forget.as_ref().map(|w| w.name.as_str()).unwrap_or("")
+                    );
+                    &update_question
+                }
                 _ => {
                     update_question = format!(
                         "Update {} installieren?",

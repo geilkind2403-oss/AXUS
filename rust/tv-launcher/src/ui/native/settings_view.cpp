@@ -13,7 +13,7 @@ enum Weight : uint32_t { Regular = 0, Semi = 1, Bold = 2 };
 enum Align : uint32_t { Left = 0, Center = 1, Right = 2 };
 
 struct TextView { const char* data; size_t size; };
-struct RowView { TextView label; TextView value; };
+struct RowView { TextView label; TextView value; uint32_t chevron; };
 struct Input {
     uint32_t section;
     uint32_t item;
@@ -114,15 +114,18 @@ extern "C" void tv_settings_draw_rows(const Input* in, const Animation* a,
             focused ? rgba(255, 250, 236, 255) : rgba(238, 233, 223, 255));
         if (!root && rows[i].value.size != 0) {
             fit(fn, ctx, rows[i].value.data, rows[i].value.size,
-                RowX + 310.0f, y + 12.0f, 205.0f, 15, Regular,
+                RowX + 310.0f, y + 12.0f, rows[i].chevron ? 205.0f : 235.0f, 15, Regular,
                 focused ? rgba(244, 211, 142, 255) : rgba(185, 174, 151, 255));
         }
-        // TV-friendly right chevron, drawn as two line segments.
-        const float cx = RowX + RowW - 25.0f;
-        const float cy = focus_y + RowH * 0.5f;
-        const uint32_t chevron = focused ? rgba(255, 218, 137, 255) : rgba(205, 171, 105, 220);
-        line(fn, ctx, cx - 3.0f, cy - 6.0f, cx + 3.0f, cy, 2.0f, chevron);
-        line(fn, ctx, cx + 3.0f, cy, cx - 3.0f, cy + 6.0f, 2.0f, chevron);
+        // The arrow only marks rows that open something (a list, a keyboard);
+        // actions and choices have none.
+        if (rows[i].chevron) {
+            const float cx = RowX + RowW - 25.0f;
+            const float cy = focus_y + RowH * 0.5f;
+            const uint32_t chevron = focused ? rgba(255, 218, 137, 255) : rgba(205, 171, 105, 220);
+            line(fn, ctx, cx - 3.0f, cy - 6.0f, cx + 3.0f, cy, 2.0f, chevron);
+            line(fn, ctx, cx + 3.0f, cy, cx - 3.0f, cy + 6.0f, 2.0f, chevron);
+        }
     }
     emit(fn, ctx, Clip, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
     if (in->row_count > VisibleRows) {

@@ -38,6 +38,8 @@ impl TextView {
 struct RowView {
     label: TextView,
     value: TextView,
+    /// 1: the row opens something (draws the arrow)
+    chevron: u32,
 }
 
 #[repr(C)]
@@ -121,15 +123,17 @@ pub fn draw_rows(
     item: usize,
     inside: bool,
     rows: &[(String, String)],
+    chevrons: &[bool],
 ) {
     // The panel displays eight rows at a time. A bounded stack buffer avoids
     // allocating and freeing a bridge vector on every 60 Hz frame.
     let mut native_rows = [RowView::default(); 64];
     let count = rows.len().min(native_rows.len());
-    for (dst, (label, value)) in native_rows[..count].iter_mut().zip(rows.iter()) {
+    for (i, (dst, (label, value))) in native_rows[..count].iter_mut().zip(rows.iter()).enumerate() {
         *dst = RowView {
             label: TextView::new(label),
             value: TextView::new(value),
+            chevron: u32::from(chevrons.get(i).copied().unwrap_or(false)),
         };
     }
     let input = Input {
