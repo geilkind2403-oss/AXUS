@@ -81,6 +81,9 @@ pub struct LiveTv {
 }
 
 const BANNER: Duration = Duration::from_millis(4500);
+/// How long a channel key must rest before the stream switches (the
+/// banner follows every press at once; neighbours are looked up already).
+const ZAP_REST: Duration = Duration::from_millis(220);
 
 impl LiveTv {
     pub fn new(cx: &mut Ctx) -> LiveTv {
@@ -297,7 +300,18 @@ impl LiveTv {
             .map(|i| i as i64)
             .unwrap_or(-1);
         let n = list.len() as i64;
-        let next = list[((i + dir).rem_euclid(n)) as usize].clone();
+        let at = (i + dir).rem_euclid(n);
+        let next = list[at as usize].clone();
+        // look ahead: the channels the next presses would land on, so their
+        // playlists are known when the key rests there
+        if self.standalone_app_id.is_none() {
+            for step in [dir, -dir, 2 * dir] {
+                if let Some(c) = list.get((at + step).rem_euclid(n) as usize) {
+                    crate::player::hls::prefetch(&c.url, cx.cfg.livetv_max_h);
+                }
+            }
+            crate::player::hls::prefetch(&next.url, cx.cfg.livetv_max_h);
+        }
         self.zap = Some((next, Instant::now()));
         self.banner_until = Instant::now() + BANNER;
     }
@@ -581,7 +595,7 @@ impl Screen for LiveTv {
             self.watch_from = Some(Instant::now());
         }
         if let Some((ch, at)) = &self.zap {
-            if at.elapsed() > Duration::from_millis(400) {
+            if at.elapsed() > ZAP_REST {
                 let ch = ch.clone();
                 self.zap = None;
                 if self

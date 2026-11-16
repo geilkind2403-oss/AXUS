@@ -24,6 +24,54 @@ pub fn get_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
+/// Downloads `url` in pieces of `chunk` bytes and hands each one on as soon
+/// as it has arrived (a live segment starts playing before it is complete).
+/// `on_chunk` returns false to stop. Ok(total bytes) or the first error;
+/// pieces already handed on stay delivered.
+pub fn get_chunks(
+    url: &str,
+    limit: u64,
+    chunk: usize,
+    mut on_chunk: impl FnMut(Vec<u8>) -> bool,
+) -> Result<u64, String> {
+    let r = agent().get(url).call().map_err(|e| e.to_string())?;
+    let mut rd = r.into_reader().take(limit);
+    let mut total = 0u64;
+    loop {
+        let mut buf = vec![0u8; chunk];
+        let mut got = 0;
+        // fill a piece (a read often returns less), but do not wait for
+        // more once the stream pauses: hand on what there is
+        while got < chunk {
+            match rd.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    got += n;
+                    if got >= chunk / 4 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if got > 0 {
+                        buf.truncate(got);
+                        total += got as u64;
+                        let _ = on_chunk(buf);
+                    }
+                    return Err(e.to_string());
+                }
+            }
+        }
+        if got == 0 {
+            return Ok(total);
+        }
+        buf.truncate(got);
+        total += got as u64;
+        if !on_chunk(buf) {
+            return Ok(total);
+        }
+    }
+}
+
 pub fn get_json(url: &str) -> Result<serde_json::Value, String> {
     let r = agent().get(url).call().map_err(|e| e.to_string())?;
     let mut s = String::new();

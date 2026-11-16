@@ -2,8 +2,9 @@
 //! (H.264, up to the chosen height), then keeps fetching the newest segments
 //! of the live playlist in the background and hands them on as one
 //! continuous MPEG-TS byte stream.
+use std::collections::HashMap;
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -322,7 +323,11 @@ fn start_reader(
     if first.fmp4 {
         return Err("Sender nutzt fMP4-Segmente (noch nicht unterstützt)".into());
     }
-    let (tx, rx) = sync_channel::<Result<Vec<u8>, String>>(4);
+    // Whole segments for audio (the ID3 tag has to be cut off first); video
+    // segments go on in pieces of 64 KB while they download, so the picture
+    // starts before the first segment is complete. The channel holds about
+    // four segments either way.
+    let (tx, rx) = sync_channel::<Result<Vec<u8>, String>>(if strip_id3 { 4 } else { 160 });
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     std::thread::spawn(move || {
@@ -346,6 +351,44 @@ fn start_reader(
             for (i, seg) in m.segs.iter().enumerate() {
                 let n = m.seq + i as u64;
                 if n < next {
+                    continue;
+                }
+                if !strip_id3 {
+                    let started = Instant::now();
+                    let mut sent = false;
+                    let result = crate::net::get_chunks(seg, 64 << 20, 64 << 10, |piece| {
+                        if stop2.load(Relaxed) {
+                            return false;
+                        }
+                        if !sent {
+                            sent = true;
+                            if let Some(service) = service.filter(|_| first_segment) {
+                                crate::log(&format!(
+                                    "{service} HLS: Erstes {track}-Stück in {} ms",
+                                    hls_started.elapsed().as_millis()
+                                ));
+                            } else if first_segment {
+                                crate::log(&format!(
+                                    "Live TV: erstes Stück nach {} ms (Playlist bis hier {} ms)",
+                                    started.elapsed().as_millis(),
+                                    hls_started.elapsed().as_millis()
+                                ));
+                            }
+                        }
+                        tx.send(Ok(piece)).is_ok()
+                    });
+                    match result {
+                        Ok(_) => {
+                            first_segment = false;
+                            fails = 0;
+                        }
+                        Err(e) => crate::log(&format!("Live TV: Segment fehlt ({e})")),
+                    }
+                    next = n + 1;
+                    fetched = true;
+                    if stop2.load(Relaxed) {
+                        return;
+                    }
                     continue;
                 }
                 match crate::net::get_bytes(seg, 64 << 20) {
@@ -419,10 +462,115 @@ fn start_reader(
     })
 }
 
+/// What zapping has already learned about a channel: which variant playlist
+/// is the one to play (the master playlist need not be fetched again) and,
+/// when it was just fetched in advance, that playlist itself.
+struct Resolved {
+    at: Instant,
+    media_url: String,
+    text: Option<(Instant, String)>,
+}
+
+fn resolved() -> &'static Mutex<HashMap<(String, u32), Resolved>> {
+    static R: OnceLock<Mutex<HashMap<(String, u32), Resolved>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// A master playlist (and its variant) stays valid for minutes.
+const RESOLVED_TTL: Duration = Duration::from_secs(300);
+/// A live playlist lists half a minute of segments: a few seconds old it
+/// still starts the channel.
+const TEXT_TTL: Duration = Duration::from_secs(6);
+
+/// Looks the channel up in the background, so zapping to it needs no
+/// round trips for the playlists. At most two lookups run at a time.
+pub fn prefetch(url: &str, max_h: u32) {
+    static BUSY: AtomicUsize = AtomicUsize::new(0);
+    if url == crate::livetv::ARTE_LIVE_CONFIG_URL || BUSY.load(Relaxed) >= 2 {
+        return;
+    }
+    let key = (url.to_string(), max_h);
+    if resolved()
+        .lock()
+        .unwrap()
+        .get(&key)
+        .map(|r| {
+            r.at.elapsed() < RESOLVED_TTL
+                && r.text
+                    .as_ref()
+                    .map(|t| t.0.elapsed() < TEXT_TTL)
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+    BUSY.fetch_add(1, Relaxed);
+    std::thread::spawn(move || {
+        let _ = (|| -> Result<(), String> {
+            let text = get_text(&key.0)?;
+            if !text.trim_start().starts_with("#EXTM3U") {
+                return Ok(());
+            }
+            let vs = variants(&key.0, &text);
+            let (media_url, media_text) = if vs.is_empty() {
+                (key.0.clone(), text)
+            } else {
+                let v = pick(&vs, key.1).ok_or("kein H.264")?;
+                let t = get_text(&v.url)?;
+                (v.url, t)
+            };
+            resolved().lock().unwrap().insert(
+                key,
+                Resolved {
+                    at: Instant::now(),
+                    media_url,
+                    text: Some((Instant::now(), media_text)),
+                },
+            );
+            Ok(())
+        })();
+        BUSY.fetch_sub(1, Relaxed);
+    });
+}
+
 /// Opens a channel: resolves the master playlist and starts the segment fetcher.
 pub fn open(url: &str, max_h: u32) -> Result<HlsReader, String> {
     let is_arte = url == crate::livetv::ARTE_LIVE_CONFIG_URL;
     let hls_started = Instant::now();
+    // known from an earlier visit or a look ahead: straight to the variant
+    if !is_arte {
+        let known = {
+            let mut r = resolved().lock().unwrap();
+            let key = (url.to_string(), max_h);
+            match r.get_mut(&key) {
+                Some(e) if e.at.elapsed() < RESOLVED_TTL => Some((
+                    e.media_url.clone(),
+                    e.text
+                        .take()
+                        .filter(|t| t.0.elapsed() < TEXT_TTL)
+                        .map(|t| t.1),
+                )),
+                _ => None,
+            }
+        };
+        if let Some((media_url, text)) = known {
+            let text = match text {
+                Some(t) => Some(t),
+                None => get_text(&media_url).ok(),
+            };
+            if let Some(text) = text.filter(|t| t.trim_start().starts_with("#EXTM3U")) {
+                crate::log(&format!(
+                    "Live TV: Playlist bekannt ({} ms)",
+                    hls_started.elapsed().as_millis()
+                ));
+                let first = media(&media_url, &text);
+                return start_reader(media_url, first, None, false, None, "Video", hls_started);
+            }
+            // the stored variant does not answer any more: start over
+            resolved().lock().unwrap().remove(&(url.to_string(), max_h));
+        }
+    }
     let (playlist_url, text) = if is_arte {
         arte_playlist(max_h)?
     } else {
@@ -453,6 +601,16 @@ pub fn open(url: &str, max_h: u32) -> Result<HlsReader, String> {
         text
     };
     let first = media(&media_url, &media_text);
+    if !is_arte {
+        resolved().lock().unwrap().insert(
+            (url.to_string(), max_h),
+            Resolved {
+                at: Instant::now(),
+                media_url: media_url.clone(),
+                text: None,
+            },
+        );
+    }
     start_reader(
         media_url,
         first,
@@ -635,5 +793,88 @@ mod tests {
         let mut segment = b"ID3\x04\x00\x00\x00\x00\x00\x03tag".to_vec();
         segment.extend_from_slice(b"\xff\xf1\x4c");
         assert_eq!(strip_id3_tag(segment).unwrap(), b"\xff\xf1\x4c");
+    }
+
+    /// A tiny HLS server on localhost: master, one variant, three segments.
+    /// Counts the requests per path.
+    fn serve() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for rq in server.incoming_requests() {
+                let path = rq.url().split('?').next().unwrap_or("").to_string();
+                h.lock().unwrap().push(path.clone());
+                let body: Vec<u8> = if path == "/master.m3u8" {
+                    b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS=\"avc1.4d401f,mp4a.40.2\"\nv.m3u8\n".to_vec()
+                } else if path == "/v.m3u8" {
+                    b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:10\n#EXTINF:4,\ns10.ts\n#EXTINF:4,\ns11.ts\n#EXTINF:4,\ns12.ts\n".to_vec()
+                } else {
+                    // a segment: 300 000 bytes, each byte the packet number
+                    (0..300_000u32).map(|i| (i / 188 % 251) as u8).collect()
+                };
+                let _ = rq.respond(tiny_http::Response::from_data(body));
+            }
+        });
+        (base, hits)
+    }
+
+    #[test]
+    fn segments_arrive_in_pieces_and_complete() {
+        let (base, _) = serve();
+        let mut pieces = 0;
+        let mut data = Vec::new();
+        let total = crate::net::get_chunks(&format!("{base}/s10.ts"), 1 << 20, 64 << 10, |p| {
+            pieces += 1;
+            data.extend(p);
+            true
+        })
+        .unwrap();
+        assert_eq!(total, 300_000);
+        assert_eq!(data.len(), 300_000);
+        assert!(pieces >= 3, "{pieces} pieces: not one big read");
+        assert_eq!(data[188 * 7], 7);
+        // stops when asked
+        let mut n = 0;
+        crate::net::get_chunks(&format!("{base}/s10.ts"), 1 << 20, 64 << 10, |_| {
+            n += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn second_open_skips_the_master_and_prefetch_fills_the_cache() {
+        let (base, hits) = serve();
+        let url = format!("{base}/master.m3u8");
+        let count = |p: &str| hits.lock().unwrap().iter().filter(|h| *h == p).count();
+        // first visit: master, variant, then segments
+        let mut r = open(&url, 720).unwrap();
+        let mut buf = vec![0u8; 188];
+        assert_eq!(r.read(&mut buf).unwrap(), 188);
+        assert_eq!(count("/master.m3u8"), 1);
+        drop(r);
+        // second visit: the variant is known, the master is not asked again
+        let mut r = open(&url, 720).unwrap();
+        assert_eq!(r.read(&mut buf).unwrap(), 188);
+        assert_eq!(count("/master.m3u8"), 1, "master fetched once");
+        drop(r);
+        // a look ahead at a channel that was never opened
+        let other = format!("{base}/master.m3u8?c=2");
+        prefetch(&other, 720);
+        let start = Instant::now();
+        while count("/v.m3u8") < 3 && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let before = count("/master.m3u8");
+        let mut r = open(&other, 720).unwrap();
+        assert_eq!(r.read(&mut buf).unwrap(), 188);
+        assert_eq!(
+            count("/master.m3u8"),
+            before,
+            "no master request after the look ahead"
+        );
     }
 }
