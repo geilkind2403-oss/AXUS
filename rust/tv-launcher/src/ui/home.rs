@@ -1273,29 +1273,42 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         Align::Center,
     );
     if !n.topline.is_empty() {
-        c.text_fit(
-            &n.topline,
+        c.text_fit(&n.topline, x, t.y + 58.0, 14, Weight::Semi, GOLD, w);
+    }
+    let title_y = t.y + 80.0;
+    let title_bottom = t.y + t.h - 48.0;
+    let line_h = 24.0;
+    let max_lines = (((title_bottom - title_y) / line_h).floor() as usize).clamp(1, 4);
+    let lines = c.wrap(&n.title, 20, Weight::Bold, w);
+    c.clip_y(Some((title_y - 20.0, title_bottom)));
+    for (i, line) in lines.iter().take(max_lines).enumerate() {
+        let text = if i + 1 == max_lines && lines.len() > max_lines {
+            c.ellipsize(&(line.clone() + " …"), 20, Weight::Bold, w)
+        } else {
+            c.ellipsize(line, 20, Weight::Bold, w)
+        };
+        c.text(
+            &text,
             x,
-            t.y + 58.0,
-            14,
-            Weight::Semi,
-            GOLD,
-            w,
+            title_y + i as f32 * line_h,
+            20,
+            Weight::Bold,
+            color::TEXT,
+            Align::Left,
         );
     }
-    c.paragraph(
-        &n.title,
-        x,
-        t.y + 80.0,
-        w,
-        20,
-        Weight::Bold,
-        color::TEXT,
-        26.0,
-        4,
+    c.clip_y(None);
+    let dots = count.min(5);
+    let dots_width = dots as f32 * 12.0;
+    let date = crate::news::time_of(&n.date);
+    let date = c.ellipsize(
+        &date,
+        14,
+        Weight::Regular,
+        (w - dots_width - 12.0).max(14.0),
     );
     c.text(
-        &crate::news::time_of(&n.date),
+        &date,
         x,
         t.y + t.h - 34.0,
         14,
@@ -1303,9 +1316,9 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         color::MUTED,
         Align::Left,
     );
-    for k in 0..count {
+    for k in 0..dots {
         c.circle(
-            x + w - 70.0 + k as f32 * 12.0,
+            x + w - dots_width + k as f32 * 12.0,
             t.y + t.h - 26.0,
             3.0,
             if k == 0 {

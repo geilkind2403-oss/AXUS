@@ -61,6 +61,7 @@ fn handle(mut req: tiny_http::Request, tx: &Sender<Msg>) {
                 if crate::platform::input::browser_active()
                     && !crate::platform::input::control_open()
                     && k != Key::Home
+                    && k != Key::Back
                     && k != Key::LongOk
                     && k != Key::LongBack
                 {

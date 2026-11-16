@@ -37,6 +37,24 @@ fn mounted(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a bind mount already has the expected source. Keeping this input
+/// setup mounted between browser launches avoids spawning several `umount`
+/// and `mount` processes every time YouTube (or another TV app) opens.
+fn bind_mount_matches(source: &Path, target: &Path) -> bool {
+    let source = source.canonicalize().unwrap_or(source.to_path_buf());
+    let target = target.canonicalize().unwrap_or(target.to_path_buf());
+    std::fs::read_to_string("/proc/mounts")
+        .map(|mounts| {
+            mounts.lines().any(|line| {
+                let mut fields = line.split_whitespace();
+                let mounted_source = fields.next().unwrap_or("").replace("\\040", " ");
+                let mounted_target = fields.next().unwrap_or("").replace("\\040", " ");
+                Path::new(&mounted_source) == source && Path::new(&mounted_target) == target
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Hide host keyboards/remotes from Cog, then expose only the launcher's
 /// virtual keyboard. This lets the launcher take focus for its PiP menu while
 /// the browser keeps its DRM primary plane and video playback running.
@@ -48,14 +66,53 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&input_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&empty_dir).map_err(|e| e.to_string())?;
 
+    let Some(event_name) = host_event.file_name() else {
+        return Err("Name des virtuellen Eingabegeräts fehlt".into());
+    };
+    let chroot_event = input_dir.join(event_name);
+
+    // The launcher keeps its uinput device alive. When both bind mounts still
+    // point at that device and the empty directory, the chroot is already
+    // isolated correctly; skip the costly mount command round trip.
+    let input_mount = input_dir
+        .canonicalize()
+        .unwrap_or_else(|_| input_dir.clone())
+        .to_string_lossy()
+        .into_owned();
+    let input_mounts: Vec<String> = std::fs::read_to_string("/proc/mounts")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(|path| {
+            Path::new(&path.replace("\\040", " "))
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(path.replace("\\040", " ")))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|path| path == &input_mount || path.starts_with(&(input_mount.clone() + "/")))
+        .collect();
+    if input_mounts.len() == 2
+        && bind_mount_matches(&empty_dir, &input_dir)
+        && bind_mount_matches(&host_event, &chroot_event)
+    {
+        return Ok(());
+    }
+
     // Mounts persist after Cog exits and after a launcher restart. Tear down
     // only the chroot's input subtree (deepest first), never host /dev/input.
-    let input_mount = input_dir.to_string_lossy().into_owned();
     let mut old_mounts: Vec<String> = std::fs::read_to_string("/proc/mounts")
         .unwrap_or_default()
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
-        .map(|path| path.replace("\\040", " "))
+        .map(|path| {
+            let path = path.replace("\\040", " ");
+            Path::new(&path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(path))
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|path| path == &input_mount || path.starts_with(&(input_mount.clone() + "/")))
         .collect();
     old_mounts.sort_by_key(|path| std::cmp::Reverse(path.len()));
@@ -93,12 +150,10 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
         &host_event,
         std::time::Duration::from_millis(1500),
     ) {
-        crate::log("Virtuelle Fernbedienung: udev hat sie noch nicht als Tastatur erkannt (Browser startet trotzdem)");
+        return Err(
+            "Die virtuelle Fernbedienung wurde nicht als Tastatur erkannt. Der Browser wurde zum Schutz vor einer nicht bedienbaren Ansicht nicht gestartet.".into(),
+        );
     }
-    let Some(event_name) = host_event.file_name() else {
-        return Err("Name des virtuellen Eingabegeräts fehlt".into());
-    };
-    let chroot_event = input_dir.join(event_name);
     std::fs::File::create(&chroot_event).map_err(|e| format!("{}: {e}", chroot_event.display()))?;
     let bind = Command::new("mount")
         .args(["--bind"])
@@ -513,9 +568,9 @@ impl Screen for Browser {
         Nav::None
     }
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
-        // while the app runs, only Home reaches us
+        // Back is kept as an emergency exit if browser input injection fails.
         if self.child.is_some() {
-            if k == Key::Home || k == Key::Power {
+            if k == Key::Back || k == Key::Home || k == Key::Power {
                 self.stop(cx);
                 return Nav::Home;
             }
