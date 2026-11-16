@@ -77,7 +77,7 @@ impl Settings {
             4 => 5,
             5 => 2,
             7 => 1,
-            8 => 5,
+            8 => 6,
             _ => {
                 let _ = cx;
                 0
@@ -232,6 +232,10 @@ impl Settings {
             (8, 3) => {
                 cx.images.trim();
                 cx.toast("Bilder-Zwischenspeicher geleert");
+            }
+            (8, 5) => {
+                crate::perf::flush();
+                cx.toast("Messbericht gespeichert – am Handy herunterladen");
             }
             (8, 4) => match self.update.get() {
                 Some(Ok(info)) if !info.current => self.confirm = Some(3),
@@ -735,6 +739,10 @@ impl Screen for Settings {
                     None => "Noch nicht geprüft · OK zum Suchen".into(),
                 };
                 rows.push(("Software-Update suchen".into(), update_status));
+                rows.push((
+                    "Messbericht".into(),
+                    format!("Handy: {}/messbericht", cx.remote_url.trim_end_matches('/')),
+                ));
                 let temp = system::cpu_temp()
                     .map(|t| format!(" · CPU {t:.0} °C"))
                     .unwrap_or_default();

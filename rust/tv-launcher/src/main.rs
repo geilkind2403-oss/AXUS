@@ -11,6 +11,7 @@ mod gfx;
 mod glass_fx;
 mod livetv;
 mod net;
+mod perf;
 mod news;
 mod platform;
 mod player;
@@ -69,6 +70,7 @@ fn start_watchdog(started: Instant) {
 pub fn log(msg: &str) {
     let (h, m, s) = app::local_hms();
     eprintln!("{h:02}:{m:02}:{s:02} {msg}");
+    perf::note(msg);
 }
 
 struct App {
@@ -223,6 +225,7 @@ impl App {
     }
     fn key(&mut self, k: Key) {
         self.last_input = Instant::now();
+        perf::key(&format!("{k:?}"), self.top().name());
         if self.top().name() == "home" && k != Key::LongOk {
             self.control_blur_cache = None;
             // Home is about to change: the prepared glass shows the old picture
@@ -576,6 +579,11 @@ fn main() {
         toast_underlay: None,
     };
 
+    // the Messbericht: every animation, opening and key, timed
+    if shot_dir.is_none() {
+        perf::start();
+    }
+
     // The App-Kreis textures (glass ring, badges) are built once, at start,
     // on a worker: the first open never waits for them.
     ui::apps::prewarm(&app.cx);
@@ -779,6 +787,7 @@ fn main() {
                 continue;
             }
             shown_state = (video, empty);
+            let busy = top.busy(&app.cx);
             let draw_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let present_started = Instant::now();
             #[cfg(target_os = "linux")]
@@ -790,6 +799,7 @@ fn main() {
             let present_ms = present_started.elapsed().as_secs_f64() * 1000.0;
             // how long a frame takes (drawing + handing it to the screen)
             let ms = t0.elapsed().as_secs_f32() * 1000.0;
+            perf::frame(top_now, busy, ms);
             if ms >= 32.0 {
                 log(&format!("UI-Spitze: {ms:.1} ms gesamt ({draw_ms:.1} ms Zeichnen, {present_ms:.1} ms Übergabe), Bereich {top_now}"));
             }
