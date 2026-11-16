@@ -50,7 +50,6 @@ pub fn focus_ring(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32) {
     );
 }
 
-/// Low-cost focus wash for Home's animated glass pane, with no hard frame.
 /// A glass panel: translucent fill, a light top edge and a hairline border,
 /// so the living backdrop shines through.
 pub fn glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32) {
