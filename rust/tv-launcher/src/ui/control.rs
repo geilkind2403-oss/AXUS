@@ -63,7 +63,7 @@ pub struct Control {
     focus: usize,
     over_video: bool,
     opened_at: Instant,
-    panel_canvas: Canvas,
+    panel_canvas: Option<Canvas>,
     panel_key: Option<PanelKey>,
     glass: Option<GlassFx>,
     /// The minute of the Home picture behind the glass (the clock is in it).
@@ -99,9 +99,9 @@ fn prepared() -> &'static Mutex<Option<Prepared>> {
 
 /// Gold on black glass.
 const GOLD: Rgba = Rgba(232, 194, 112, 255);
-const OPEN_ANIM: f32 = 0.16;
-const GLIDE: f32 = 0.17;
-const PRESS: f32 = 0.18;
+const OPEN_ANIM: f32 = 0.10;
+const GLIDE: f32 = 0.11;
+const PRESS: f32 = 0.12;
 
 /// Screen area the menu owns (panel and its shadow); main.rs restores and
 /// presents exactly this.
@@ -307,7 +307,7 @@ impl Control {
             focus: 1,
             over_video,
             opened_at: now,
-            panel_canvas: content_canvas(4),
+            panel_canvas: None,
             panel_key: None,
             glass: ready,
             backdrop_minute,
@@ -781,8 +781,10 @@ impl Screen for Control {
                     _ => None,
                 }
             };
-            let image =
-                prepared.unwrap_or_else(|| Self::render_content(&mut self.panel_canvas, &key));
+            let image = prepared.unwrap_or_else(|| {
+                let canvas = self.panel_canvas.get_or_insert_with(|| content_canvas(1));
+                Self::render_content(canvas, &key)
+            });
             if let Some(g) = self.glass.as_mut() {
                 g.glass
                     .set_content(image.data(), image.width() as usize * 4);

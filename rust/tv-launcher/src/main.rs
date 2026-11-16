@@ -482,14 +482,20 @@ fn feeds_ready(cx: &Ctx) -> bool {
 /// While Home stands still, build the fast menu's glass from the Home
 /// picture behind it on a worker, so opening the menu only has to show it.
 fn prepare_control_blur(app: &mut App, top_name: &str, idle: Duration) {
-    if top_name == "home" && idle >= Duration::from_millis(150) {
+    if top_name == "home" {
         let animating = app
             .stack
             .last()
             .map(|s| s.animating(&app.cx))
             .unwrap_or(false);
         if !animating {
-            ui::control::Control::prewarm_glass(&app.canvas, &app.cx);
+            // Prepare both quick-menu layers as soon as Home settles. The
+            // workers keep opening the panel from doing image work on input.
+            ui::control::Control::prewarm(&app.cx, false);
+            ui::apps::prewarm(&app.cx);
+            if idle >= Duration::from_millis(150) {
+                ui::control::Control::prewarm_glass(&app.canvas, &app.cx);
+            }
         }
     }
 }
@@ -708,11 +714,6 @@ fn main() {
         let top_video = app.stack.last().map(|s| s.video()).unwrap_or(false);
         let top_name = app.stack.last().map(|s| s.name()).unwrap_or("");
         let idle = app.last_input.elapsed();
-        // Build the Control Center's static layer during quiet Home time,
-        // never while video is playing or while the user is navigating.
-        if top_name == "home" && !top_video && idle >= Duration::from_secs(3) {
-            ui::control::Control::prewarm(&app.cx, false);
-        }
         if app.cx.cfg.screensaver_min > 0
             && !top_video
             && top_name != "screensaver"

@@ -22,8 +22,6 @@ pub struct Home {
     last_focus_rect: Option<(f32, f32, f32, f32)>,
     /// the arrange-mode outlines are on the kept picture (wipe them next frame)
     edit_drawn: bool,
-    ambient_focus: usize,
-    focus_changed_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -36,6 +34,8 @@ struct Tile {
 
 /// Home's accent: the warm gold of Settings, Live TV and the fast menu.
 const GOLD: Rgba = Rgba(226, 187, 116, 255);
+/// Extra cached pixels around each card for its soft lift shadow.
+const TILE_BLEED: f32 = 10.0;
 
 const TILES: [Tile; 6] = [
     // Medium, large, small across the first row.
@@ -116,8 +116,6 @@ impl Home {
             news_overlay_key: None,
             last_focus_rect: None,
             edit_drawn: false,
-            ambient_focus: last_media_tile.min(5),
-            focus_changed_at: Instant::now(),
         }
     }
 
@@ -129,8 +127,11 @@ impl Home {
         let t = TILES[i];
         let content = self.order[i];
         let sources = tile_image_sources(cx, content);
-        self.tile_canvas.resize(t.w as u32, t.h as u32);
-        self.tile_canvas.offset = (-t.x, -t.y);
+        self.tile_canvas.resize(
+            (t.w + TILE_BLEED * 2.0) as u32,
+            (t.h + TILE_BLEED * 2.0) as u32,
+        );
+        self.tile_canvas.offset = (TILE_BLEED - t.x, TILE_BLEED - t.y);
         self.tile_canvas.opacity = 1.0;
         self.tile_canvas.clear(Rgba(0, 0, 0, 0));
         draw_tile_content(&mut self.tile_canvas, cx, content, &t);
@@ -138,61 +139,6 @@ impl Home {
         self.tile_images[i] = Some(self.tile_canvas.snapshot());
         self.tile_image_sources[i] = sources;
         self.tile_cache_keys[i] = Some(tile_cache_key(cx, content, &self.tile_image_sources[i]));
-    }
-
-    /// What the backdrop glows with: the focused tile's picture or colour.
-    fn ambient(&self, cx: &mut Ctx, focus: usize) -> crate::gfx::Ambient {
-        use crate::gfx::Ambient;
-        let img = |cx: &mut Ctx, src: &str| {
-            if src.is_empty() {
-                None
-            } else {
-                cx.images.get(src, 760, 520)
-            }
-        };
-        match focus {
-            0 => Ambient::Color(Rgba::hex(0xd0202c)),
-            1 => Ambient::Color(Rgba::hex(0x2a7fd8)),
-            2 => {
-                let pick = films_pick(cx);
-                let src = pick
-                    .map(|f| {
-                        if f.banner.is_empty() {
-                            f.icon
-                        } else {
-                            f.banner
-                        }
-                    })
-                    .unwrap_or_default();
-                img(cx, &src)
-                    .map(Ambient::Image)
-                    .unwrap_or(Ambient::Color(Rgba::hex(0xc8963c)))
-            }
-            3 => match cx.weather.get() {
-                Some(Ok(w)) if !w.day => Ambient::Color(Rgba::hex(0x2c3a8a)),
-                _ => Ambient::Color(Rgba::hex(0x3d8be0)),
-            },
-            4 => {
-                let src = cx.news.with(|items| {
-                    let Some(items) = items.as_ref() else {
-                        return String::new();
-                    };
-                    let n = items.len().min(6);
-                    if n == 0 {
-                        String::new()
-                    } else {
-                        // Home shows the lead headline; the News page contains
-                        // the full list. Avoid replacing this large tile on a
-                        // timer while the user is navigating the launcher.
-                        items[0].image.clone()
-                    }
-                });
-                img(cx, &src)
-                    .map(Ambient::Image)
-                    .unwrap_or(Ambient::Color(Rgba::hex(0x0b4fa3)))
-            }
-            _ => Ambient::Color(Rgba::hex(0x6b6b78)),
-        }
     }
 
     fn open(&self, cx: &mut Ctx) -> Nav {
@@ -252,7 +198,6 @@ impl Screen for Home {
             self.moving = None;
             if self.editing && self.focus >= 6 {
                 self.focus = if self.focus == 6 { 0 } else { 2 };
-                self.focus_changed_at = Instant::now();
             }
             self.edit_started = self.editing.then(Instant::now);
             cx.toast(if self.editing {
@@ -278,9 +223,13 @@ impl Screen for Home {
                     if tile_size(self.order[from]) == tile_size(self.order[self.focus]) {
                         self.moving = None;
                         self.order.swap(from, self.focus);
+                        // Tile sizes match, so their already-rendered card
+                        // images can move with them instead of being rebuilt.
+                        self.tile_images.swap(from, self.focus);
+                        self.tile_image_sources.swap(from, self.focus);
+                        self.tile_cache_keys.swap(from, self.focus);
                         cx.cfg.home_order = self.order.map(|v| v as u8);
                         cx.save();
-                        self.tile_cache_keys = [None; 6];
                         self.base_cache = LayerCache::default();
                         self.base_image = None;
                         cx.toast("Kachel verschoben");
@@ -303,9 +252,6 @@ impl Screen for Home {
                     (Key::Up, 5) => 2,
                     _ => f,
                 };
-            }
-            if self.focus != f {
-                self.focus_changed_at = Instant::now();
             }
             return Nav::None;
         }
@@ -349,9 +295,6 @@ impl Screen for Home {
             (Key::Menu, _) => return Nav::Push(Box::new(super::settings::Settings::new(cx))),
             _ => f,
         };
-        if self.focus != f {
-            self.focus_changed_at = Instant::now();
-        }
         Nav::None
     }
 
@@ -372,17 +315,7 @@ impl Screen for Home {
                 self.refresh_tile_cache(cx, i);
             }
         }
-        // Let rapid remote navigation finish before changing the full-screen
-        // ambience; the focus itself can then move over a retained base layer.
-        if self.focus < 6
-            && self.ambient_focus != self.order[self.focus]
-            && self.focus_changed_at.elapsed() >= std::time::Duration::from_millis(280)
-        {
-            self.ambient_focus = self.order[self.focus];
-        }
-        // the black-gold light field of Settings behind the tiles (cached
-        // once; no new backdrop per focused tile)
-        let _ = self.ambient_focus;
+        // Keep the warm gold backdrop stable; only the focused content changes.
         c.ambient(crate::gfx::Ambient::LiquidGold);
         // The greeting and date are stable for the whole day, so they stay in
         // the retained base. Fast-changing status is drawn below as an overlay.
@@ -416,7 +349,7 @@ impl Screen for Home {
         // separate full-screen pass on Home's first frame.
         for (i, t) in TILES.iter().enumerate() {
             if let Some(img) = self.tile_images[i].as_ref() {
-                c.image_exact(img, t.x, t.y);
+                c.image_exact(img, t.x - TILE_BLEED, t.y - TILE_BLEED);
             }
         }
         let base_changed = c.finish_cached(&mut self.base_cache);
@@ -433,12 +366,10 @@ impl Screen for Home {
                 self.last_focus_rect = None;
                 base_restored = true;
             } else if let Some(frame) = self.last_focus_rect {
-                c.restore_focus(base, frame.0, frame.1, frame.2, frame.3);
-                // The base picture has no headline on it. A frame gliding
-                // across the news tile had its strips put back without the
-                // text: lines of the headline were cut until the next
-                // refresh. Draw the headline again whenever that happens.
-                if focus_strips_touch(frame, news_text_area(cx, &self.order)) {
+                c.restore_rect(base, frame.0, frame.1, frame.2, frame.3);
+                // The focus is a soft pane wash now, so restore its full old
+                // footprint before painting the new position.
+                if focus_touches_area(frame, news_text_area(cx, &self.order)) {
                     self.news_overlay_key = None;
                 }
             }
@@ -479,8 +410,8 @@ impl Screen for Home {
         }
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
-            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
+            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
             self.last_focus_rect = Some(bounds);
         } else {
             draw_home_status(
@@ -525,8 +456,8 @@ impl Screen for Home {
         self.last_focus_rect = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to(t.x, t.y, t.w, t.h, true);
-            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
+            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
         }
         draw_home_status(
             c,
@@ -764,19 +695,11 @@ fn news_text_area(cx: &Ctx, order: &[usize; 6]) -> (f32, f32, f32, f32) {
 
 /// Whether the edge strips `Canvas::restore_focus` puts back for a focus
 /// frame at `frame` reach into `area`.
-fn focus_strips_touch(frame: (f32, f32, f32, f32), area: (f32, f32, f32, f32)) -> bool {
-    const PAD: f32 = 7.0;
-    const EDGE: f32 = 14.0;
-    let (x, y, w, h) = frame;
-    let strips = [
-        (x - PAD, y - PAD, w + PAD * 2.0, EDGE),
-        (x - PAD, y + h - PAD, w + PAD * 2.0, EDGE),
-        (x - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
-        (x + w - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
-    ];
-    strips.iter().any(|s| {
-        s.0 < area.0 + area.2 && area.0 < s.0 + s.2 && s.1 < area.1 + area.3 && area.1 < s.1 + s.3
-    })
+fn focus_touches_area(frame: (f32, f32, f32, f32), area: (f32, f32, f32, f32)) -> bool {
+    frame.0 < area.0 + area.2
+        && area.0 < frame.0 + frame.2
+        && frame.1 < area.1 + area.3
+        && area.1 < frame.1 + frame.3
 }
 
 fn draw_edit_pulse(c: &mut Canvas, started: Instant, moving: Option<usize>, order: &[usize; 6]) {
@@ -952,7 +875,6 @@ fn tile_image_sources(cx: &Ctx, i: usize) -> Vec<String> {
 }
 
 fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
-    glass(c, t.x, t.y, t.w, t.h, 22.0);
     match i {
         0 => {
             c.vgradient(
@@ -961,7 +883,7 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
                 t.w,
                 t.h,
                 22.0,
-                Rgba(150, 20, 30, 90),
+                Rgba(150, 20, 30, 8),
                 Rgba(20, 20, 24, 0),
             );
             icon_youtube(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0);
@@ -979,6 +901,32 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
             home_chip(c, t.x + 18.0, t.y + 18.0, "SYSTEM", Rgba(128, 96, 42, 220));
         }
     }
+    home_glass_reflection(c, t);
+}
+
+/// Front-surface reflections sit above the artwork, so each card reads as
+/// translucent glass instead of a dark tile with a glass-coloured fill.
+fn home_glass_reflection(c: &mut Canvas, t: &Tile) {
+    // Broad, low-alpha light fields add volume while leaving the card edges
+    // unoutlined and the Liquid Gold backdrop visible through the pane.
+    c.vgradient(
+        t.x + 1.0,
+        t.y + 1.0,
+        t.w - 2.0,
+        t.h * 0.70,
+        30.0,
+        Rgba(255, 250, 238, 26),
+        Rgba(255, 236, 201, 0),
+    );
+    c.vgradient(
+        t.x + 2.0,
+        t.y + t.h * 0.58,
+        t.w - 4.0,
+        t.h * 0.40,
+        26.0,
+        Rgba(226, 187, 116, 0),
+        Rgba(255, 231, 180, 22),
+    );
 }
 
 fn home_chip(c: &mut Canvas, x: f32, y: f32, text: &str, fill: Rgba) {
@@ -1002,7 +950,7 @@ fn draw_livetv_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         t.w,
         t.h,
         22.0,
-        Rgba(30, 110, 180, 80),
+        Rgba(30, 110, 180, 8),
         Rgba(20, 20, 24, 0),
     );
     let (last, favs, channel_count) = live_tile_selection(cx);
@@ -1201,9 +1149,9 @@ fn draw_weather_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
                 t.h,
                 22.0,
                 if w.day {
-                    Rgba(60, 120, 200, 110)
+                    Rgba(60, 120, 200, 10)
                 } else {
-                    Rgba(30, 40, 90, 110)
+                    Rgba(30, 40, 90, 10)
                 },
                 Rgba(20, 20, 24, 0),
             );
@@ -1345,29 +1293,42 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         Align::Center,
     );
     if !n.topline.is_empty() {
-        c.text_fit(
-            &n.topline,
+        c.text_fit(&n.topline, x, t.y + 58.0, 14, Weight::Semi, GOLD, w);
+    }
+    let title_y = t.y + 80.0;
+    let title_bottom = t.y + t.h - 48.0;
+    let line_h = 24.0;
+    let max_lines = (((title_bottom - title_y) / line_h).floor() as usize).clamp(1, 4);
+    let lines = c.wrap(&n.title, 20, Weight::Bold, w);
+    c.clip_y(Some((title_y - 20.0, title_bottom)));
+    for (i, line) in lines.iter().take(max_lines).enumerate() {
+        let text = if i + 1 == max_lines && lines.len() > max_lines {
+            c.ellipsize(&(line.clone() + " …"), 20, Weight::Bold, w)
+        } else {
+            c.ellipsize(line, 20, Weight::Bold, w)
+        };
+        c.text(
+            &text,
             x,
-            t.y + 58.0,
-            14,
-            Weight::Semi,
-            GOLD,
-            w,
+            title_y + i as f32 * line_h,
+            20,
+            Weight::Bold,
+            color::TEXT,
+            Align::Left,
         );
     }
-    c.paragraph(
-        &n.title,
-        x,
-        t.y + 80.0,
-        w,
-        20,
-        Weight::Bold,
-        color::TEXT,
-        26.0,
-        4,
+    c.clip_y(None);
+    let dots = count.min(5);
+    let dots_width = dots as f32 * 12.0;
+    let date = crate::news::time_of(&n.date);
+    let date = c.ellipsize(
+        &date,
+        14,
+        Weight::Regular,
+        (w - dots_width - 12.0).max(14.0),
     );
     c.text(
-        &crate::news::time_of(&n.date),
+        &date,
         x,
         t.y + t.h - 34.0,
         14,
@@ -1375,9 +1336,9 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         color::MUTED,
         Align::Left,
     );
-    for k in 0..count {
+    for k in 0..dots {
         c.circle(
-            x + w - 70.0 + k as f32 * 12.0,
+            x + w - dots_width + k as f32 * 12.0,
             t.y + t.h - 26.0,
             3.0,
             if k == 0 {

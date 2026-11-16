@@ -61,6 +61,7 @@ fn handle(mut req: tiny_http::Request, tx: &Sender<Msg>) {
                 if crate::platform::input::browser_active()
                     && !crate::platform::input::control_open()
                     && k != Key::Home
+                    && k != Key::Back
                     && k != Key::LongOk
                     && k != Key::LongBack
                 {
@@ -126,7 +127,7 @@ let rep=null,backTimer=null;
 document.querySelectorAll('[data-k]').forEach(b=>{
   const k=b.dataset.k;
   b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture&&b.setPointerCapture(e.pointerId);
-    if(k==='back'){clearTimeout(backTimer);backTimer=setTimeout(()=>{backTimer=null;send('longback')},3000);return}
+    if(k==='back'){clearTimeout(backTimer);backTimer=setTimeout(()=>{backTimer=null;send('longback')},2000);return}
     send(k);
     if(['up','down','left','right','volup','voldown'].includes(k)){clearInterval(rep);rep=setTimeout(()=>{rep=setInterval(()=>send(k),120)},450)}});
   ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,()=>{
