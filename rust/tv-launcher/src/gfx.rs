@@ -309,15 +309,6 @@ enum Cmd {
         color: tiny_skia::Color,
         stroke: Option<tiny_skia::Stroke>,
     },
-    RoundedStroke {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        r: f32,
-        thickness: f32,
-        color: [u8; 4],
-    },
     Spans {
         x: i32,
         y: i32,
@@ -400,20 +391,6 @@ fn cmd_hash(c: &Cmd) -> u64 {
             }
             if let Some(s) = stroke {
                 f(s.width, &mut h);
-            }
-        }
-        Cmd::RoundedStroke {
-            x,
-            y,
-            w,
-            h: hh,
-            r,
-            thickness,
-            color,
-        } => {
-            (6u8, color).hash(&mut h);
-            for v in [x, y, w, hh, r, thickness] {
-                f(*v, &mut h);
             }
         }
         Cmd::Spans {
@@ -540,6 +517,7 @@ fn premul(c: Rgba) -> [u32; 4] {
 }
 
 impl Canvas {
+    #[cfg(test)]
     pub fn new(w: u32, h: u32) -> Canvas {
         Self::new_scaled(w, h, 1.0)
     }
@@ -743,105 +721,6 @@ impl Canvas {
             let dst = (y0 as usize + row as usize) * dst_stride + (x0 as usize + sx0 as usize) * 4;
             dst_data[dst..dst + row_bytes].copy_from_slice(&src_data[src..src + row_bytes]);
         }
-    }
-
-    /// Updates a small rectangle in a retained image from the current canvas.
-    /// Home uses this after replacing one cached tile, avoiding a full-frame
-    /// snapshot just to keep its focus-restoration image current.
-    pub fn update_image_region(&self, image: &mut Image, x: f32, y: f32, w: f32, h: f32) {
-        let x0 = ((x + self.offset.0) * self.scale).floor() as i32;
-        let y0 = ((y + self.offset.1) * self.scale).floor() as i32;
-        let x1 = ((x + w + self.offset.0) * self.scale).ceil() as i32;
-        let y1 = ((y + h + self.offset.1) * self.scale).ceil() as i32;
-        let (pw, ph) = (self.pm.width() as i32, self.pm.height() as i32);
-        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(pw), y1.min(ph));
-        if x0 >= x1
-            || y0 >= y1
-            || image.width() != self.pm.width()
-            || image.height() != self.pm.height()
-        {
-            return;
-        }
-        let row_bytes = self.pm.width() as usize * 4;
-        let span = (x1 - x0) as usize * 4;
-        let src = self.pm.data();
-        let dst = Arc::make_mut(image).data_mut();
-        for py in y0..y1 {
-            let start = py as usize * row_bytes + x0 as usize * 4;
-            dst[start..start + span].copy_from_slice(&src[start..start + span]);
-        }
-    }
-
-    /// Restores the narrow edge strips covered by the previous focus frame.
-    pub fn restore_focus(&mut self, base: &Image, x: f32, y: f32, w: f32, h: f32) {
-        const PAD: f32 = 7.0;
-        const EDGE: f32 = 14.0;
-        self.restore_rect(base, x - PAD, y - PAD, w + PAD * 2.0, EDGE);
-        self.restore_rect(base, x - PAD, y + h - PAD, w + PAD * 2.0, EDGE);
-        self.restore_rect(base, x - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0));
-        self.restore_rect(base, x + w - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0));
-    }
-
-    /// Alpha-composites a small retained overlay directly into the main frame.
-    pub fn composite_pixmap(&mut self, src: &Pixmap, x: f32, y: f32, w: f32, h: f32) {
-        self.composite_pixmap_with_opacity(src, x, y, w, h, 1.0);
-    }
-
-    /// Alpha-composites a retained overlay while moving/fading it.
-    pub fn composite_pixmap_with_opacity(
-        &mut self,
-        src: &Pixmap,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        opacity: f32,
-    ) {
-        let opacity = (opacity * self.opacity).clamp(0.0, 1.0);
-        if opacity <= 0.0 {
-            return;
-        }
-        let dx = ((x + self.offset.0) * self.scale).round() as i32;
-        let dy = ((y + self.offset.1) * self.scale).round() as i32;
-        let cw = ((w * self.scale).ceil() as usize).min(src.width() as usize);
-        let ch = ((h * self.scale).ceil() as usize).min(src.height() as usize);
-        let (dw, dh) = (self.pm.width() as i32, self.pm.height() as i32);
-        let sx0 = (-dx).max(0) as usize;
-        let sy0 = (-dy).max(0) as usize;
-        let sx1 = cw.min((dw - dx).max(0) as usize);
-        let sy1 = ch.min((dh - dy).max(0) as usize);
-        if sx0 >= sx1 || sy0 >= sy1 {
-            return;
-        }
-        self.mark_damage_rect(x, y, w, h);
-        self.strip_sigs.clear();
-        let opacity = (opacity * 255.0).round() as u32;
-        let (src_row, dst_row) = (src.width() as usize * 4, self.pm.width() as usize * 4);
-        let (src_data, dst_data) = (src.data(), self.pm.data_mut());
-        for sy in sy0..sy1 {
-            let py = (dy + sy as i32) as usize;
-            for sx in sx0..sx1 {
-                let si = sy * src_row + sx * 4;
-                let di = py * dst_row + (dx + sx as i32) as usize * 4;
-                let source_a = src_data[si + 3] as u32;
-                let a = div255(source_a * opacity);
-                if a == 0 {
-                    continue;
-                }
-                if a == 255 {
-                    dst_data[di..di + 4].copy_from_slice(&src_data[si..si + 4]);
-                } else if a != 0 {
-                    let inv = 255 - a;
-                    for ch in 0..4 {
-                        let source = div255(src_data[si + ch] as u32 * opacity);
-                        dst_data[di + ch] =
-                            (source + div255(dst_data[di + ch] as u32 * inv)).min(255) as u8;
-                    }
-                }
-            }
-        }
-        self.last_sig = self.signature();
-        self.presented_directly = true;
     }
 
     /// Nothing is recorded that still has to be drawn: the screen keeps its
@@ -1113,36 +992,6 @@ impl Canvas {
         self.path(round_rect(x, y, w, h, r), c, Some(s));
     }
 
-    /// Fast rounded outline rasterized as horizontal edge spans. This avoids
-    /// allocating and stroking a full-screen tiny-skia path for focus rings.
-    pub fn rounded_stroke_rect(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        r: f32,
-        thickness: f32,
-        c: Rgba,
-    ) {
-        if c.3 == 0 || w <= 0.0 || h <= 0.0 || thickness <= 0.0 {
-            return;
-        }
-        let color = c.alpha(self.opacity);
-        if color.3 == 0 {
-            return;
-        }
-        self.cmds.push(Cmd::RoundedStroke {
-            x: (x + self.offset.0) * self.scale,
-            y: (y + self.offset.1) * self.scale,
-            w: w * self.scale,
-            h: h * self.scale,
-            r: r * self.scale,
-            thickness: thickness * self.scale,
-            color: premul(color).map(|v| v as u8),
-        });
-    }
-
     pub fn circle(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) {
         self.path(PathBuilder::from_circle(cx, cy, r), c, None);
     }
@@ -1412,7 +1261,6 @@ impl Canvas {
                         (b.bottom() + pad).ceil() as i32,
                     )
                 }
-                Cmd::RoundedStroke { y, h, .. } => (y.floor() as i32, (y + h).ceil() as i32),
                 Cmd::Spans { y, h, .. } => (*y, *y + *h),
                 Cmd::Glyph { y, g, .. } => (*y, *y + g.0.height as i32),
             };
@@ -1642,23 +1490,6 @@ impl Canvas {
                         stroke: stroke.clone(),
                     });
                 }
-                Cmd::RoundedStroke {
-                    x,
-                    y,
-                    w,
-                    h,
-                    r,
-                    thickness,
-                    color,
-                } => local.push(Cmd::RoundedStroke {
-                    x: *x - x0 as f32,
-                    y: *y - y0 as f32,
-                    w: *w,
-                    h: *h,
-                    r: *r,
-                    thickness: *thickness,
-                    color: *color,
-                }),
                 Cmd::Spans {
                     x,
                     y,
@@ -2220,17 +2051,6 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                     None => pm.fill_path(path, &paint, FillRule::Winding, t, None),
                 }
             }
-            Cmd::RoundedStroke {
-                x,
-                y,
-                w: rw,
-                h: rh,
-                r,
-                thickness,
-                color,
-            } => {
-                rounded_stroke(band, w, y0, y1, *x, *y, *rw, *rh, *r, *thickness, *color);
-            }
             Cmd::Spans {
                 x,
                 y,
@@ -2271,77 +2091,6 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                     }
                 }
             }
-        }
-    }
-}
-
-fn rounded_stroke(
-    band: &mut [u8],
-    canvas_w: i32,
-    y0: i32,
-    y1: i32,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    radius: f32,
-    thickness: f32,
-    color: [u8; 4],
-) {
-    if w <= 0.0 || h <= 0.0 || thickness <= 0.0 || color[3] == 0 {
-        return;
-    }
-    let radius = radius.min(w * 0.5).min(h * 0.5).max(0.0);
-    let inner_w = (w - thickness * 2.0).max(0.0);
-    let inner_h = (h - thickness * 2.0).max(0.0);
-    let inner_r = (radius - thickness)
-        .max(0.0)
-        .min(inner_w * 0.5)
-        .min(inner_h * 0.5);
-    let row_start = (y.floor() as i32).max(y0);
-    let row_end = ((y + h).ceil() as i32).min(y1);
-    let alpha = color[3] as u32;
-    let inv = 255 - alpha;
-    let blend_run = |row: &mut [u8], from: f32, to: f32| {
-        let left = (from.floor() as i32).max(0).min(canvas_w);
-        let right = (to.ceil() as i32).max(0).min(canvas_w);
-        for px in left..right {
-            let i = px as usize * 4;
-            for ch in 0..4 {
-                row[i + ch] = (color[ch] as u32 + div255(row[i + ch] as u32 * inv)).min(255) as u8;
-            }
-        }
-    };
-    let inset = |cy: f32, top: f32, bottom: f32, r: f32| -> f32 {
-        let d = if cy < top + r {
-            top + r - cy
-        } else if cy > bottom - r {
-            cy - (bottom - r)
-        } else {
-            0.0
-        };
-        if d <= 0.0 || r <= 0.0 {
-            0.0
-        } else {
-            r - (r * r - d * d).max(0.0).sqrt()
-        }
-    };
-    for py in row_start..row_end {
-        let cy = py as f32 + 0.5;
-        let outer_inset = inset(cy, y, y + h, radius);
-        let outer_left = x + outer_inset;
-        let outer_right = x + w - outer_inset;
-        let row_offset = (py - y0) as usize * canvas_w as usize * 4;
-        let row = &mut band[row_offset..row_offset + canvas_w as usize * 4];
-        let iy = y + thickness;
-        if inner_w > 0.0 && inner_h > 0.0 && cy >= iy && cy < iy + inner_h {
-            let inner_inset = inset(cy, iy, iy + inner_h, inner_r);
-            let inner_left = x + thickness + inner_inset;
-            let inner_right = x + thickness + inner_w - inner_inset;
-            blend_run(row, outer_left, inner_left);
-            blend_run(row, inner_right, outer_right);
-        } else {
-            blend_run(row, outer_left, outer_right);
         }
     }
 }
@@ -2754,18 +2503,6 @@ mod tests {
     }
 
     #[test]
-    fn rounded_stroke_uses_a_transparent_center_and_rounded_corners() {
-        let mut c = Canvas::new(80, 60);
-        c.clear(Rgba(0, 0, 0, 0));
-        c.rounded_stroke_rect(8.0, 8.0, 64.0, 44.0, 14.0, 4.0, color::WHITE);
-        assert!(c.finish());
-        let alpha = |x: usize, y: usize| c.pm.data()[(y * 80 + x) * 4 + 3];
-        assert!(alpha(9, 30) > 0, "the side stroke is present");
-        assert_eq!(alpha(40, 30), 0, "the center remains transparent");
-        assert_eq!(alpha(8, 8), 0, "the rounded corner stays outside the ring");
-    }
-
-    #[test]
     fn ambient_redraw_stops_after_final_transition_frame() {
         let mut c = Canvas::new(16, 16);
         let ambient = Ambient::Color(Rgba::hex(0x2255aa));
@@ -2796,7 +2533,7 @@ mod tests {
         c.clear(color::BLACK);
         c.rect(10.0, 10.0, 40.0, 40.0, 4.0, color::ACCENT);
         assert!(!c.finish_cached(&mut cache), "unchanged base is reused");
-        c.restore_focus(&base, 10.0, 10.0, 40.0, 40.0);
+        c.restore_rect(&base, 10.0, 10.0, 40.0, 40.0);
         let center = ((3 * 64 + 30) * 4) as usize;
         assert_eq!(
             &c.pm.data()[center..center + 4],
@@ -2817,19 +2554,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn local_overlay_composites_into_retained_frame() {
-        let mut c = Canvas::new(32, 32);
-        c.clear(color::BLACK);
-        assert!(c.finish());
-        let mut overlay = Pixmap::new(8, 8).unwrap();
-        overlay.data_mut()[((4 * 8 + 4) * 4) as usize..((4 * 8 + 4) * 4 + 4) as usize]
-            .copy_from_slice(&[255; 4]);
-        c.composite_pixmap(&overlay, 10.0, 10.0, 8.0, 8.0);
-        let center = ((14 * 32 + 14) * 4) as usize;
-        assert_eq!(&c.pm.data()[center..center + 4], &[255; 4]);
-        assert!(c.finish(), "a directly composited layer must be presented");
-    }
+
 }
 
 #[cfg(test)]

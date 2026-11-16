@@ -54,7 +54,6 @@ pub fn get_chunks(
                 Err(e) => {
                     if got > 0 {
                         buf.truncate(got);
-                        total += got as u64;
                         let _ = on_chunk(buf);
                     }
                     return Err(e.to_string());
