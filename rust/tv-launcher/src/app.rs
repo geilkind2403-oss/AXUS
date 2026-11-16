@@ -143,6 +143,11 @@ pub trait Screen {
     fn animating(&self, _cx: &Ctx) -> bool {
         false
     }
+    /// Something moves that matters for the picture behind overlays (a
+    /// small always-on idle animation is animating but not busy).
+    fn busy(&self, cx: &Ctx) -> bool {
+        self.animating(cx)
+    }
     /// An overlay that draws its own glass over the screen below (no blur
     /// from the launcher).
     fn glass(&self) -> bool {

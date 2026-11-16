@@ -486,7 +486,7 @@ fn prepare_control_blur(app: &mut App, top_name: &str, idle: Duration) {
         let animating = app
             .stack
             .last()
-            .map(|s| s.animating(&app.cx))
+            .map(|s| s.busy(&app.cx))
             .unwrap_or(false);
         if !animating {
             // Prepare both quick-menu layers as soon as Home settles. The
@@ -1120,6 +1120,34 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         settle(app, 200);
         shot(app, "12-settings-software-update");
+        return;
+    }
+    if std::env::var_os("SHOT_HOME_BUTTONS").is_some() {
+        // the three small Home buttons focused, and the orb turning
+        settle(app, 300);
+        app.key(Key::Up);
+        settle(app, 500);
+        shot(app, "btn-weather");
+        app.key(Key::Right);
+        settle(app, 500);
+        shot(app, "btn-clock");
+        app.key(Key::Down);
+        app.key(Key::Down);
+        app.key(Key::Down);
+        settle(app, 500);
+        shot(app, "btn-orb-focused");
+        let mut worst = 0.0f64;
+        for i in 0..12 {
+            std::thread::sleep(Duration::from_millis(120));
+            let t = Instant::now();
+            draw_frame(app);
+            worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
+            gfx::save_png(&app.canvas.pm, &format!("{dir}/orb-{i:02}.png")).ok();
+        }
+        app.key(Key::Up);
+        settle(app, 500);
+        shot(app, "btn-orb-idle");
+        log(&format!("Home-Knöpfe: längstes Orb-Bild {worst:.1} ms"));
         return;
     }
     if std::env::var_os("SHOT_HOME_SWITCH").is_some() {

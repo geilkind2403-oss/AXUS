@@ -22,6 +22,9 @@ pub struct Home {
     last_focus_rect: Option<(f32, f32, f32, f32)>,
     /// the arrange-mode outlines are on the kept picture (wipe them next frame)
     edit_drawn: bool,
+    /// which item the focus frame was last drawn for (redraw only on change)
+    focus_drawn: Option<usize>,
+    orb: Orb,
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +119,8 @@ impl Home {
             news_overlay_key: None,
             last_focus_rect: None,
             edit_drawn: false,
+            focus_drawn: None,
+            orb: Orb::new(),
         }
     }
 
@@ -299,6 +304,11 @@ impl Screen for Home {
     }
 
     fn animating(&self, _cx: &Ctx) -> bool {
+        // the App-Kreis orb always turns a little
+        true
+    }
+
+    fn busy(&self, _cx: &Ctx) -> bool {
         self.frame.moving() || self.editing
     }
 
@@ -353,6 +363,12 @@ impl Screen for Home {
             }
         }
         let base_changed = c.finish_cached(&mut self.base_cache);
+        // The orb keeps Home ticking; the big focus frame is only erased and
+        // drawn again when it moves, pulses, changes or was painted over.
+        let focus_dirty = base_changed
+            || self.frame.moving()
+            || self.focus_drawn != Some(self.focus)
+            || self.news_overlay_key != Some(cx.news.revision());
         let mut base_restored = base_changed;
         if base_changed {
             self.base_image = Some(c.snapshot());
@@ -365,7 +381,7 @@ impl Screen for Home {
                 c.restore_image(base);
                 self.last_focus_rect = None;
                 base_restored = true;
-            } else if let Some(frame) = self.last_focus_rect {
+            } else if let Some(frame) = self.last_focus_rect.filter(|_| focus_dirty) {
                 c.restore_rect(base, frame.0, frame.1, frame.2, frame.3);
                 // The focus is a soft pane wash now, so restore its full old
                 // footprint before painting the new position.
@@ -409,20 +425,19 @@ impl Screen for Home {
             self.news_overlay_key = Some(news_key);
         }
         if self.focus < 6 {
-            let t = &TILES[self.focus];
-            let bounds = self.frame.step(t);
-            self.last_focus_rect = Some(self.frame.draw(c, bounds));
-        } else {
-            draw_home_status(
-                c,
-                cx,
-                self.focus,
-                self.editing,
-                self.moving.is_some(),
-                &self.order,
-            );
+            if focus_dirty || base_restored {
+                let t = &TILES[self.focus];
+                let bounds = self.frame.step(t);
+                self.last_focus_rect = Some(self.frame.draw(c, bounds));
+            }
+        } else if focus_dirty {
+            self.last_focus_rect = None;
         }
-        draw_app_wheel_button(c, self.focus == 8);
+        self.focus_drawn = Some(self.focus);
+        if let Some(base) = self.base_image.as_ref() {
+            self.orb
+                .tick(c, base, self.focus == 8, base_restored || focus_dirty);
+        }
         if self.editing {
             draw_edit_pulse(
                 c,
@@ -452,11 +467,18 @@ impl Screen for Home {
             return;
         };
         c.restore_rect(base, rect.0, rect.1, rect.2, rect.3);
+        // everything drawn below is translucent: put back what is under it
+        for r in [Some(STATUS_DAMAGE), self.last_focus_rect]
+            .into_iter()
+            .flatten()
+        {
+            c.restore_rect(base, r.0, r.1, r.2, r.3);
+        }
         self.last_focus_rect = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
             let bounds = self.frame.step(t);
-            self.frame.draw(c, bounds);
+            self.last_focus_rect = Some(self.frame.draw(c, bounds));
         }
         draw_home_status(
             c,
@@ -466,7 +488,9 @@ impl Screen for Home {
             self.moving.is_some(),
             &self.order,
         );
-        draw_app_wheel_button(c, self.focus == 8);
+        if let Some(base) = self.base_image.as_ref() {
+            self.orb.tick(c, base, self.focus == 8, true);
+        }
         if self.editing {
             draw_edit_pulse(
                 c,
@@ -493,46 +517,8 @@ fn draw_home_status(
     let weather_w = weather_tile.w;
     let status_x = apps_tile.x;
     let status_w = apps_tile.w;
-    c.rect(
-        weather_x,
-        y,
-        weather_w,
-        46.0,
-        23.0,
-        Rgba::hex(0x23252c).alpha(0.94),
-    );
-    c.stroke_rect(
-        weather_x,
-        y,
-        weather_w,
-        46.0,
-        23.0,
-        1.0,
-        color::BORDER.alpha(0.9),
-    );
-    if focus == 6 {
-        c.stroke_rect(weather_x, y, weather_w, 46.0, 23.0, 2.0, GOLD);
-    }
-    if focus == 7 {
-        c.stroke_rect(status_x, y, status_w, 46.0, 23.0, 2.0, GOLD);
-    }
-    c.rect(
-        status_x,
-        y,
-        status_w,
-        46.0,
-        23.0,
-        Rgba::hex(0x23252c).alpha(0.94),
-    );
-    c.stroke_rect(
-        status_x,
-        y,
-        status_w,
-        46.0,
-        23.0,
-        1.0,
-        color::BORDER.alpha(0.9),
-    );
+    header_glass(c, weather_x, y, weather_w, PILL_H, focus == 6);
+    header_glass(c, status_x, y, status_w, PILL_H, focus == 7);
 
     let (hour, minute, _) = crate::app::local_hms();
     c.text(
@@ -541,13 +527,13 @@ fn draw_home_status(
         y + 12.0,
         17,
         Weight::Semi,
-        color::TEXT,
+        if focus == 7 { GOLD } else { color::TEXT },
         Align::Left,
     );
     c.line(
-        &[(status_x + 63.0, y + 9.0), (status_x + 63.0, y + 37.0)],
+        &[(status_x + 63.0, y + 11.0), (status_x + 63.0, y + 35.0)],
         1.0,
-        color::BORDER.alpha(0.9),
+        Rgba(255, 244, 220, 34),
     );
     if let Some((ok, kind, name)) = cx.net.get() {
         c.circle(
@@ -584,9 +570,9 @@ fn draw_home_status(
         }
     }
     c.line(
-        &[(status_x + 164.0, y + 9.0), (status_x + 164.0, y + 37.0)],
+        &[(status_x + 164.0, y + 11.0), (status_x + 164.0, y + 35.0)],
         1.0,
-        color::BORDER.alpha(0.9),
+        Rgba(255, 244, 220, 34),
     );
     let phone = if cx.cfg.remote_enabled {
         GOLD
@@ -606,77 +592,274 @@ fn draw_home_status(
     );
 
     if let Some(Ok(w)) = cx.weather.get() {
-        let (sky, _) = crate::weather::describe(w.code);
-        icon_weather(c, sky, w.day, weather_x + weather_w * 0.40, y + 23.0, 28.0);
+        let (sky, text) = crate::weather::describe(w.code);
+        icon_weather(c, sky, w.day, weather_x + 34.0, y + 23.0, 28.0);
         c.text(
             &format!("{:.0}°", w.temp),
-            weather_x + weather_w * 0.60,
+            weather_x + 58.0,
             y + 12.0,
             18,
             Weight::Bold,
             color::TEXT,
             Align::Left,
         );
+        c.line(
+            &[(weather_x + 106.0, y + 11.0), (weather_x + 106.0, y + 35.0)],
+            1.0,
+            Rgba(255, 244, 220, 34),
+        );
+        c.text_fit(
+            &cx.cfg.city,
+            weather_x + 120.0,
+            y + 9.0,
+            12,
+            Weight::Semi,
+            if focus == 6 { GOLD } else { color::TEXT },
+            weather_w - 140.0,
+        );
+        c.text_fit(
+            text,
+            weather_x + 120.0,
+            y + 25.0,
+            11,
+            Weight::Regular,
+            color::MUTED,
+            weather_w - 140.0,
+        );
     }
     let _ = (editing, moving);
 }
 
-fn draw_app_wheel_button(c: &mut Canvas, focused: bool) {
-    let (x, y, w, h) = (525.0, 661.0, 230.0, 46.0);
+const PILL_H: f32 = 46.0;
+
+/// The weather and clock buttons in the glass of the big cards: a soft lift
+/// shadow, the warm translucent pane, a light top and a faint rim; focused,
+/// a gold wash and ring like the card focus.
+fn header_glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, focused: bool) {
+    let r = h / 2.0;
+    c.rect(x - 2.0, y + 2.0, w + 4.0, h, r + 2.0, Rgba(0, 0, 0, 34));
+    c.rect(x, y, w, h, r, Rgba(30, 27, 25, 150));
+    c.vgradient(
+        x + 1.0,
+        y + 1.0,
+        w - 2.0,
+        h * 0.6,
+        r - 1.0,
+        Rgba(255, 247, 226, 46),
+        Rgba(255, 236, 201, 0),
+    );
+    c.vgradient(
+        x + 1.0,
+        y + h * 0.55,
+        w - 2.0,
+        h * 0.44,
+        r - 1.0,
+        Rgba(226, 187, 116, 0),
+        Rgba(255, 231, 180, 16),
+    );
     if focused {
-        c.circle(640.0, y + h * 0.5, 35.0, Rgba(214, 160, 70, 34));
+        c.rect(x, y, w, h, r, Rgba(GOLD.0, GOLD.1, GOLD.2, 34));
+        c.stroke_rect(
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            r,
+            2.0,
+            Rgba(GOLD.0, GOLD.1, GOLD.2, 220),
+        );
+    } else {
+        c.stroke_rect(
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            r,
+            1.0,
+            Rgba(255, 244, 220, 40),
+        );
     }
-    c.rect(
-        x,
-        y,
-        w,
-        h,
-        23.0,
-        if focused {
-            Rgba(76, 57, 25, 235)
+    c.line(
+        &[(x + r, y + 1.5), (x + w - r - 24.0, y + 1.5)],
+        1.4,
+        Rgba(255, 249, 232, if focused { 150 } else { 96 }),
+    );
+}
+
+/// Centre and radius of the App-Kreis orb, under the cards.
+const ORB_C: (f32, f32) = (640.0, 684.0);
+const ORB_R: f32 = 24.0;
+/// What the orb and its label cover (kept clear of the card focus glow).
+const ORB_AREA: (f32, f32, f32, f32) = (598.0, 652.0, 170.0, 68.0);
+/// Orb pictures per second (it turns slowly: 30 is plenty, half the work).
+const ORB_FRAME: f32 = 1.0 / 30.0;
+
+/// The App-Kreis button: a small gold glass orb that always turns -- two
+/// light arcs circle its rim, six app-coloured beads orbit the core and the
+/// core breathes. Focused, it spins up, glows and shows its name.
+struct Orb {
+    started: Instant,
+    last: Option<Instant>,
+    /// the rotation, accumulated (the speed changes with the focus)
+    spin: f32,
+    /// 0 unfocused .. 1 focused, eased over a quarter second
+    focus_k: f32,
+}
+
+impl Orb {
+    fn new() -> Orb {
+        Orb {
+            started: Instant::now(),
+            last: None,
+            spin: 0.0,
+            focus_k: 0.0,
+        }
+    }
+
+    /// Draws the next orb picture when it is due (or `force`d because what
+    /// is under it was just redrawn). Puts back the Home picture under it
+    /// first: the orb is translucent and would pile up otherwise.
+    fn tick(&mut self, c: &mut Canvas, base: &Image, focused: bool, force: bool) {
+        let now = Instant::now();
+        let dt = self
+            .last
+            .map(|l| now.duration_since(l).as_secs_f32())
+            .unwrap_or(ORB_FRAME);
+        let target = if focused { 1.0 } else { 0.0 };
+        let settling = (self.focus_k - target).abs() > 0.001;
+        if !force && !settling && dt < ORB_FRAME {
+            return;
+        }
+        if force && !settling && dt < ORB_FRAME * 0.5 {
+            // forced twice in one tick: same picture, just redraw it
         } else {
-            Rgba::hex(0x20232c)
-        },
+            let dt = dt.min(0.1);
+            let step = (dt / 0.22).min(1.0);
+            self.focus_k += (target - self.focus_k).clamp(-step, step);
+            self.spin += dt * (0.55 + 1.6 * self.focus_k);
+            self.last = Some(now);
+        }
+        let (x, y, w, h) = ORB_AREA;
+        c.restore_rect(base, x, y, w, h);
+        draw_orb(
+            c,
+            self.started.elapsed().as_secs_f32(),
+            self.spin,
+            crate::gfx::ease(self.focus_k),
+        );
+    }
+}
+
+/// Points along a circle arc (angles in radians).
+fn arc_points(cx: f32, cy: f32, r: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
+    let n = (((to - from).abs() * r / 4.0).ceil() as usize).clamp(6, 48);
+    (0..=n)
+        .map(|i| {
+            let a = from + (to - from) * i as f32 / n as f32;
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+        .collect()
+}
+
+fn draw_orb(c: &mut Canvas, t: f32, spin: f32, k: f32) {
+    use std::f32::consts::TAU;
+    let (ox, oy) = ORB_C;
+    let gold = |a: f32| Rgba(GOLD.0, GOLD.1, GOLD.2, a.clamp(0.0, 255.0) as u8);
+    let breathe = 0.5 + 0.5 * (t * TAU / 3.2).sin();
+    // halo: breathes, wider and brighter when focused
+    let halo = ORB_R + 4.0 + 2.0 * breathe + 3.0 * k;
+    c.circle(ox, oy, halo, gold(10.0 + 12.0 * breathe + 30.0 * k));
+    c.circle(ox, oy, ORB_R + 2.5, gold(16.0 + 8.0 * breathe + 30.0 * k));
+    // the glass body: dark warm pane, light from above
+    c.circle(ox, oy, ORB_R, Rgba(28, 25, 23, 235));
+    c.vgradient(
+        ox - ORB_R + 1.0,
+        oy - ORB_R + 1.0,
+        2.0 * ORB_R - 2.0,
+        2.0 * ORB_R - 2.0,
+        ORB_R - 1.0,
+        Rgba(255, 245, 222, 44 + (20.0 * k) as u8),
+        Rgba(226, 187, 116, 10),
     );
-    c.stroke_rect(
-        x,
-        y,
-        w,
-        h,
-        23.0,
-        if focused { 2.5 } else { 1.2 },
-        if focused {
-            Rgba(226, 187, 116, 200)
-        } else {
-            Rgba(226, 187, 116, 60)
-        },
+    // the rim
+    c.line(
+        &arc_points(ox, oy, ORB_R - 0.5, 0.0, TAU),
+        1.0 + k,
+        gold(70.0 + 120.0 * k),
     );
-    // Tiny bearing mark on the button mirrors the launcher wheel.
-    c.circle(554.0, 684.0, 14.0, Rgba(196, 160, 96, 255));
-    c.circle(554.0, 684.0, 10.0, Rgba::hex(0x20232c));
-    c.circle(554.0, 684.0, 5.0, Rgba::hex(0x9eafd2));
-    c.text(
-        "APP-KREIS",
-        650.0,
-        670.0,
-        13,
-        Weight::Bold,
-        color::TEXT,
-        Align::Center,
+    // two light arcs chase each other round the rim
+    for (i, len, alpha) in [(0.0, 1.9, 235.0), (0.5, 0.9, 120.0)] {
+        let a0 = spin * 1.7 + i * TAU;
+        c.line(
+            &arc_points(ox, oy, ORB_R - 0.5, a0, a0 + len),
+            2.2 + 0.8 * k,
+            Rgba(255, 226, 160, alpha as u8),
+        );
+    }
+    // six app-coloured beads orbit the core, the other way round
+    const BEADS: [Rgba; 6] = [
+        Rgba(255, 52, 72, 255),
+        Rgba(120, 180, 255, 255),
+        Rgba(255, 150, 60, 255),
+        Rgba(226, 187, 116, 255),
+        Rgba(110, 215, 160, 255),
+        Rgba(200, 140, 255, 255),
+    ];
+    let orbit = 13.5 + 1.0 * k;
+    for (i, col) in BEADS.iter().enumerate() {
+        let a = -spin + i as f32 * TAU / 6.0;
+        // a faint trail behind each bead
+        c.line(
+            &arc_points(ox, oy, orbit, a, a + 0.55),
+            1.6,
+            Rgba(col.0, col.1, col.2, 60),
+        );
+        c.circle(
+            ox + orbit * a.cos(),
+            oy + orbit * a.sin(),
+            2.4 + 0.5 * k,
+            *col,
+        );
+    }
+    // the core breathes
+    let core = 4.6 + 1.0 * breathe + 1.2 * k;
+    c.circle(ox, oy, core + 2.5, gold(40.0 + 40.0 * k));
+    c.circle(ox, oy, core, Rgba(255, 222, 150, 255));
+    c.circle(
+        ox - core * 0.3,
+        oy - core * 0.35,
+        core * 0.38,
+        Rgba(255, 252, 240, 220),
     );
-    c.text(
-        "OK ÖFFNEN",
-        650.0,
-        687.0,
-        10,
-        Weight::Regular,
-        if focused {
-            Rgba::hex(0xc4d7ff)
-        } else {
-            color::MUTED
-        },
-        Align::Center,
+    // glint on the glass, top left
+    c.line(
+        &arc_points(ox, oy, ORB_R - 4.0, TAU * 0.58, TAU * 0.68),
+        1.6,
+        Rgba(255, 252, 240, 120 + (60.0 * k) as u8),
     );
+    // the name slides in beside it when focused
+    if k > 0.02 {
+        let a = (k * 255.0) as u8;
+        let dx = 10.0 * (1.0 - k);
+        c.text(
+            "APP-KREIS",
+            ox + ORB_R + 14.0 - dx,
+            oy - 15.0,
+            13,
+            Weight::Bold,
+            Rgba(GOLD.0, GOLD.1, GOLD.2, a),
+            Align::Left,
+        );
+        c.text(
+            "OK öffnen",
+            ox + ORB_R + 14.0 - dx,
+            oy + 2.0,
+            11,
+            Weight::Regular,
+            Rgba(200, 192, 178, a),
+            Align::Left,
+        );
+    }
 }
 
 /// Where the headline is drawn over the news tile (beside its photo, or the
