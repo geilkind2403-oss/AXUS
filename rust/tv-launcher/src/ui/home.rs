@@ -424,11 +424,14 @@ impl Screen for Home {
             draw_news_tile_overlay(c, cx, &TILES[news_slot]);
             self.news_overlay_key = Some(news_key);
         }
+        let mut focus_job = None;
         if self.focus < 6 {
             if focus_dirty || base_restored {
                 let t = &TILES[self.focus];
                 let bounds = self.frame.step(t);
-                self.last_focus_rect = Some(self.frame.draw(c, bounds));
+                let (reach, params) = self.frame.prepare(c, bounds);
+                self.last_focus_rect = Some(reach);
+                focus_job = Some(params);
             }
         } else if focus_dirty {
             self.last_focus_rect = None;
@@ -453,6 +456,10 @@ impl Screen for Home {
         } else {
             c.finish_pending_damage();
         }
+        // the focus frame goes over the finished picture, on all cores
+        if let Some(params) = focus_job {
+            crate::focus_fx::draw(c, params);
+        }
         if std::env::var_os("SHOT_HOME_FRAME_TRACE").is_some() {
             eprintln!(
                 "Home-Frame: {:.1} ms, base changed={base_changed}",
@@ -475,10 +482,13 @@ impl Screen for Home {
             c.restore_rect(base, r.0, r.1, r.2, r.3);
         }
         self.last_focus_rect = None;
+        let mut focus_job = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
             let bounds = self.frame.step(t);
-            self.last_focus_rect = Some(self.frame.draw(c, bounds));
+            let (reach, params) = self.frame.prepare(c, bounds);
+            self.last_focus_rect = Some(reach);
+            focus_job = Some(params);
         }
         draw_home_status(
             c,
@@ -500,6 +510,9 @@ impl Screen for Home {
             );
         }
         c.finish_pending_damage();
+        if let Some(params) = focus_job {
+            crate::focus_fx::draw(c, params);
+        }
     }
 }
 
@@ -1543,15 +1556,20 @@ struct LiquidFocus {
     edges: [Anim; 4],
     shown: bool,
     target: (f32, f32, f32, f32),
-    /// when the frame last reached a card (the arrival pulse)
+    /// the frame has reached the card it is heading to
+    landed: bool,
+    /// when it landed (the arrival pulse)
     arrived: Option<Instant>,
 }
 
 /// How far glow and pulse reach outside the frame (logical px).
 const FOCUS_REACH: f32 = 9.0;
-const LEAD_TAU: f32 = 0.028;
-const TRAIL_TAU: f32 = 0.085;
-const PULSE: f32 = 0.32;
+const LEAD_TAU: f32 = 0.024;
+const TRAIL_TAU: f32 = 0.06;
+const PULSE: f32 = 0.30;
+/// Close enough to count as arrived: the pulse fires as the frame lands,
+/// not after its last pixel has crept into place.
+const LAND_PX: f32 = 6.0;
 
 impl LiquidFocus {
     fn step(&mut self, t: &Tile) -> (f32, f32, f32, f32) {
@@ -1561,12 +1579,13 @@ impl LiquidFocus {
                 e.jump(g);
             }
             self.shown = true;
+            self.landed = true;
         }
         if (t.x, t.y, t.w, t.h) != self.target {
             self.target = (t.x, t.y, t.w, t.h);
+            self.landed = false;
             self.arrived = None;
         }
-        let was_moving = self.edges.iter().any(|e| e.moving());
         for (i, (e, g)) in self.edges.iter_mut().zip(goal).enumerate() {
             e.set(g);
             // leading edge: moving outward on its own side (left/top shrink,
@@ -1574,7 +1593,14 @@ impl LiquidFocus {
             let leading = if i < 2 { g < e.v } else { g > e.v };
             e.step_with_tau(if leading { LEAD_TAU } else { TRAIL_TAU });
         }
-        if was_moving && !self.edges.iter().any(|e| e.moving()) {
+        let off = self
+            .edges
+            .iter()
+            .zip(goal)
+            .map(|(e, g)| (e.v - g).abs())
+            .fold(0.0f32, f32::max);
+        if !self.landed && off < LAND_PX {
+            self.landed = true;
             self.arrived = Some(Instant::now());
         }
         let [l, tp, r, b] = self.edges.map(|e| e.v);
@@ -1588,8 +1614,13 @@ impl LiquidFocus {
                 .is_some_and(|a| a.elapsed().as_secs_f32() < PULSE)
     }
 
-    /// Draws the frame and returns the area it covers (for erasing).
-    fn draw(&self, c: &mut Canvas, (x, y, w, h): (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    /// What to draw for these bounds: the area it covers (marked as damage
+    /// here, for erasing next time) and the C++ frame's parameters.
+    fn prepare(
+        &self,
+        c: &mut Canvas,
+        (x, y, w, h): (f32, f32, f32, f32),
+    ) -> ((f32, f32, f32, f32), crate::focus_fx::Params) {
         // 0 at rest, 1 right on arrival
         let pulse = self
             .arrived
@@ -1601,9 +1632,6 @@ impl LiquidFocus {
         let stretch = ((w * h) / (tw * th) - 1.0).clamp(0.0, 1.0);
         let grow = 4.0 * pulse;
         let (x, y, w, h) = (x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow);
-        let r = 22.0;
-        let a = |base: f32, extra: f32| (base + extra).clamp(0.0, 255.0) as u8;
-        let gold = |al: u8| Rgba(GOLD.0, GOLD.1, GOLD.2, al);
         let reach = (
             x - FOCUS_REACH,
             y - FOCUS_REACH,
@@ -1611,51 +1639,20 @@ impl LiquidFocus {
             h + 2.0 * FOCUS_REACH,
         );
         c.mark_damage_rect(reach.0, reach.1, reach.2, reach.3);
-        // soft outer glow, brighter while travelling and on arrival
-        let glow = 70.0 * stretch + 90.0 * pulse;
-        c.stroke_rect(
-            x - 5.0,
-            y - 5.0,
-            w + 10.0,
-            h + 10.0,
-            r + 5.0,
-            4.0,
-            gold(a(10.0, glow * 0.35)),
-        );
-        c.stroke_rect(
-            x - 2.5,
-            y - 2.5,
-            w + 5.0,
-            h + 5.0,
-            r + 2.5,
-            3.0,
-            gold(a(26.0, glow * 0.6)),
-        );
-        // the gold wash inside, lighter as it pulls along
-        c.rect(
-            x + 1.0,
-            y + 1.0,
-            w - 2.0,
-            h - 2.0,
-            r - 1.0,
-            gold(a(22.0, 30.0 * stretch + 26.0 * pulse)),
-        );
-        // the crisp ring
-        c.stroke_rect(
-            x + 0.5,
-            y + 0.5,
-            w - 1.0,
-            h - 1.0,
-            r,
-            2.0,
-            gold(a(185.0, 70.0 * pulse)),
-        );
-        // light catching the top edge
-        c.line(
-            &[(x + r, y + 1.5), (x + w - r, y + 1.5)],
-            1.5,
-            Rgba(255, 240, 205, a(70.0, 120.0 * pulse)),
-        );
-        reach
+        let params = crate::focus_fx::Params {
+            x,
+            y,
+            w,
+            h,
+            r: 22.0,
+            reach: FOCUS_REACH,
+            wash: (22.0 + 30.0 * stretch + 26.0 * pulse) / 255.0,
+            ring: ((185.0 + 70.0 * pulse) / 255.0).min(1.0),
+            glow: (34.0 + 45.0 * stretch + 60.0 * pulse) / 255.0,
+            top: ((70.0 + 120.0 * pulse) / 255.0).min(1.0),
+            ring_w: 2.0,
+            ..Default::default()
+        };
+        (reach, params)
     }
 }
