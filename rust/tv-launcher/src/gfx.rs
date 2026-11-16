@@ -2526,7 +2526,7 @@ mod tests {
         assert!(c.finish_cached(&mut cache));
         let base = c.snapshot();
 
-        c.circle(30.0, 3.0, 3.0, color::WHITE);
+        c.circle(30.0, 30.0, 3.0, color::WHITE);
         c.finish_pending();
         assert!(c.finish(), "the retained overlay must trigger presentation");
 
@@ -2534,7 +2534,7 @@ mod tests {
         c.rect(10.0, 10.0, 40.0, 40.0, 4.0, color::ACCENT);
         assert!(!c.finish_cached(&mut cache), "unchanged base is reused");
         c.restore_rect(&base, 10.0, 10.0, 40.0, 40.0);
-        let center = ((3 * 64 + 30) * 4) as usize;
+        let center = ((30 * 64 + 30) * 4) as usize;
         assert_eq!(
             &c.pm.data()[center..center + 4],
             &base.data()[center..center + 4],
@@ -2553,8 +2553,6 @@ mod tests {
             "the next animated overlay must be presented too"
         );
     }
-
-
 }
 
 #[cfg(test)]
