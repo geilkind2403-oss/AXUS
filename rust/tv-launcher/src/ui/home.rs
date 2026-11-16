@@ -34,6 +34,8 @@ struct Tile {
 
 /// Home's accent: the warm gold of Settings, Live TV and the fast menu.
 const GOLD: Rgba = Rgba(226, 187, 116, 255);
+/// Extra cached pixels around each card for its soft lift shadow.
+const TILE_BLEED: f32 = 10.0;
 
 const TILES: [Tile; 6] = [
     // Medium, large, small across the first row.
@@ -125,8 +127,11 @@ impl Home {
         let t = TILES[i];
         let content = self.order[i];
         let sources = tile_image_sources(cx, content);
-        self.tile_canvas.resize(t.w as u32, t.h as u32);
-        self.tile_canvas.offset = (-t.x, -t.y);
+        self.tile_canvas.resize(
+            (t.w + TILE_BLEED * 2.0) as u32,
+            (t.h + TILE_BLEED * 2.0) as u32,
+        );
+        self.tile_canvas.offset = (TILE_BLEED - t.x, TILE_BLEED - t.y);
         self.tile_canvas.opacity = 1.0;
         self.tile_canvas.clear(Rgba(0, 0, 0, 0));
         draw_tile_content(&mut self.tile_canvas, cx, content, &t);
@@ -344,7 +349,7 @@ impl Screen for Home {
         // separate full-screen pass on Home's first frame.
         for (i, t) in TILES.iter().enumerate() {
             if let Some(img) = self.tile_images[i].as_ref() {
-                c.image_exact(img, t.x, t.y);
+                c.image_exact(img, t.x - TILE_BLEED, t.y - TILE_BLEED);
             }
         }
         let base_changed = c.finish_cached(&mut self.base_cache);
@@ -880,7 +885,7 @@ fn tile_image_sources(cx: &Ctx, i: usize) -> Vec<String> {
 }
 
 fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
-    glass(c, t.x, t.y, t.w, t.h, 22.0);
+    home_glass(c, t);
     match i {
         0 => {
             c.vgradient(
@@ -907,6 +912,62 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
             home_chip(c, t.x + 18.0, t.y + 18.0, "SYSTEM", Rgba(128, 96, 42, 220));
         }
     }
+}
+
+/// Home cards use a warmer, more dimensional glass surface. The expanded
+/// per-card cache means these extra layers cost nothing while navigating.
+fn home_glass(c: &mut Canvas, t: &Tile) {
+    // Closely spaced, low-contrast shadows make each card float above the
+    // ambient light without adding a hard dark outline.
+    c.rect(
+        t.x - 6.0,
+        t.y + 6.0,
+        t.w + 12.0,
+        t.h + 4.0,
+        29.0,
+        Rgba(0, 0, 0, 26),
+    );
+    c.rect(
+        t.x - 3.0,
+        t.y + 3.0,
+        t.w + 6.0,
+        t.h + 2.0,
+        26.0,
+        Rgba(0, 0, 0, 38),
+    );
+    c.rect(t.x, t.y, t.w, t.h, 22.0, Rgba(27, 25, 25, 82));
+    c.vgradient(
+        t.x + 1.0,
+        t.y + 1.0,
+        t.w - 2.0,
+        t.h * 0.55,
+        21.0,
+        Rgba(255, 247, 226, 50),
+        Rgba(255, 236, 201, 0),
+    );
+    c.vgradient(
+        t.x + 1.0,
+        t.y + t.h * 0.68,
+        t.w - 2.0,
+        t.h * 0.31,
+        19.0,
+        Rgba(226, 187, 116, 0),
+        Rgba(226, 187, 116, 11),
+    );
+    c.stroke_rect(
+        t.x + 0.5,
+        t.y + 0.5,
+        t.w - 1.0,
+        t.h - 1.0,
+        22.0,
+        1.0,
+        Rgba(255, 244, 220, 22),
+    );
+    c.line(
+        &[(t.x + 28.0, t.y + 1.0), (t.x + t.w - 28.0, t.y + 1.0)],
+        1.0,
+        Rgba(255, 247, 227, 46),
+    );
 }
 
 fn home_chip(c: &mut Canvas, x: f32, y: f32, text: &str, fill: Rgba) {
