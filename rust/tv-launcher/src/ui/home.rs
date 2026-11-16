@@ -1,8 +1,8 @@
 //! The home screen: big tiles for what a TV is used for.
 use super::*;
 use crate::app::{Ctx, Nav, Screen};
-use crate::gfx::{color, Align, Canvas, Image, LayerCache, Rgba, Weight};
-use std::time::Instant;
+use crate::gfx::{Align, Canvas, Image, LayerCache, Rgba, Weight, color};
+use std::time::{Duration, Instant};
 
 pub struct Home {
     focus: usize,
@@ -32,6 +32,8 @@ pub struct Home {
     clap_focused: bool,
     /// the snap just ended: one more frame puts the board at rest
     clap_settle: bool,
+    settings_gear: SettingsGear,
+    settings_open_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +48,7 @@ struct Tile {
 const GOLD: Rgba = Rgba(226, 187, 116, 255);
 /// Extra cached pixels around each card for its soft lift shadow.
 const TILE_BLEED: f32 = 10.0;
+const SETTINGS_OPEN_FOR: Duration = Duration::from_millis(420);
 
 const TILES: [Tile; 6] = [
     // Medium, large, small across the first row.
@@ -132,6 +135,8 @@ impl Home {
             clap_open: false,
             clap_focused: false,
             clap_settle: false,
+            settings_gear: SettingsGear::default(),
+            settings_open_at: None,
         }
     }
 
@@ -157,7 +162,16 @@ impl Home {
         self.tile_cache_keys[i] = Some(tile_cache_key(cx, content, &self.tile_image_sources[i]));
     }
 
-    fn open(&self, cx: &mut Ctx) -> Nav {
+    fn open(&mut self, cx: &mut Ctx) -> Nav {
+        let content = if self.focus < 6 {
+            self.order[self.focus]
+        } else {
+            self.focus
+        };
+        if content == 5 {
+            self.settings_open_at = Some(Instant::now());
+            return Nav::None;
+        }
         match if self.focus < 6 {
             self.order[self.focus]
         } else {
@@ -208,6 +222,12 @@ impl Screen for Home {
     }
 
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
+        if self.settings_open_at.is_some() {
+            if k == Key::Back {
+                self.settings_open_at = None;
+            }
+            return Nav::None;
+        }
         let f = self.focus;
         if k == Key::LongOk {
             self.editing = !self.editing;
@@ -305,7 +325,7 @@ impl Screen for Home {
             (Key::Right, 6) => 7,
             (Key::Left, 7) => 6,
             (Key::ChUp, _) | (Key::ChDown, _) => {
-                return Nav::Push(Box::new(super::livetv::LiveTv::new(cx)))
+                return Nav::Push(Box::new(super::livetv::LiveTv::new(cx)));
             }
             (Key::Ok, _) if self.focus < 6 && self.order[self.focus] == 2 => {
                 // "Cut!": the board snaps shut, then the films open
@@ -314,7 +334,10 @@ impl Screen for Home {
                 return Nav::None;
             }
             (Key::Ok, _) => return self.open(cx),
-            (Key::Menu, _) => return Nav::Push(Box::new(super::settings::Settings::new(cx))),
+            (Key::Menu, _) => {
+                self.settings_open_at = Some(Instant::now());
+                return Nav::None;
+            }
             _ => f,
         };
         Nav::None
@@ -334,11 +357,20 @@ impl Screen for Home {
             self.clap_open = false;
             return self.open(cx);
         }
+        if let Some(started) = self.settings_open_at {
+            if started.elapsed() >= SETTINGS_OPEN_FOR {
+                self.settings_open_at = None;
+                return Nav::Push(Box::new(super::settings::Settings::new(cx)));
+            }
+        }
         Nav::None
     }
 
     fn busy(&self, _cx: &Ctx) -> bool {
-        self.clap.is_some() || self.frame.moving() || self.editing
+        self.clap.is_some()
+            || self.frame.moving()
+            || self.editing
+            || self.settings_open_at.is_some()
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
@@ -495,6 +527,15 @@ impl Screen for Home {
         if let Some(base) = self.base_image.as_ref() {
             self.orb
                 .tick(c, base, self.focus == 8, base_restored || focus_dirty);
+            let slot = self.order.iter().position(|id| *id == 5).unwrap_or(5);
+            self.settings_gear.draw(
+                c,
+                base,
+                TILES[slot],
+                !self.editing && self.focus == slot,
+                self.settings_open_at,
+                base_restored,
+            );
         }
         if self.editing {
             draw_edit_pulse(
@@ -560,6 +601,15 @@ impl Screen for Home {
         );
         if let Some(base) = self.base_image.as_ref() {
             self.orb.tick(c, base, self.focus == 8, true);
+            let slot = self.order.iter().position(|id| *id == 5).unwrap_or(5);
+            self.settings_gear.draw(
+                c,
+                base,
+                TILES[slot],
+                !self.editing && self.focus == slot,
+                self.settings_open_at,
+                true,
+            );
         }
         if self.editing {
             draw_edit_pulse(
@@ -766,6 +816,116 @@ const ORB_R: f32 = 24.0;
 const ORB_AREA: (f32, f32, f32, f32) = (598.0, 652.0, 170.0, 68.0);
 /// Orb pictures per second (it turns slowly: 30 is plenty, half the work).
 const ORB_FRAME: f32 = 1.0 / 30.0;
+
+/// Settings' brass gear is an overlay over the cached tile artwork. It only
+/// rerasterizes its small patch while focused/opening; at rest it is drawn once.
+const GEAR_FRAME: f32 = 1.0 / 30.0;
+
+#[derive(Default)]
+struct SettingsGear {
+    last: Option<Instant>,
+    angle: f32,
+    painted: bool,
+    center: Option<(f32, f32)>,
+    was_active: bool,
+}
+
+impl SettingsGear {
+    fn draw(
+        &mut self,
+        c: &mut Canvas,
+        base: &Image,
+        tile: Tile,
+        focused: bool,
+        opening: Option<Instant>,
+        base_restored: bool,
+    ) {
+        let now = Instant::now();
+        let active = focused || opening.is_some();
+        let center = (tile.x + tile.w * 0.5, tile.y + tile.h * 0.36);
+        let moved = self.center != Some(center);
+        let due = self.last.map_or(true, |last| {
+            now.duration_since(last).as_secs_f32() >= GEAR_FRAME
+        });
+        let opening_active = opening.is_some_and(|t| t.elapsed() < SETTINGS_OPEN_FOR);
+        if !base_restored
+            && !moved
+            && self.painted
+            && self.was_active == active
+            && (!active || !due)
+        {
+            return;
+        }
+        // Flush the other Home overlays first. The small restore below must
+        // replay only the gear commands, or an earlier translucent layer can
+        // leave a rectangular damage patch on the cached glass tile.
+        c.finish_pending_damage();
+        if moved {
+            if let Some((x, y)) = self.center {
+                c.restore_rect(base, x - 66.0, y - 66.0, 132.0, 132.0);
+            }
+        }
+        c.restore_rect(base, center.0 - 66.0, center.1 - 66.0, 132.0, 132.0);
+        let dt = self.last.map_or(GEAR_FRAME, |last| {
+            now.duration_since(last).as_secs_f32().min(0.08)
+        });
+        if active {
+            self.angle += dt * if opening_active { 16.0 } else { 2.7 };
+        }
+        let pulse = if opening_active {
+            ((opening.unwrap().elapsed().as_secs_f32() / SETTINGS_OPEN_FOR.as_secs_f32())
+                * std::f32::consts::PI)
+                .sin()
+                .max(0.0)
+        } else {
+            0.0
+        };
+        draw_settings_gear(c, center.0, center.1, self.angle, pulse);
+        self.center = Some(center);
+        self.last = Some(now);
+        self.painted = true;
+        self.was_active = active;
+    }
+}
+
+fn draw_settings_gear(c: &mut Canvas, x: f32, y: f32, angle: f32, pulse: f32) {
+    let scale = 1.0 + pulse * 0.08;
+    let outer = 36.0 * scale;
+    let inner = 29.0 * scale;
+    let mut teeth = Vec::with_capacity(32);
+    for i in 0..32 {
+        let a = angle + i as f32 * std::f32::consts::TAU / 32.0;
+        let r = if i % 4 == 0 || i % 4 == 1 {
+            outer
+        } else {
+            inner
+        };
+        teeth.push((x + r * a.cos(), y + r * a.sin()));
+    }
+    teeth.push(teeth[0]);
+    if pulse > 0.0 {
+        c.circle(
+            x,
+            y,
+            46.0 * scale,
+            Rgba(226, 187, 116, (pulse * 22.0) as u8),
+        );
+    }
+    c.line(&teeth, 5.5, Rgba(226, 187, 116, 170 + (pulse * 70.0) as u8));
+    let ring = arc_points(x, y, 21.0 * scale, 0.0, std::f32::consts::TAU);
+    c.line(&ring, 4.0, Rgba(250, 226, 178, 235));
+    c.circle(x, y, 11.5 * scale, Rgba(45, 34, 18, 235));
+    c.circle(x, y, 5.0 * scale, Rgba(250, 226, 178, 245));
+    // A moving glint makes the rotation readable even when the gear silhouette
+    // is symmetric, while keeping all edges soft and free of hard box outlines.
+    let glint = angle + 0.45;
+    c.circle(
+        x + outer * glint.cos(),
+        y + outer * glint.sin(),
+        3.0,
+        Rgba(255, 245, 217, 245),
+    );
+}
 
 /// The App-Kreis button: a small gold glass orb that always turns -- two
 /// light arcs circle its rim, six app-coloured beads orbit the core and the
@@ -1150,8 +1310,6 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
         3 => draw_weather_tile(c, cx, t),
         4 => draw_news_tile_background(c, cx, t),
         _ => {
-            let (cx, cy) = (t.x + t.w / 2.0, t.y + t.h * 0.36);
-            super::icon_gear(c, cx, cy, 86.0, Rgba(226, 187, 116, 245));
             label(c, t, "Einstellungen", "System · Bild · Bedienung");
             home_chip(c, t.x + 18.0, t.y + 18.0, "SYSTEM", Rgba(128, 96, 42, 220));
         }

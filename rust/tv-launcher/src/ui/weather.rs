@@ -11,7 +11,7 @@ use crate::app::{Ctx, Nav, Screen};
 use crate::gfx::{color, Align, Canvas, Image, LayerCache, Rgba, Weight};
 use crate::weather::{Sky, Weather};
 use crate::weather_fx::{Params, Scene};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Height of the animated band (logical px). The hourly panel starts below.
 const BAND: f32 = 350.0;
@@ -58,10 +58,142 @@ struct Fx {
 /// scene (or None when it could not be made).
 type Building = std::sync::Arc<std::sync::Mutex<Option<Option<Fx>>>>;
 
-pub struct WeatherScreen {
+#[derive(Default)]
+struct WarmScene {
+    key: Option<SceneKey>,
     fx: Option<Fx>,
     building: Option<Building>,
+}
+
+fn warm_scene() -> &'static std::sync::Mutex<WarmScene> {
+    static WARM: std::sync::OnceLock<std::sync::Mutex<WarmScene>> = std::sync::OnceLock::new();
+    WARM.get_or_init(|| std::sync::Mutex::new(WarmScene::default()))
+}
+
+fn renderer_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 4)
+}
+
+fn scene_input(c: &Canvas, cx: &Ctx, w: &Weather) -> (SceneKey, Params, Sky) {
+    let (sky, _) = crate::weather::describe(w.code);
+    let (top, bottom, _) = palette(sky, w.day);
+    let (hour, minute, _) = crate::app::local_hms();
+    let golden = if w.day {
+        w.days
+            .first()
+            .map(|d| crate::weather::golden_hour(d, hour * 60 + minute))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let key = SceneKey {
+        data: (
+            std::sync::Arc::as_ptr(&cx.weather.0) as usize,
+            cx.weather.revision(),
+        ),
+        golden: (golden * 10.0).round() as i32,
+        size: (c.pm.width(), c.pm.height()),
+    };
+    let scale = c.pm.width() as f32 / crate::gfx::W as f32;
+    let rgb = |c: Rgba| (c.0 as u32) << 16 | (c.1 as u32) << 8 | c.2 as u32;
+    let params = Params {
+        width: c.pm.width() as i32,
+        height: c.pm.height() as i32,
+        band_h: (BAND * scale).round() as i32,
+        scale,
+        sky: sky as i32,
+        day: w.day as i32,
+        intensity: crate::weather::intensity(w.code),
+        wind: w.wind,
+        golden: key.golden as f32 / 10.0,
+        sky_top: rgb(top),
+        sky_bottom: rgb(bottom),
+        seed: 0x5eed + sky as u32 * 7919,
+        icon_x: ICON.0 * scale,
+        icon_y: ICON.1 * scale,
+        icon_size: ICON.2 * scale,
+        scrim: TITLE.map(|v| v * scale),
+    };
+    (key, params, sky)
+}
+
+fn build_scene(params: Params, threads: usize) -> Option<Fx> {
+    let scene = Scene::new(params)?;
+    let sky = scene.render_sky(threads)?;
+    let side = (ICON.2 * 1.6 * params.scale).ceil() as u32;
+    let icon = scene.icon_sprite(side, 0.0);
+    Some(Fx {
+        scene,
+        sky,
+        icon,
+        layered: false,
+    })
+}
+
+fn spawn_scene_build(
+    building: Building,
+    params: Params,
+    threads: usize,
+    sky: Sky,
+    day: bool,
+    tx: std::sync::mpsc::Sender<crate::app::Msg>,
+) {
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let fx = build_scene(params, threads);
+        crate::log(&format!(
+            "Wetter-Szene {:?} {}: {:.1} ms{}",
+            sky,
+            if day { "Tag" } else { "Nacht" },
+            started.elapsed().as_secs_f64() * 1000.0,
+            if fx.is_some() {
+                ""
+            } else {
+                " (fehlgeschlagen)"
+            }
+        ));
+        *building.lock().unwrap() = Some(fx);
+        let _ = tx.send(crate::app::Msg::Redraw);
+    });
+}
+
+/// Builds the current weather scene as soon as its data arrives, while Home
+/// is visible. Opening Weather can then reuse the finished renderer and sky.
+pub fn prewarm(c: &Canvas, cx: &Ctx) {
+    let Some(Ok(w)) = cx.weather.get() else {
+        return;
+    };
+    let (key, params, sky) = scene_input(c, cx, &w);
+    let building = {
+        let mut warm = warm_scene().lock().unwrap();
+        if warm.key == Some(key) {
+            return;
+        }
+        let building: Building = Default::default();
+        warm.key = Some(key);
+        warm.fx = None;
+        warm.building = Some(building.clone());
+        building
+    };
+    spawn_scene_build(
+        building,
+        params,
+        renderer_threads(),
+        sky,
+        w.day,
+        cx.tx.clone(),
+    );
+}
+
+pub struct WeatherScreen {
+    fx: Option<Fx>,
+    fx_key: Option<SceneKey>,
+    building: Option<Building>,
     key: Option<SceneKey>,
+    prewarmed: bool,
     base_cache: LayerCache,
     /// When the scene arrived (the sky fades in, then the weather moves).
     ready_at: Option<Instant>,
@@ -76,17 +208,16 @@ impl WeatherScreen {
     pub fn new() -> WeatherScreen {
         WeatherScreen {
             fx: None,
+            fx_key: None,
             building: None,
             key: None,
+            prewarmed: false,
             base_cache: LayerCache::default(),
             ready_at: None,
             last_fx: None,
             cost_ms: 0.0,
             half_rate: false,
-            threads: std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-                .clamp(1, 4),
+            threads: renderer_threads(),
         }
     }
 
@@ -95,79 +226,47 @@ impl WeatherScreen {
     /// hundred milliseconds, too long for the UI thread -- and picks it up
     /// when it is done.
     fn prepare(&mut self, c: &Canvas, cx: &Ctx, w: &Weather) {
-        let (sky, _) = crate::weather::describe(w.code);
-        let (top, bottom, _) = palette(sky, w.day);
-        let (hour, minute, _) = crate::app::local_hms();
-        let golden = if w.day {
-            w.days
-                .first()
-                .map(|d| crate::weather::golden_hour(d, hour * 60 + minute))
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let key = SceneKey {
-            data: (
-                std::sync::Arc::as_ptr(&cx.weather.0) as usize,
-                cx.weather.revision(),
-            ),
-            golden: (golden * 10.0).round() as i32,
-            size: (c.pm.width(), c.pm.height()),
-        };
+        let (key, params, sky) = scene_input(c, cx, w);
         if self.key != Some(key) {
             self.key = Some(key);
-            let scale = c.pm.width() as f32 / crate::gfx::W as f32;
-            let rgb = |c: Rgba| (c.0 as u32) << 16 | (c.1 as u32) << 8 | c.2 as u32;
-            let params = Params {
-                width: c.pm.width() as i32,
-                height: c.pm.height() as i32,
-                band_h: (BAND * scale).round() as i32,
-                scale,
-                sky: sky as i32,
-                day: w.day as i32,
-                intensity: crate::weather::intensity(w.code),
-                wind: w.wind,
-                golden: key.golden as f32 / 10.0,
-                sky_top: rgb(top),
-                sky_bottom: rgb(bottom),
-                seed: 0x5eed + sky as u32 * 7919,
-                icon_x: ICON.0 * scale,
-                icon_y: ICON.1 * scale,
-                icon_size: ICON.2 * scale,
-                scrim: TITLE.map(|v| v * scale),
+            let (fx, building, spawn, prewarmed) = {
+                let mut warm = warm_scene().lock().unwrap();
+                if warm.key != Some(key) {
+                    let building: Building = Default::default();
+                    warm.key = Some(key);
+                    warm.fx = None;
+                    warm.building = Some(building.clone());
+                    (None, Some(building), true, false)
+                } else if let Some(fx) = warm.fx.take() {
+                    warm.building = None;
+                    (Some(fx), None, false, true)
+                } else if let Some(building) = warm.building.clone() {
+                    (None, Some(building), false, true)
+                } else {
+                    let building: Building = Default::default();
+                    warm.building = Some(building.clone());
+                    (None, Some(building), true, false)
+                }
             };
-            let building: Building = Default::default();
-            let out = building.clone();
-            let (tx, threads, day) = (cx.tx.clone(), self.threads, w.day);
-            std::thread::spawn(move || {
-                let started = Instant::now();
-                let fx = Scene::new(params).and_then(|scene| {
-                    let sky = scene.render_sky(threads)?;
-                    let side = (ICON.2 * 1.6 * scale).ceil() as u32;
-                    let icon = scene.icon_sprite(side, 0.0);
-                    Some(Fx {
-                        scene,
-                        sky,
-                        icon,
-                        layered: false,
-                    })
-                });
-                crate::log(&format!(
-                    "Wetter-Szene {:?} {}: {:.1} ms{}",
+            self.prewarmed = prewarmed;
+            if let Some(fx) = fx {
+                self.fx = Some(fx);
+                self.fx_key = Some(key);
+                self.ready_at = Some(Instant::now() - Duration::from_secs_f32(REVEAL));
+                self.last_fx = None;
+                self.base_cache = LayerCache::default();
+            }
+            self.building = building;
+            if spawn {
+                spawn_scene_build(
+                    self.building.as_ref().unwrap().clone(),
+                    params,
+                    self.threads,
                     sky,
-                    if day { "Tag" } else { "Nacht" },
-                    started.elapsed().as_secs_f64() * 1000.0,
-                    if fx.is_some() {
-                        ""
-                    } else {
-                        " (fehlgeschlagen)"
-                    }
-                ));
-                *out.lock().unwrap() = Some(fx);
-                let _ = tx.send(crate::app::Msg::Redraw);
-            });
-            // an older scene still shows until the new one is there
-            self.building = Some(building);
+                    w.day,
+                    cx.tx.clone(),
+                );
+            }
         }
         let done = self
             .building
@@ -175,8 +274,14 @@ impl WeatherScreen {
             .and_then(|b| b.lock().unwrap().take());
         if let Some(fx) = done {
             self.building = None;
+            self.fx_key = fx.as_ref().map(|_| key);
             self.fx = fx;
-            self.ready_at = Some(Instant::now());
+            let now = Instant::now();
+            self.ready_at = Some(if self.prewarmed {
+                now - Duration::from_secs_f32(REVEAL)
+            } else {
+                now
+            });
             self.last_fx = None;
             self.base_cache = LayerCache::default();
         }
@@ -195,6 +300,19 @@ impl WeatherScreen {
         self.ready_at
             .map(|r| (now.duration_since(r).as_secs_f32() / REVEAL).min(1.0))
             .unwrap_or(1.0)
+    }
+}
+
+impl Drop for WeatherScreen {
+    fn drop(&mut self) {
+        let (Some(key), Some(fx)) = (self.fx_key.take(), self.fx.take()) else {
+            return;
+        };
+        let mut warm = warm_scene().lock().unwrap();
+        if warm.key == Some(key) {
+            warm.fx = Some(fx);
+            warm.building = None;
+        }
     }
 }
 
@@ -222,6 +340,7 @@ impl Screen for WeatherScreen {
             Some(Ok(w)) => w,
             other => {
                 self.fx = None;
+                self.fx_key = None;
                 self.building = None;
                 self.key = None;
                 draw_unavailable(c, cx, other);
