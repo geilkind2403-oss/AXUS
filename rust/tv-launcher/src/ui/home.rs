@@ -366,12 +366,10 @@ impl Screen for Home {
                 self.last_focus_rect = None;
                 base_restored = true;
             } else if let Some(frame) = self.last_focus_rect {
-                c.restore_focus(base, frame.0, frame.1, frame.2, frame.3);
-                // The base picture has no headline on it. A frame gliding
-                // across the news tile had its strips put back without the
-                // text: lines of the headline were cut until the next
-                // refresh. Draw the headline again whenever that happens.
-                if focus_strips_touch(frame, news_text_area(cx, &self.order)) {
+                c.restore_rect(base, frame.0, frame.1, frame.2, frame.3);
+                // The focus is a soft pane wash now, so restore its full old
+                // footprint before painting the new position.
+                if focus_touches_area(frame, news_text_area(cx, &self.order)) {
                     self.news_overlay_key = None;
                 }
             }
@@ -413,7 +411,7 @@ impl Screen for Home {
         if self.focus < 6 {
             let t = &TILES[self.focus];
             let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
-            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
             self.last_focus_rect = Some(bounds);
         } else {
             draw_home_status(
@@ -459,7 +457,7 @@ impl Screen for Home {
         if self.focus < 6 {
             let t = &TILES[self.focus];
             let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
-            super::focus_ring_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
         }
         draw_home_status(
             c,
@@ -697,19 +695,11 @@ fn news_text_area(cx: &Ctx, order: &[usize; 6]) -> (f32, f32, f32, f32) {
 
 /// Whether the edge strips `Canvas::restore_focus` puts back for a focus
 /// frame at `frame` reach into `area`.
-fn focus_strips_touch(frame: (f32, f32, f32, f32), area: (f32, f32, f32, f32)) -> bool {
-    const PAD: f32 = 7.0;
-    const EDGE: f32 = 14.0;
-    let (x, y, w, h) = frame;
-    let strips = [
-        (x - PAD, y - PAD, w + PAD * 2.0, EDGE),
-        (x - PAD, y + h - PAD, w + PAD * 2.0, EDGE),
-        (x - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
-        (x + w - PAD, y + PAD, EDGE, (h - PAD * 2.0).max(0.0)),
-    ];
-    strips.iter().any(|s| {
-        s.0 < area.0 + area.2 && area.0 < s.0 + s.2 && s.1 < area.1 + area.3 && area.1 < s.1 + s.3
-    })
+fn focus_touches_area(frame: (f32, f32, f32, f32), area: (f32, f32, f32, f32)) -> bool {
+    frame.0 < area.0 + area.2
+        && area.0 < frame.0 + frame.2
+        && frame.1 < area.1 + area.3
+        && area.1 < frame.1 + frame.3
 }
 
 fn draw_edit_pulse(c: &mut Canvas, started: Instant, moving: Option<usize>, order: &[usize; 6]) {
@@ -885,7 +875,6 @@ fn tile_image_sources(cx: &Ctx, i: usize) -> Vec<String> {
 }
 
 fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
-    home_glass(c, t);
     match i {
         0 => {
             c.vgradient(
@@ -894,7 +883,7 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
                 t.w,
                 t.h,
                 22.0,
-                Rgba(150, 20, 30, 48),
+                Rgba(150, 20, 30, 8),
                 Rgba(20, 20, 24, 0),
             );
             icon_youtube(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0);
@@ -915,69 +904,28 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
     home_glass_reflection(c, t);
 }
 
-/// Home cards use a warmer, more dimensional glass surface. The expanded
-/// per-card cache means these extra layers cost nothing while navigating.
-fn home_glass(c: &mut Canvas, t: &Tile) {
-    // Closely spaced, low-contrast shadows make each card float above the
-    // ambient light without adding a hard dark outline.
-    c.rect(
-        t.x - 6.0,
-        t.y + 6.0,
-        t.w + 12.0,
-        t.h + 4.0,
-        29.0,
-        Rgba(0, 0, 0, 26),
-    );
-    c.rect(
-        t.x - 3.0,
-        t.y + 3.0,
-        t.w + 6.0,
-        t.h + 2.0,
-        26.0,
-        Rgba(0, 0, 0, 38),
-    );
-    c.rect(t.x, t.y, t.w, t.h, 22.0, Rgba(27, 25, 25, 46));
-}
-
 /// Front-surface reflections sit above the artwork, so each card reads as
 /// translucent glass instead of a dark tile with a glass-coloured fill.
 fn home_glass_reflection(c: &mut Canvas, t: &Tile) {
+    // Broad, low-alpha light fields add volume while leaving the card edges
+    // unoutlined and the Liquid Gold backdrop visible through the pane.
     c.vgradient(
         t.x + 1.0,
         t.y + 1.0,
         t.w - 2.0,
-        t.h * 0.56,
-        21.0,
-        Rgba(255, 247, 226, 64),
+        t.h * 0.70,
+        30.0,
+        Rgba(255, 250, 238, 26),
         Rgba(255, 236, 201, 0),
     );
     c.vgradient(
-        t.x + 1.0,
-        t.y + t.h * 0.68,
-        t.w - 2.0,
-        t.h * 0.31,
-        19.0,
+        t.x + 2.0,
+        t.y + t.h * 0.58,
+        t.w - 4.0,
+        t.h * 0.40,
+        26.0,
         Rgba(226, 187, 116, 0),
-        Rgba(226, 187, 116, 11),
-    );
-    c.rounded_stroke_rect(
-        t.x + 1.0,
-        t.y + 1.0,
-        t.w - 2.0,
-        t.h - 2.0,
-        21.0,
-        1.0,
-        Rgba(255, 244, 220, 44),
-    );
-    c.line(
-        &[(t.x + 30.0, t.y + 2.0), (t.x + t.w - 82.0, t.y + 2.0)],
-        1.6,
-        Rgba(255, 249, 232, 108),
-    );
-    c.line(
-        &[(t.x + 1.0, t.y + 32.0), (t.x + 1.0, t.y + t.h * 0.42)],
-        1.0,
-        Rgba(255, 247, 226, 50),
+        Rgba(255, 231, 180, 22),
     );
 }
 
@@ -1002,7 +950,7 @@ fn draw_livetv_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         t.w,
         t.h,
         22.0,
-        Rgba(30, 110, 180, 48),
+        Rgba(30, 110, 180, 8),
         Rgba(20, 20, 24, 0),
     );
     let (last, favs, channel_count) = live_tile_selection(cx);
@@ -1201,9 +1149,9 @@ fn draw_weather_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
                 t.h,
                 22.0,
                 if w.day {
-                    Rgba(60, 120, 200, 72)
+                    Rgba(60, 120, 200, 10)
                 } else {
-                    Rgba(30, 40, 90, 72)
+                    Rgba(30, 40, 90, 10)
                 },
                 Rgba(20, 20, 24, 0),
             );
