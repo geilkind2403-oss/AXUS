@@ -350,7 +350,7 @@ impl Screen for Apps {
         }
         apps_wheel::draw_dynamic(
             c,
-            &self.wheel,
+            &mut self.wheel,
             self.focus,
             APPS[self.focus].0,
             detail,
