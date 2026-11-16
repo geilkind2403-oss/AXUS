@@ -47,7 +47,7 @@ float ease_out(float x) {
     return 1.0f - y * y * y;
 }
 float approach(float x, float target, float dt) {
-    const float k = dt / (0.085f + dt);
+    const float k = dt / (0.035f + dt);
     const float next = x + (target - x) * k;
     return (target - next < 0.001f && target - next > -0.001f) ? target : next;
 }
@@ -91,24 +91,22 @@ extern "C" void tv_apps_wheel_draw(const Input* in, Animation* a,
     const float dt = in->dt < 0 ? 0 : (in->dt > 0.08f ? 0.08f : in->dt);
     const u32 focus = in->focus % in->count;
     const float step = 2.0f * Pi / static_cast<float>(in->count);
-    if (in->pass != 2) {
-        if (!a->initialized) {
-            a->rotation = focus * step;
-            a->target = a->rotation;
-            a->last_focus = focus;
-            a->initialized = 1;
-        } else if (focus != a->last_focus) {
-            int delta = static_cast<int>(focus) - static_cast<int>(a->last_focus);
-            const int count = static_cast<int>(in->count);
-            if (delta > count / 2) delta -= count;
-            if (delta < -count / 2) delta += count;
-            a->target += static_cast<float>(delta) * step;
-            a->last_focus = focus;
-        }
-        a->rotation = approach(a->rotation, a->target, dt);
-        a->moving = (a->rotation != a->target) ? 1u : 0u;
+    if (!a->initialized) {
+        a->rotation = focus * step;
+        a->target = a->rotation;
+        a->last_focus = focus;
+        a->initialized = 1;
+    } else if (focus != a->last_focus) {
+        int delta = static_cast<int>(focus) - static_cast<int>(a->last_focus);
+        const int count = static_cast<int>(in->count);
+        if (delta > count / 2) delta -= count;
+        if (delta < -count / 2) delta += count;
+        a->target += static_cast<float>(delta) * step;
+        a->last_focus = focus;
     }
-    a->elapsed += in->pass == 2 ? 0.0f : dt;
+    a->rotation = approach(a->rotation, a->target, dt);
+    a->moving = (a->rotation != a->target) ? 1u : 0u;
+    a->elapsed += dt;
 
     const bool entering = in->pass == 0 && in->entry >= 0.0f;
     const float enter = entering ? ease_out(in->entry) : 1.0f;
