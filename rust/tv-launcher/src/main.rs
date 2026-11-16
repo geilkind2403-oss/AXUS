@@ -1428,7 +1428,16 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         settle(app, 180);
         shot(app, "02-home-settings-focused");
+        for frame in 0..8 {
+            settle(app, 70);
+            shot(app, &format!("settings-selected-{frame:02}"));
+        }
         app.key(Key::Ok);
+        for frame in 0..8 {
+            settle(app, 33);
+            shot(app, &format!("settings-spin-{frame:02}"));
+        }
+        settle(app, 180);
         let route = app.stack.last().map(|s| s.name()).unwrap_or("empty");
         log(&format!("Home-Einstellungen: Kachel > OK = {route}"));
         let settings_wait = std::env::var("SHOT_SETTINGS_WAIT_MS")
