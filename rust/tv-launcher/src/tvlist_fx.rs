@@ -51,6 +51,10 @@ impl TvList {
         })
     }
 
+    pub fn size(&self) -> (u32, u32) {
+        (self.w, self.h)
+    }
+
     /// The video window (logical px); None: no window.
     pub fn set_hole(&mut self, r: Option<(f32, f32, f32, f32, f32)>) {
         let (x, y, w, h, rr) = r.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));

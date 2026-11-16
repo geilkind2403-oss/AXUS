@@ -61,6 +61,8 @@ type Building = std::sync::Arc<std::sync::Mutex<Option<Option<Fx>>>>;
 pub struct WeatherScreen {
     fx: Option<Fx>,
     building: Option<Building>,
+    /// the weather download the band's text was made from
+    text_rev: Option<u64>,
     key: Option<SceneKey>,
     base_cache: LayerCache,
     /// When the scene arrived (the sky fades in, then the weather moves).
@@ -77,6 +79,7 @@ impl WeatherScreen {
         WeatherScreen {
             fx: None,
             building: None,
+            text_rev: None,
             key: None,
             base_cache: LayerCache::default(),
             ready_at: None,
@@ -107,9 +110,11 @@ impl WeatherScreen {
             0.0
         };
         let key = SceneKey {
+            // what the sky is made from, not which download it came from:
+            // fetching the same weather again keeps the scene
             data: (
-                std::sync::Arc::as_ptr(&cx.weather.0) as usize,
-                cx.weather.revision(),
+                (w.code as usize) << 1 | w.day as usize,
+                w.wind.round() as i64 as u64,
             ),
             golden: (golden * 10.0).round() as i32,
             size: (c.pm.width(), c.pm.height()),
@@ -168,6 +173,14 @@ impl WeatherScreen {
             });
             // an older scene still shows until the new one is there
             self.building = Some(building);
+        }
+        // new numbers with the same sky: only the band's text again
+        let rev = cx.weather.revision();
+        if self.text_rev != Some(rev) {
+            self.text_rev = Some(rev);
+            if let Some(fx) = self.fx.as_mut() {
+                fx.layered = false;
+            }
         }
         let done = self
             .building

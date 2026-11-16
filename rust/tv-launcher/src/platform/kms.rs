@@ -689,43 +689,53 @@ impl Kms {
         let len = buffer.len;
         let rects = if full { 1 } else { pending.len };
         let copy_started = std::time::Instant::now();
-        if full
-            && pitch == source_row
-            && bgra.len() == source_row * self.ui_h as usize
-            && len >= bgra.len()
-        {
-            // The common 1280x720 mode has no row padding. Copy the whole
-            // surface in one pass instead of issuing 720 tiny copy calls.
-            unsafe {
-                std::ptr::copy_nonoverlapping(bgra.as_ptr(), dst.0, bgra.len());
+        // Every row to copy (source offset, target offset, bytes). Writing
+        // into the scanout buffer is slow for one core (uncached memory), so
+        // a large copy is shared between the Pi's four cores by rows.
+        let mut jobs: Vec<(usize, usize, usize)> = Vec::with_capacity(self.ui_h as usize);
+        for index in 0..rects {
+            let (x, y, mut w, mut h) = if full {
+                (0, 0, self.ui_w, self.ui_h)
+            } else {
+                pending.rects[index]
+            };
+            if x >= self.ui_w || y >= self.ui_h {
+                continue;
             }
-        } else {
-            for index in 0..rects {
-                let (x, y, mut w, mut h) = if full {
-                    (0, 0, self.ui_w, self.ui_h)
-                } else {
-                    pending.rects[index]
+            w = w.min(self.ui_w - x);
+            h = h.min(self.ui_h - y);
+            let bytes = w as usize * 4;
+            for py in y..y + h {
+                let src = py as usize * source_row + x as usize * 4;
+                let dst_offset = py as usize * pitch + x as usize * 4;
+                if src + bytes <= bgra.len() && dst_offset + bytes <= len {
+                    jobs.push((src, dst_offset, bytes));
+                }
+            }
+        }
+        let total: usize = jobs.iter().map(|j| j.2).sum();
+        let threads = if total >= 512 << 10 { 4 } else { 1 };
+        let per = jobs.len().div_ceil(threads).max(1);
+        let (src_base, dst_base) = (bgra.as_ptr() as usize, dst.0 as usize);
+        let copy = move |part: &[(usize, usize, usize)]| {
+            for &(s, d, n) in part {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        (src_base + s) as *const u8,
+                        (dst_base + d) as *mut u8,
+                        n,
+                    )
                 };
-                if x >= self.ui_w || y >= self.ui_h {
-                    continue;
-                }
-                w = w.min(self.ui_w - x);
-                h = h.min(self.ui_h - y);
-                let bytes = w as usize * 4;
-                for py in y..y + h {
-                    let src = py as usize * source_row + x as usize * 4;
-                    let dst_offset = py as usize * pitch + x as usize * 4;
-                    if src + bytes <= bgra.len() && dst_offset + bytes <= len {
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                bgra.as_ptr().add(src),
-                                dst.0.add(dst_offset),
-                                bytes,
-                            )
-                        };
-                    }
-                }
             }
+        };
+        if threads == 1 {
+            copy(&jobs);
+        } else {
+            std::thread::scope(|sc| {
+                for part in jobs.chunks(per) {
+                    sc.spawn(move || copy(part));
+                }
+            });
         }
         let copy_ms = copy_started.elapsed().as_secs_f64() * 1000.0;
         if acquire_ms >= 4.0 {

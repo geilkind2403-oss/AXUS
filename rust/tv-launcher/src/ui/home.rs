@@ -17,6 +17,8 @@ pub struct Home {
     tile_cache_keys: [Option<(u64, u64)>; 6],
     base_cache: LayerCache,
     base_image: Option<Image>,
+    /// fingerprint of the commands `base_image` was drawn from
+    base_sig: Option<u64>,
     status_key: Option<(i32, i32, u64, u64, String, bool, usize, bool, [usize; 6])>,
     news_overlay_key: Option<u64>,
     last_focus_rect: Option<(f32, f32, f32, f32)>,
@@ -122,6 +124,7 @@ impl Home {
             tile_cache_keys: [None; 6],
             base_cache: LayerCache::default(),
             base_image: None,
+            base_sig: None,
             status_key: None,
             news_overlay_key: None,
             last_focus_rect: None,
@@ -338,7 +341,7 @@ impl Screen for Home {
     }
 
     fn busy(&self, _cx: &Ctx) -> bool {
-        self.clap.is_some() || self.frame.moving() || self.editing
+        self.clap.is_some() || (self.focus < 6 && self.frame.moving()) || self.editing
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
@@ -391,7 +394,23 @@ impl Screen for Home {
                 c.image_exact(img, t.x - TILE_BLEED, t.y - TILE_BLEED);
             }
         }
-        let base_changed = c.finish_cached(&mut self.base_cache);
+        // Back from another screen the canvas forgets its kept layers, but
+        // Home's picture is the same: put the kept image back (a copy)
+        // instead of drawing all six cards and the backdrop again.
+        let sig = c.layer_signature();
+        let mut force_restore = false;
+        let base_changed = if self.base_sig == Some(sig)
+            && self.base_image.is_some()
+            && c.offset == (0.0, 0.0)
+            && c.opacity >= 1.0
+            && !c.layer_is_cached(&self.base_cache)
+        {
+            c.accept_layer(&mut self.base_cache);
+            force_restore = true;
+            false
+        } else {
+            c.finish_cached(&mut self.base_cache)
+        };
         // The orb keeps Home ticking; the big focus frame is only erased and
         // drawn again when it moves, pulses, changes or was painted over.
         // the clapperboard snaps when its tile gets the focus
@@ -410,18 +429,23 @@ impl Screen for Home {
         let clap_redraw = clap_live || std::mem::take(&mut self.clap_settle);
         let focus_dirty = clap_redraw
             || base_changed
-            || self.frame.moving()
+            || (self.focus < 6 && self.frame.moving())
             || self.focus_drawn != Some(self.focus)
             || self.news_overlay_key != Some(cx.news.revision());
         let mut base_restored = base_changed;
         if base_changed {
+            self.base_sig = Some(sig);
             self.base_image = Some(c.snapshot());
             self.last_focus_rect = None;
         } else if let Some(base) = self.base_image.as_ref() {
             // Arrange mode draws pulsing outlines over every tile: they are
             // wiped with the whole base picture (also once after it ends),
             // or they pile up frame by frame and stay.
-            if c.full_base_restore_required() || self.editing || self.edit_drawn {
+            if force_restore
+                || c.full_base_restore_required()
+                || self.editing
+                || self.edit_drawn
+            {
                 c.restore_image(base);
                 self.last_focus_rect = None;
                 base_restored = true;
@@ -488,8 +512,13 @@ impl Screen for Home {
                 self.last_focus_rect = Some(reach);
                 focus_job = Some(params);
             }
-        } else if focus_dirty {
-            self.last_focus_rect = None;
+        } else {
+            // the frame is not drawn up here: let it land on its card, or it
+            // counts as moving for ever and Home never rests
+            self.frame.settle();
+            if focus_dirty {
+                self.last_focus_rect = None;
+            }
         }
         self.focus_drawn = Some(self.focus);
         if let Some(base) = self.base_image.as_ref() {
@@ -1663,6 +1692,15 @@ impl LiquidFocus {
         }
         let [l, tp, r, b] = self.edges.map(|e| e.v);
         (l, tp, r - l, b - tp)
+    }
+
+    /// Jumps to where it was heading, without the arrival pulse.
+    fn settle(&mut self) {
+        for e in self.edges.iter_mut() {
+            e.jump(e.target);
+        }
+        self.landed = true;
+        self.arrived = None;
     }
 
     fn moving(&self) -> bool {

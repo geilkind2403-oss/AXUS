@@ -66,10 +66,17 @@ pub struct LiveTv {
     guide_data: GuideData,
     /// The channel list (C++ picture), its text and where its focus is.
     tvl: Option<crate::tvlist_fx::TvList>,
+    /// the list's wave, built on a worker before the list is first opened
+    /// and kept when it closes, so opening it never builds it on the UI
+    tvl_warm: Arc<std::sync::Mutex<Option<crate::tvlist_fx::TvList>>>,
+    tvl_warming: bool,
     text_key: Option<u64>,
     first: usize,
     focus_y: f32,
     guide_since: Instant,
+    /// the wave's own clock: it stands still while keys are pressed
+    wave_t: f32,
+    last_key: Instant,
     last_frame: Instant,
     /// What the frame shows now: the wave's step, the text, the focus.
     wave_step: Option<u64>,
@@ -147,10 +154,14 @@ impl LiveTv {
             banner_in: Anim::default(),
             guide_data: GuideData::default(),
             tvl: None,
+            tvl_warm: Arc::new(std::sync::Mutex::new(None)),
+            tvl_warming: false,
             text_key: None,
             first: 0,
             focus_y: ROW_Y,
             guide_since: Instant::now(),
+            wave_t: 0.0,
+            last_key: Instant::now(),
             last_frame: Instant::now(),
             wave_step: None,
             drawn_key: None,
@@ -346,7 +357,13 @@ impl LiveTv {
         let (pw, ph) = (c.pm.width(), c.pm.height());
         let scale = pw as f32 / crate::gfx::W as f32;
         if self.tvl.is_none() {
-            let Some(mut t) = crate::tvlist_fx::TvList::new(pw, ph, scale) else {
+            let warm = self
+                .tvl_warm
+                .lock()
+                .ok()
+                .and_then(|mut w| w.take())
+                .filter(|t| t.size() == (pw, ph));
+            let Some(mut t) = warm.or_else(|| crate::tvlist_fx::TvList::new(pw, ph, scale)) else {
                 return false;
             };
             t.set_hole(Some(PIP));
@@ -392,7 +409,6 @@ impl LiveTv {
             (
                 Arc::as_ptr(&chs) as usize,
                 self.first,
-                sel,
                 self.group,
                 &self.query,
                 &playing,
@@ -427,7 +443,12 @@ impl LiveTv {
         }
         // The wave drifts in steps of 1/15 s: a whole new frame 15 times a
         // second. In between only the strip the focus moved through.
-        let step = (now.duration_since(self.guide_since).as_secs_f32() * 15.0).floor() as u64;
+        // The wave holds still while keys come in (and briefly after), so a
+        // press never waits for a whole new 1080p wave picture.
+        if now.duration_since(self.last_key).as_secs_f32() > 0.8 {
+            self.wave_t += dt;
+        }
+        let step = (self.wave_t * 15.0).floor() as u64;
         let focus = (!chs.is_empty()).then_some([ROW_X, self.focus_y, ROW_W, ROW_H, ROW_R]);
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -625,6 +646,7 @@ impl Screen for LiveTv {
     }
 
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
+        self.last_key = Instant::now();
         if let Some(kb) = self.keyboard.as_mut() {
             let result = kb.key(k);
             match result {
@@ -804,6 +826,24 @@ impl Screen for LiveTv {
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
+        if !self.tvl_warming && self.standalone_app_id.is_none() {
+            self.tvl_warming = true;
+            let (pw, ph) = (c.pm.width(), c.pm.height());
+            let scale = pw as f32 / crate::gfx::W as f32;
+            let slot = self.tvl_warm.clone();
+            let _ = std::thread::Builder::new()
+                .name("tvlist-warm".into())
+                .spawn(move || {
+                    if let Some(mut t) = crate::tvlist_fx::TvList::new(pw, ph, scale) {
+                        t.advance(0.0);
+                        if let Ok(mut w) = slot.lock() {
+                            if w.is_none() {
+                                *w = Some(t);
+                            }
+                        }
+                    }
+                });
+        }
         // the channel list: drawn by C++ over the whole frame
         if self.guide && self.keyboard.is_none() && self.standalone_app_id.is_none() {
             let all = self.channels(cx);
@@ -811,9 +851,12 @@ impl Screen for LiveTv {
                 return;
             }
         }
-        if self.tvl.is_some() {
-            // the list was just left (search keyboard, or closed)
-            self.tvl = None;
+        if let Some(t) = self.tvl.take() {
+            // the list was just left (search keyboard, or closed): keep the
+            // built wave for next time
+            if let Ok(mut w) = self.tvl_warm.lock() {
+                *w = Some(t);
+            }
             #[cfg(target_os = "linux")]
             crate::platform::kms::set_video_window(None);
             c.invalidate();
@@ -1197,7 +1240,10 @@ fn draw_list_text(
     for i in s.first..(s.first + VISIBLE).min(chs.len()) {
         let ch = &chs[i];
         let y = ROW_Y + (i - s.first) as f32 * ROW_STEP;
-        let focused = i == sel;
+        // the same for every row: the gold glass shows the focus, so a move
+        // inside the page does not need new text
+        let focused = false;
+        let _ = sel;
         c.text(
             &ch.number.to_string(),
             ROW_X + 58.0,

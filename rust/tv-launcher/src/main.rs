@@ -130,6 +130,7 @@ impl App {
         let opening_control =
             matches!(&nav, Nav::Push(s) | Nav::Replace(s) if s.name() == "control");
         let closing_overlay = matches!(&nav, Nav::Pop) && self.top().overlay();
+        let back_nav = matches!(&nav, Nav::Pop | Nav::Home);
         let restore_home_after_control = closing_overlay
             && self.top().name() == "control"
             && self.stack.len() > 1
@@ -207,7 +208,10 @@ impl App {
         }
         // An overlay changes only the OSD plane. Fading the base framebuffer
         // here makes the whole screen blink black and look like a window swap.
-        self.fade = if opening_overlay || closing_overlay {
+        // back to Home: its picture is kept, show it at once (a fade would
+        // redraw all of Home for every step of it)
+        let back_home = back_nav && self.top().name() == "home";
+        self.fade = if opening_overlay || closing_overlay || back_home {
             None
         } else {
             Some((Instant::now(), dir))
@@ -1322,6 +1326,30 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             raster_s * 1000.0 / FRAMES as f64,
             dirty_area as f64 / (pixels * FRAMES as u64) as f64 * 100.0,
         ));
+        return;
+    }
+    if std::env::var_os("SHOT_RETURN_TRACE").is_some() {
+        // frame times when coming back to Home from Settings
+        settle(app, 400);
+        app.key(Key::Menu);
+        settle(app, 400);
+        app.key(Key::Back);
+        // as the main loop does when the screen changes
+        app.canvas.invalidate();
+        let t0 = Instant::now();
+        let mut last = Instant::now();
+        while t0.elapsed() < Duration::from_millis(400) {
+            let now = Instant::now();
+            ui::set_frame_dt(now.duration_since(last).as_secs_f32());
+            last = now;
+            let f = Instant::now();
+            let changed = app.frame();
+            if changed {
+                log(&format!("Rückkehr: Bild {:.1} ms", f.elapsed().as_secs_f64() * 1000.0));
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/return.png")).ok();
         return;
     }
     if std::env::var_os("SHOT_APPS_OPEN_TRACE").is_some() {

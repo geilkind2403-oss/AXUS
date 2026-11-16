@@ -685,10 +685,27 @@ impl Canvas {
         let row_bytes = self.pm.width() as usize * 4;
         let span = (x1 - x0) as usize * 4;
         let src = base.data();
-        let dst = self.pm.data_mut();
-        for py in y0..y1 {
-            let start = py as usize * row_bytes + x0 as usize * 4;
-            dst[start..start + span].copy_from_slice(&src[start..start + span]);
+        let rows = (y1 - y0) as usize;
+        // a big area (a moving focus over two cards) on all cores
+        let threads = if span * rows >= 512 << 10 { self.threads.clamp(1, 4) } else { 1 };
+        let per = rows.div_ceil(threads);
+        let dst = &mut self.pm.data_mut()[y0 as usize * row_bytes..y1 as usize * row_bytes];
+        let copy = |chunk: &mut [u8], first: usize| {
+            for (i, row) in chunk.chunks_mut(row_bytes).enumerate() {
+                let start = (first + i) * row_bytes + x0 as usize * 4;
+                let at = x0 as usize * 4;
+                row[at..at + span].copy_from_slice(&src[start..start + span]);
+            }
+        };
+        if threads == 1 {
+            copy(dst, y0 as usize);
+        } else {
+            std::thread::scope(|sc| {
+                for (i, chunk) in dst.chunks_mut(per * row_bytes).enumerate() {
+                    let copy = &copy;
+                    sc.spawn(move || copy(chunk, y0 as usize + i * per));
+                }
+            });
         }
     }
 
@@ -1536,6 +1553,23 @@ impl Canvas {
 
     /// Draws or skips a static layer based on its own signature, independently
     /// of any transient overlay drawn over the retained pixels afterwards.
+    /// Fingerprint of the commands drawn so far (to recognise a picture).
+    pub fn layer_signature(&self) -> u64 {
+        self.signature()
+    }
+
+    /// Whether `finish_cached` would find this picture already drawn.
+    pub fn layer_is_cached(&self, cache: &LayerCache) -> bool {
+        cache.0 == Some((self.layer_generation, self.signature()))
+    }
+
+    /// The caller restores a kept image of exactly these commands itself:
+    /// take them as drawn instead of rasterizing them again.
+    pub fn accept_layer(&mut self, cache: &mut LayerCache) {
+        cache.0 = Some((self.layer_generation, self.signature()));
+        self.cmds.clear();
+    }
+
     pub fn finish_cached(&mut self, cache: &mut LayerCache) -> bool {
         let sig = self.signature();
         if cache.0 == Some((self.layer_generation, sig)) {
