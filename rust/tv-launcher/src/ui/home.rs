@@ -894,7 +894,7 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
                 t.w,
                 t.h,
                 22.0,
-                Rgba(150, 20, 30, 90),
+                Rgba(150, 20, 30, 48),
                 Rgba(20, 20, 24, 0),
             );
             icon_youtube(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0);
@@ -912,6 +912,7 @@ fn draw_tile_content(c: &mut Canvas, cx: &mut Ctx, i: usize, t: &Tile) {
             home_chip(c, t.x + 18.0, t.y + 18.0, "SYSTEM", Rgba(128, 96, 42, 220));
         }
     }
+    home_glass_reflection(c, t);
 }
 
 /// Home cards use a warmer, more dimensional glass surface. The expanded
@@ -935,14 +936,19 @@ fn home_glass(c: &mut Canvas, t: &Tile) {
         26.0,
         Rgba(0, 0, 0, 38),
     );
-    c.rect(t.x, t.y, t.w, t.h, 22.0, Rgba(27, 25, 25, 82));
+    c.rect(t.x, t.y, t.w, t.h, 22.0, Rgba(27, 25, 25, 46));
+}
+
+/// Front-surface reflections sit above the artwork, so each card reads as
+/// translucent glass instead of a dark tile with a glass-coloured fill.
+fn home_glass_reflection(c: &mut Canvas, t: &Tile) {
     c.vgradient(
         t.x + 1.0,
         t.y + 1.0,
         t.w - 2.0,
-        t.h * 0.55,
+        t.h * 0.56,
         21.0,
-        Rgba(255, 247, 226, 50),
+        Rgba(255, 247, 226, 64),
         Rgba(255, 236, 201, 0),
     );
     c.vgradient(
@@ -954,19 +960,24 @@ fn home_glass(c: &mut Canvas, t: &Tile) {
         Rgba(226, 187, 116, 0),
         Rgba(226, 187, 116, 11),
     );
-    c.stroke_rect(
-        t.x + 0.5,
-        t.y + 0.5,
-        t.w - 1.0,
-        t.h - 1.0,
-        22.0,
+    c.rounded_stroke_rect(
+        t.x + 1.0,
+        t.y + 1.0,
+        t.w - 2.0,
+        t.h - 2.0,
+        21.0,
         1.0,
-        Rgba(255, 244, 220, 22),
+        Rgba(255, 244, 220, 44),
     );
     c.line(
-        &[(t.x + 28.0, t.y + 1.0), (t.x + t.w - 28.0, t.y + 1.0)],
+        &[(t.x + 30.0, t.y + 2.0), (t.x + t.w - 82.0, t.y + 2.0)],
+        1.6,
+        Rgba(255, 249, 232, 108),
+    );
+    c.line(
+        &[(t.x + 1.0, t.y + 32.0), (t.x + 1.0, t.y + t.h * 0.42)],
         1.0,
-        Rgba(255, 247, 227, 46),
+        Rgba(255, 247, 226, 50),
     );
 }
 
@@ -991,7 +1002,7 @@ fn draw_livetv_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
         t.w,
         t.h,
         22.0,
-        Rgba(30, 110, 180, 80),
+        Rgba(30, 110, 180, 48),
         Rgba(20, 20, 24, 0),
     );
     let (last, favs, channel_count) = live_tile_selection(cx);
@@ -1190,9 +1201,9 @@ fn draw_weather_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
                 t.h,
                 22.0,
                 if w.day {
-                    Rgba(60, 120, 200, 110)
+                    Rgba(60, 120, 200, 72)
                 } else {
-                    Rgba(30, 40, 90, 110)
+                    Rgba(30, 40, 90, 72)
                 },
                 Rgba(20, 20, 24, 0),
             );
