@@ -10,7 +10,7 @@ pub struct Home {
     editing: bool,
     moving: Option<usize>,
     edit_started: Option<Instant>,
-    frame: Focus,
+    frame: LiquidFocus,
     tile_canvas: Canvas,
     tile_images: [Option<crate::gfx::Image>; 6],
     tile_image_sources: [Vec<String>; 6],
@@ -102,7 +102,7 @@ impl Home {
             editing: false,
             moving: None,
             edit_started: None,
-            frame: Focus::default(),
+            frame: LiquidFocus::default(),
             // Rebuilding an artwork/news tile is the expensive path on Pi 3.
             // Use its cores for this small offscreen raster so the UI thread
             // spends less time blocked when a carousel item changes.
@@ -410,9 +410,8 @@ impl Screen for Home {
         }
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
-            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
-            self.last_focus_rect = Some(bounds);
+            let bounds = self.frame.step(t);
+            self.last_focus_rect = Some(self.frame.draw(c, bounds));
         } else {
             draw_home_status(
                 c,
@@ -456,8 +455,8 @@ impl Screen for Home {
         self.last_focus_rect = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
-            let bounds = self.frame.move_to_with_tau(t.x, t.y, t.w, t.h, true, 0.035);
-            super::focus_glass_fast(c, bounds.0, bounds.1, bounds.2, bounds.3);
+            let bounds = self.frame.step(t);
+            self.frame.draw(c, bounds);
         }
         draw_home_status(
             c,
@@ -1347,5 +1346,133 @@ fn draw_news_tile_overlay(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
                 color::MUTED.a(120)
             },
         );
+    }
+}
+
+/// Home's focus: a liquid gold frame. The edge in the direction of travel
+/// races ahead and the trailing edge follows later, so the frame stretches
+/// towards the next card like a drop and pulls itself together there; on
+/// arrival the ring flashes brighter and settles in from a slightly bigger
+/// size.
+#[derive(Default)]
+struct LiquidFocus {
+    /// left, top, right, bottom
+    edges: [Anim; 4],
+    shown: bool,
+    target: (f32, f32, f32, f32),
+    /// when the frame last reached a card (the arrival pulse)
+    arrived: Option<Instant>,
+}
+
+/// How far glow and pulse reach outside the frame (logical px).
+const FOCUS_REACH: f32 = 9.0;
+const LEAD_TAU: f32 = 0.028;
+const TRAIL_TAU: f32 = 0.085;
+const PULSE: f32 = 0.32;
+
+impl LiquidFocus {
+    fn step(&mut self, t: &Tile) -> (f32, f32, f32, f32) {
+        let goal = [t.x, t.y, t.x + t.w, t.y + t.h];
+        if !self.shown {
+            for (e, g) in self.edges.iter_mut().zip(goal) {
+                e.jump(g);
+            }
+            self.shown = true;
+        }
+        if (t.x, t.y, t.w, t.h) != self.target {
+            self.target = (t.x, t.y, t.w, t.h);
+            self.arrived = None;
+        }
+        let was_moving = self.edges.iter().any(|e| e.moving());
+        for (i, (e, g)) in self.edges.iter_mut().zip(goal).enumerate() {
+            e.set(g);
+            // leading edge: moving outward on its own side (left/top shrink,
+            // right/bottom grow)
+            let leading = if i < 2 { g < e.v } else { g > e.v };
+            e.step_with_tau(if leading { LEAD_TAU } else { TRAIL_TAU });
+        }
+        if was_moving && !self.edges.iter().any(|e| e.moving()) {
+            self.arrived = Some(Instant::now());
+        }
+        let [l, tp, r, b] = self.edges.map(|e| e.v);
+        (l, tp, r - l, b - tp)
+    }
+
+    fn moving(&self) -> bool {
+        self.edges.iter().any(|e| e.moving())
+            || self
+                .arrived
+                .is_some_and(|a| a.elapsed().as_secs_f32() < PULSE)
+    }
+
+    /// Draws the frame and returns the area it covers (for erasing).
+    fn draw(&self, c: &mut Canvas, (x, y, w, h): (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+        // 0 at rest, 1 right on arrival
+        let pulse = self
+            .arrived
+            .map(|a| 1.0 - (a.elapsed().as_secs_f32() / PULSE).min(1.0))
+            .unwrap_or(0.0);
+        let pulse = pulse * pulse;
+        // stretched: how much bigger than the card it is heading to
+        let (tw, th) = (self.target.2.max(1.0), self.target.3.max(1.0));
+        let stretch = ((w * h) / (tw * th) - 1.0).clamp(0.0, 1.0);
+        let grow = 4.0 * pulse;
+        let (x, y, w, h) = (x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow);
+        let r = 22.0;
+        let a = |base: f32, extra: f32| (base + extra).clamp(0.0, 255.0) as u8;
+        let gold = |al: u8| Rgba(GOLD.0, GOLD.1, GOLD.2, al);
+        let reach = (
+            x - FOCUS_REACH,
+            y - FOCUS_REACH,
+            w + 2.0 * FOCUS_REACH,
+            h + 2.0 * FOCUS_REACH,
+        );
+        c.mark_damage_rect(reach.0, reach.1, reach.2, reach.3);
+        // soft outer glow, brighter while travelling and on arrival
+        let glow = 70.0 * stretch + 90.0 * pulse;
+        c.stroke_rect(
+            x - 5.0,
+            y - 5.0,
+            w + 10.0,
+            h + 10.0,
+            r + 5.0,
+            4.0,
+            gold(a(10.0, glow * 0.35)),
+        );
+        c.stroke_rect(
+            x - 2.5,
+            y - 2.5,
+            w + 5.0,
+            h + 5.0,
+            r + 2.5,
+            3.0,
+            gold(a(26.0, glow * 0.6)),
+        );
+        // the gold wash inside, lighter as it pulls along
+        c.rect(
+            x + 1.0,
+            y + 1.0,
+            w - 2.0,
+            h - 2.0,
+            r - 1.0,
+            gold(a(22.0, 30.0 * stretch + 26.0 * pulse)),
+        );
+        // the crisp ring
+        c.stroke_rect(
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            r,
+            2.0,
+            gold(a(185.0, 70.0 * pulse)),
+        );
+        // light catching the top edge
+        c.line(
+            &[(x + r, y + 1.5), (x + w - r, y + 1.5)],
+            1.5,
+            Rgba(255, 240, 205, a(70.0, 120.0 * pulse)),
+        );
+        reach
     }
 }

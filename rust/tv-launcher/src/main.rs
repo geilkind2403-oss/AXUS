@@ -14,8 +14,8 @@ mod news;
 mod platform;
 mod player;
 mod remote;
-mod ui;
 mod tvlist_fx;
+mod ui;
 mod updater;
 mod weather;
 mod weather_fx;
@@ -586,7 +586,9 @@ fn main() {
     // layer does not skip it.
     #[cfg(target_os = "linux")]
     if let Err(e) = platform::uinput::open() {
-        log(&format!("Virtuelle Tastatur: {e} (TV-Fernbedienung geht dann im Browser nicht)"));
+        log(&format!(
+            "Virtuelle Tastatur: {e} (TV-Fernbedienung geht dann im Browser nicht)"
+        ));
     }
     {
         let t2 = tx.clone();
@@ -1118,6 +1120,24 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         settle(app, 200);
         shot(app, "12-settings-software-update");
+        return;
+    }
+    if std::env::var_os("SHOT_HOME_SWITCH").is_some() {
+        // frames of one focus change on Home, 60 Hz apart
+        settle(app, 300);
+        let mut frame_ms = 0.0f64;
+        for (key, tag) in [(Key::Right, "r"), (Key::Down, "d")] {
+            app.key(key);
+            for i in 0..24 {
+                ui::set_frame_dt(1.0 / 60.0);
+                let t = Instant::now();
+                app.frame();
+                frame_ms = frame_ms.max(t.elapsed().as_secs_f64() * 1000.0);
+                let p = format!("{dir}/switch-{tag}-{i:02}.png");
+                gfx::save_png(&app.canvas.pm, &p).ok();
+            }
+        }
+        log(&format!("Home-Wechsel: längstes Bild {frame_ms:.1} ms"));
         return;
     }
     if std::env::var_os("SHOT_HOME_AMBIENT_BENCH").is_some() {
