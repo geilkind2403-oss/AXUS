@@ -1155,6 +1155,18 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         log(&format!("Home-Knöpfe: längstes Orb-Bild {worst:.1} ms"));
         return;
     }
+    if std::env::var_os("SHOT_HOME_CLAP").is_some() {
+        // the Filme clapperboard snapping as its card gets the focus
+        settle(app, 300);
+        app.key(Key::Right);
+        app.key(Key::Right);
+        for i in 0..14 {
+            std::thread::sleep(Duration::from_millis(50));
+            draw_frame(app);
+            gfx::save_png(&app.canvas.pm, &format!("{dir}/clap-{i:02}.png")).ok();
+        }
+        return;
+    }
     if std::env::var_os("SHOT_HOME_SWITCH").is_some() {
         // frames of one focus change on Home, 60 Hz apart
         settle(app, 300);

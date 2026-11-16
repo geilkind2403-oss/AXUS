@@ -25,6 +25,13 @@ pub struct Home {
     /// which item the focus frame was last drawn for (redraw only on change)
     focus_drawn: Option<usize>,
     orb: Orb,
+    /// the Filme clapperboard: when it last started to snap, whether OK
+    /// waits for it to open the app, and whether the tile had the focus
+    clap: Option<Instant>,
+    clap_open: bool,
+    clap_focused: bool,
+    /// the snap just ended: one more frame puts the board at rest
+    clap_settle: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +128,10 @@ impl Home {
             edit_drawn: false,
             focus_drawn: None,
             orb: Orb::new(),
+            clap: None,
+            clap_open: false,
+            clap_focused: false,
+            clap_settle: false,
         }
     }
 
@@ -296,6 +307,12 @@ impl Screen for Home {
             (Key::ChUp, _) | (Key::ChDown, _) => {
                 return Nav::Push(Box::new(super::livetv::LiveTv::new(cx)))
             }
+            (Key::Ok, _) if self.focus < 6 && self.order[self.focus] == 2 => {
+                // "Cut!": the board snaps shut, then the films open
+                self.clap = Some(Instant::now());
+                self.clap_open = true;
+                return Nav::None;
+            }
             (Key::Ok, _) => return self.open(cx),
             (Key::Menu, _) => return Nav::Push(Box::new(super::settings::Settings::new(cx))),
             _ => f,
@@ -308,8 +325,20 @@ impl Screen for Home {
         true
     }
 
+    fn poll(&mut self, cx: &mut Ctx) -> Nav {
+        if self.clap_open
+            && self
+                .clap
+                .is_some_and(|t| t.elapsed().as_secs_f32() >= CLAP_OPEN_AFTER)
+        {
+            self.clap_open = false;
+            return self.open(cx);
+        }
+        Nav::None
+    }
+
     fn busy(&self, _cx: &Ctx) -> bool {
-        self.frame.moving() || self.editing
+        self.clap.is_some() || self.frame.moving() || self.editing
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
@@ -365,7 +394,22 @@ impl Screen for Home {
         let base_changed = c.finish_cached(&mut self.base_cache);
         // The orb keeps Home ticking; the big focus frame is only erased and
         // drawn again when it moves, pulses, changes or was painted over.
-        let focus_dirty = base_changed
+        // the clapperboard snaps when its tile gets the focus
+        let films_slot = self.order.iter().position(|id| *id == 2).unwrap_or(2);
+        let films_focused = self.focus == films_slot;
+        if films_focused && !self.clap_focused && !self.editing {
+            self.clap = Some(Instant::now());
+        }
+        self.clap_focused = films_focused;
+        let clap_t = self.clap.map(|t| t.elapsed().as_secs_f32());
+        let clap_live = clap_t.is_some_and(|t| t < CLAP_TOTAL);
+        if clap_t.is_some() && !clap_live && !self.clap_open {
+            self.clap = None;
+            self.clap_settle = true;
+        }
+        let clap_redraw = clap_live || std::mem::take(&mut self.clap_settle);
+        let focus_dirty = clap_redraw
+            || base_changed
             || self.frame.moving()
             || self.focus_drawn != Some(self.focus)
             || self.news_overlay_key != Some(cx.news.revision());
@@ -423,6 +467,17 @@ impl Screen for Home {
             let news_slot = self.order.iter().position(|id| *id == 4).unwrap_or(4);
             draw_news_tile_overlay(c, cx, &TILES[news_slot]);
             self.news_overlay_key = Some(news_key);
+        }
+        // the moving arm of the clapperboard (the board itself is cached)
+        if focus_dirty || base_restored {
+            let t = &TILES[films_slot];
+            if !base_restored {
+                if let Some(base) = self.base_image.as_ref() {
+                    let a = clap_area(t);
+                    c.restore_rect(base, a.0, a.1, a.2, a.3);
+                }
+            }
+            draw_clap_arm(c, t, clap_t.filter(|_| clap_live));
         }
         let mut focus_job = None;
         if self.focus < 6 {
@@ -482,6 +537,11 @@ impl Screen for Home {
             c.restore_rect(base, r.0, r.1, r.2, r.3);
         }
         self.last_focus_rect = None;
+        let films = &TILES[self.order.iter().position(|id| *id == 2).unwrap_or(2)];
+        let a = clap_area(films);
+        c.restore_rect(base, a.0, a.1, a.2, a.3);
+        let clap_t = self.clap.map(|t| t.elapsed().as_secs_f32());
+        draw_clap_arm(c, films, clap_t.filter(|t| *t < CLAP_TOTAL));
         let mut focus_job = None;
         if self.focus < 6 {
             let t = &TILES[self.focus];
@@ -1295,9 +1355,7 @@ fn draw_films_tile(c: &mut Canvas, cx: &mut Ctx, t: &Tile) {
             drawn = true;
         }
     }
-    if !drawn {
-        icon_film(c, t.x + t.w / 2.0, t.y + t.h * 0.36, 96.0, color::MUTED);
-    }
+    draw_clap_board(c, t, drawn);
     home_chip(
         c,
         t.x + 18.0,
@@ -1654,5 +1712,190 @@ impl LiquidFocus {
             ..Default::default()
         };
         (reach, params)
+    }
+}
+
+/// The Filme clapperboard: board and lower stick are part of the cached
+/// card; the striped arm on top is drawn live so it can snap shut.
+const CLAP_S: f32 = 96.0;
+/// The whole snap with its stars, and when OK opens the films (just after
+/// the board has closed).
+const CLAP_TOTAL: f32 = 0.66;
+const CLAP_OPEN_AFTER: f32 = 0.50;
+
+fn clap_center(t: &Tile) -> (f32, f32) {
+    (t.x + t.w / 2.0, t.y + t.h * 0.40)
+}
+
+/// Where the arm and the stars can be (restored before each frame of it).
+fn clap_area(t: &Tile) -> (f32, f32, f32, f32) {
+    let (x, y) = clap_center(t);
+    let s = CLAP_S;
+    (x - s * 0.52, y - s * 0.98, s * 1.40, s * 0.93)
+}
+
+/// The board's geometry: (left, width, top of the lower stick, stick height).
+fn clap_geometry(t: &Tile) -> (f32, f32, f32, f32) {
+    let (x, y) = clap_center(t);
+    let s = CLAP_S;
+    (x - s * 0.45, s * 0.9, y - s * 0.30, s * 0.15)
+}
+
+/// Gold bar with black diagonal stripes; `rot` turns every point (the arm).
+fn striped_bar(
+    c: &mut Canvas,
+    bx: f32,
+    by: f32,
+    bw: f32,
+    bh: f32,
+    rot: impl Fn((f32, f32)) -> (f32, f32),
+) {
+    let corners = [(bx, by), (bx + bw, by), (bx + bw, by + bh), (bx, by + bh)];
+    c.polygon(&corners.map(&rot), GOLD);
+    let period = bw / 4.6;
+    let (sw, slant) = (period * 0.5, bh * 0.6);
+    for k in 0..4 {
+        let xs = bx + period * 0.35 + k as f32 * period;
+        let p = [
+            (xs, by + bh),
+            (xs + sw, by + bh),
+            (xs + sw + slant, by),
+            (xs + slant, by),
+        ];
+        c.polygon(&p.map(&rot), Rgba(22, 20, 18, 255));
+    }
+}
+
+/// The board and the lower stick (into the cached card).
+fn draw_clap_board(c: &mut Canvas, t: &Tile, over_poster: bool) {
+    let (bx, bw, stick_y, bh) = clap_geometry(t);
+    let s = CLAP_S;
+    let body_y = stick_y + bh + 2.0;
+    let body_h = s * 0.50;
+    if over_poster {
+        c.rect(
+            bx - 6.0,
+            stick_y - s * 0.24,
+            bw + 12.0,
+            body_y + body_h - stick_y + s * 0.30,
+            14.0,
+            Rgba(0, 0, 0, 110),
+        );
+    }
+    c.rect(bx, body_y, bw, body_h, 6.0, Rgba(30, 27, 24, 245));
+    c.stroke_rect(
+        bx + 0.5,
+        body_y + 0.5,
+        bw - 1.0,
+        body_h - 1.0,
+        6.0,
+        1.5,
+        Rgba(GOLD.0, GOLD.1, GOLD.2, 150),
+    );
+    // the chalk lines: scene, take, roll
+    let line = Rgba(GOLD.0, GOLD.1, GOLD.2, 90);
+    let mid = bx + bw * 0.5;
+    c.line(
+        &[
+            (bx + 8.0, body_y + body_h * 0.42),
+            (bx + bw - 8.0, body_y + body_h * 0.42),
+        ],
+        1.2,
+        line,
+    );
+    c.line(
+        &[(mid, body_y + body_h * 0.42), (mid, body_y + body_h - 7.0)],
+        1.2,
+        line,
+    );
+    c.rect(
+        bx + 10.0,
+        body_y + 7.0,
+        bw * 0.34,
+        3.0,
+        1.5,
+        Rgba(GOLD.0, GOLD.1, GOLD.2, 120),
+    );
+    c.rect(
+        bx + 10.0,
+        body_y + body_h * 0.6,
+        bw * 0.22,
+        3.0,
+        1.5,
+        Rgba(GOLD.0, GOLD.1, GOLD.2, 80),
+    );
+    c.rect(
+        mid + 8.0,
+        body_y + body_h * 0.6,
+        bw * 0.22,
+        3.0,
+        1.5,
+        Rgba(GOLD.0, GOLD.1, GOLD.2, 80),
+    );
+    striped_bar(c, bx, stick_y, bw, bh, |p| p);
+}
+
+/// The arm's angle (radians, negative = open) and the stars' progress
+/// (0..1, None before the board has closed) at `t` seconds into the snap.
+fn clap_motion(t: f32) -> (f32, Option<f32>) {
+    let open = -0.52; // about 30 degrees
+    let ease_out = |k: f32| 1.0 - (1.0 - k).powi(3);
+    let angle = if t < 0.20 {
+        open * ease_out(t / 0.20)
+    } else if t < 0.30 {
+        open
+    } else if t < 0.36 {
+        // the snap: fast, accelerating into the board
+        let k = (t - 0.30) / 0.06;
+        open * (1.0 - k * k)
+    } else if t < 0.46 {
+        // a small bounce off the board
+        let k = (t - 0.36) / 0.10;
+        -0.07 * (std::f32::consts::PI * k).sin()
+    } else {
+        0.0
+    };
+    let stars = (t >= 0.36).then(|| ((t - 0.36) / (CLAP_TOTAL - 0.36)).min(1.0));
+    (angle, stars)
+}
+
+/// The striped arm, hinged at the left, and the three little stars that
+/// flash beside it as it closes. `t`: seconds into a snap, None at rest.
+fn draw_clap_arm(c: &mut Canvas, t: &Tile, snap: Option<f32>) {
+    let (bx, bw, stick_y, bh) = clap_geometry(t);
+    let gap = 1.5;
+    let (angle, stars) = snap.map(clap_motion).unwrap_or((0.0, None));
+    let hinge = (bx, stick_y - gap);
+    let (sn, cs) = angle.sin_cos();
+    let rot = move |(x, y): (f32, f32)| {
+        let (dx, dy) = (x - hinge.0, y - hinge.1);
+        (hinge.0 + cs * dx - sn * dy, hinge.1 + sn * dx + cs * dy)
+    };
+    striped_bar(c, bx, stick_y - gap - bh, bw, bh, rot);
+    c.circle(hinge.0 + 3.0, hinge.1 - 1.0, 2.6, Rgba(60, 52, 40, 255));
+    if let Some(k) = stars {
+        // three tiny four-pointed stars at the closing end, popping outward
+        let tip = (bx + bw, stick_y - gap * 0.5);
+        let pop = (std::f32::consts::PI * k).sin();
+        for (dx, dy, size) in [(11.0, -13.0, 6.0), (17.0, -1.0, 4.6), (9.0, 10.0, 3.6)] {
+            let d = 1.0 + 0.6 * k;
+            let (sx, sy) = (tip.0 + dx * d, tip.1 + dy * d);
+            let r = size * pop;
+            if r < 0.3 {
+                continue;
+            }
+            let q = r * 0.28;
+            let pts = [
+                (sx, sy - r),
+                (sx + q, sy - q),
+                (sx + r, sy),
+                (sx + q, sy + q),
+                (sx, sy + r),
+                (sx - q, sy + q),
+                (sx - r, sy),
+                (sx - q, sy - q),
+            ];
+            c.polygon(&pts, Rgba(255, 236, 190, (255.0 * pop) as u8));
+        }
     }
 }
