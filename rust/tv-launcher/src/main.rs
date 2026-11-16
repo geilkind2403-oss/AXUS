@@ -75,8 +75,8 @@ struct App {
     stack: Vec<Box<dyn Screen>>,
     canvas: gfx::Canvas,
     dirty: bool,
-    /// a screen change fades + slides the new screen in (dir: +1 forward, -1 back)
-    fade: Option<(Instant, f32)>,
+    /// a screen change fades the new screen in without shifting its layout
+    fade: Option<Instant>,
     last_input: Instant,
     restore_home_after_control: bool,
     control_blur_cache: Option<gfx::Image>,
@@ -93,6 +93,15 @@ const FADE: f32 = if cfg!(target_arch = "arm") {
 } else {
     0.22
 };
+
+/// Screen changes fade in place. Translating the canvas made every control
+/// appear to jump right, then slide a few pixels after navigation.
+fn screen_transition(fade: Option<Instant>, video: bool) -> f32 {
+    match fade {
+        Some(started) if !video => gfx::ease(started.elapsed().as_secs_f32() / FADE),
+        _ => 1.0,
+    }
+}
 // Bound redraws to the capsule, card and their shadows. The old rectangle
 // included a wide margin around the panel and added avoidable work per key.
 const CONTROL_DAMAGE: (f32, f32, f32, f32) = ui::control::REGION;
@@ -173,10 +182,6 @@ impl App {
                 self.cx.save();
             }
         }
-        let dir = match nav {
-            Nav::Push(_) | Nav::Replace(_) => 1.0,
-            _ => -1.0,
-        };
         match nav {
             Nav::None => return,
             Nav::Push(mut s) => {
@@ -207,7 +212,7 @@ impl App {
         self.fade = if opening_overlay || closing_overlay {
             None
         } else {
-            Some((Instant::now(), dir))
+            Some(Instant::now())
         };
         crate::platform::input::CONTROL_OPEN.store(
             self.top().name() == "control",
@@ -217,7 +222,7 @@ impl App {
     }
     fn fading(&self) -> bool {
         self.fade
-            .map(|f| f.0.elapsed().as_secs_f32() < FADE)
+            .map(|f| f.elapsed().as_secs_f32() < FADE)
             .unwrap_or(false)
     }
     fn key(&mut self, k: Key) {
@@ -299,15 +304,8 @@ impl App {
         let mut underlay_raster_ms = 0.0f64;
         let mut blur_ms = 0.0f64;
         // fade the new screen in over its backdrop (not over a film picture)
-        let (op, dx) = match self.fade {
-            Some((f, dir)) if !s.video() => {
-                let k = gfx::ease(f.elapsed().as_secs_f32() / FADE);
-                (k, (1.0 - k) * 48.0 * dir)
-            }
-            _ => (1.0, 0.0),
-        };
-        self.canvas.opacity = op;
-        self.canvas.offset = (dx, 0.0);
+        self.canvas.opacity = screen_transition(self.fade, s.video());
+        self.canvas.offset = (0.0, 0.0);
         let restoring_home = self.restore_home_after_control && s.name() == "home";
         let partial_home_restore = restoring_home && self.cx.toast.is_none();
         if restoring_home && !partial_home_restore {
@@ -663,6 +661,7 @@ fn main() {
                 app.dirty = true;
             }
             Ok(Msg::Redraw) => {
+                ui::weather::prewarm(&app.canvas, &app.cx);
                 app.control_blur_cache = None;
                 app.dirty = true;
             }
@@ -697,7 +696,10 @@ fn main() {
                     s.text(&t, &mut app.cx);
                     app.stack.push(s);
                 }
-                Msg::Redraw => app.control_blur_cache = None,
+                Msg::Redraw => {
+                    ui::weather::prewarm(&app.canvas, &app.cx);
+                    app.control_blur_cache = None;
+                }
                 Msg::Run(f) => {
                     f(&mut app.cx);
                     app.control_blur_cache = None;
@@ -1536,5 +1538,21 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         settle(app, wait / 3);
         shot(app, name);
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    #[test]
+    fn screen_fades_do_not_move_controls() {
+        let now = Instant::now();
+        for elapsed in [0, 25, 50, 99, 150, 250] {
+            let opacity = screen_transition(Some(now - Duration::from_millis(elapsed)), false);
+            assert!((0.0..=1.0).contains(&opacity));
+        }
+        assert_eq!(screen_transition(None, false), 1.0);
+        assert_eq!(screen_transition(Some(now), true), 1.0);
     }
 }
