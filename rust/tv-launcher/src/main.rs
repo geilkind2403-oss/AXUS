@@ -6,6 +6,7 @@
 //!   tv-launcher --shot DIR      development: render every screen as PNG
 mod app;
 mod films;
+mod focus_fx;
 mod gfx;
 mod glass_fx;
 mod livetv;
@@ -574,6 +575,10 @@ fn main() {
         control_blur_cache: None,
         toast_underlay: None,
     };
+
+    // The App-Kreis textures (glass ring, badges) are built once, at start,
+    // on a worker: the first open never waits for them.
+    ui::apps::prewarm(&app.cx);
 
     if let Some(dir) = shot_dir {
         screenshots(&mut app, &dir, &rx);
@@ -1295,6 +1300,30 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             raster_s * 1000.0 / FRAMES as f64,
             dirty_area as f64 / (pixels * FRAMES as u64) as f64 * 100.0,
         ));
+        return;
+    }
+    if std::env::var_os("SHOT_APPS_OPEN_TRACE").is_some() {
+        // frame times from Home's App-Kreis button into the wheel
+        app.key(Key::Down);
+        app.key(Key::Down);
+        app.key(Key::Down);
+        let idle: u64 = std::env::var("SHOT_IDLE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+        settle(app, idle);
+        app.key(Key::Ok);
+        let t0 = Instant::now();
+        let mut last = Instant::now();
+        while t0.elapsed() < Duration::from_millis(1500) {
+            let now = Instant::now();
+            ui::set_frame_dt(now.duration_since(last).as_secs_f32());
+            last = now;
+            let f = Instant::now();
+            let changed = app.frame();
+            let ms = f.elapsed().as_secs_f64() * 1000.0;
+            let top = app.stack.last().map(|s| s.name()).unwrap_or("");
+            log(&format!("{:6.0} ms: Bild {ms:5.1} ms {top} {changed}", t0.elapsed().as_secs_f64() * 1000.0));
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/apps-open.png")).ok();
         return;
     }
     if std::env::var_os("SHOT_APPS_ONLY").is_some() {
