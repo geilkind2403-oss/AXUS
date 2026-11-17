@@ -171,16 +171,20 @@ extern "C" void tv_apps_wheel_draw(const Input* in, Animation* a,
             const float t = ease_out(p / 0.62f);
             const float y = 132.0f + (cy - 132.0f) * t;
             const float size = 62.0f + 45.0f * ease(t);
-            command(&d, Image, cx - size * 0.95f, y - size * 0.95f,
-                    size * 1.9f, size * 1.9f, 0, 0, 0xffffffffu, LogoGlowAsset);
+            // the glow as soft circles: a picture at a new size every frame
+            // was resampled each time (slow on the Pi)
+            const float gr = size * 0.95f;
+            command(&d, Circle, cx, y, gr, 0, 0, 0, rgba(117, 187, 255, 14));
+            command(&d, Circle, cx, y, gr * 0.72f, 0, 0, 0, rgba(117, 187, 255, 18));
+            command(&d, Circle, cx, y, gr * 0.46f, 0, 0, 0, rgba(117, 187, 255, 24));
             command(&d, Image, cx - size * 0.5f, y - size * 0.5f,
                     size, size, size * 0.18f, 0, color, focus);
         } else {
             const float t = ease_out((p - 0.62f) / 0.38f);
             const float glow_radius = 92.0f + 680.0f * t;
-            command(&d, Image, cx - glow_radius, cy - glow_radius,
-                    glow_radius * 2.0f, glow_radius * 2.0f,
-                    0, 0, 0xffffffffu, LogoGlowAsset);
+            const u32 fade = static_cast<u32>(22.0f * (1.0f - t));
+            command(&d, Circle, cx, cy, glow_radius * 0.6f, 0, 0, 0, rgba(117, 187, 255, fade));
+            command(&d, Circle, cx, cy, glow_radius * 0.3f, 0, 0, 0, rgba(117, 187, 255, fade));
             command(&d, Image, cx - (106.0f + 122.0f * t) * 0.5f,
                     cy - (106.0f + 122.0f * t) * 0.5f,
                     106.0f + 122.0f * t, 106.0f + 122.0f * t,

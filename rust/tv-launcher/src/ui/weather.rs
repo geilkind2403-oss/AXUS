@@ -35,7 +35,9 @@ const METRIC_X: f32 = RIGHT - 3.0 * METRIC_W - 2.0 * GAP;
 const HERO_W: f32 = METRIC_X - GAP - PAD;
 
 /// The new sky fades in over the still one when its scene is ready.
-const REVEAL: f32 = 0.4;
+// On the Pi every fade step redraws the whole screen (~0.15 s each): the
+// sky appears at once there.
+const REVEAL: f32 = if cfg!(target_arch = "arm") { 0.0 } else { 0.4 };
 
 /// What a scene was made for: weather data, sunset warmth, frame size.
 #[derive(Clone, Copy, PartialEq)]
@@ -144,18 +146,36 @@ impl WeatherScreen {
             let building: Building = Default::default();
             let out = building.clone();
             let (tx, threads, day) = (cx.tx.clone(), self.threads, w.day);
+            // the band's text goes into the scene on the worker as well:
+            // putting the layers together cost the Pi ~0.5 s on the UI thread
+            let (w2, city) = (w.clone(), cx.cfg.city.clone());
+            let (_, desc) = crate::weather::describe(w.code);
+            let (_, _, accent) = palette(sky, w.day);
             std::thread::spawn(move || {
                 let started = Instant::now();
                 let fx = Scene::new(params).and_then(|scene| {
                     let sky = scene.render_sky(threads)?;
                     let side = (ICON.2 * 1.6 * scale).ceil() as u32;
                     let icon = scene.icon_sprite(side, 0.0);
-                    Some(Fx {
+                    let mut fx = Fx {
                         scene,
                         sky,
                         icon,
                         layered: false,
-                    })
+                    };
+                    let band_h = (BAND * scale).ceil() as u32;
+                    let mut band = crate::gfx::Canvas::new_scaled_with_threads(
+                        crate::gfx::W,
+                        (band_h as f32 / scale).ceil() as u32,
+                        scale,
+                        threads.clamp(1, 4),
+                    );
+                    band.clear(Rgba(0, 0, 0, 0));
+                    draw_band(&mut band, &w2, desc, accent, &city);
+                    band.finish();
+                    let ui = band.snapshot();
+                    fx.layered = fx.scene.set_layers(fx.sky.clone(), &ui);
+                    Some(fx)
                 });
                 crate::log(&format!(
                     "Wetter-Szene {:?} {}: {:.1} ms{}",
