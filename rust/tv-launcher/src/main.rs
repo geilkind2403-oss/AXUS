@@ -1373,6 +1373,8 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             log(&format!("News {k:?}: {:.1} ms", f.elapsed().as_secs_f64() * 1000.0));
             settle(app, 150);
         }
+        settle(app, 4000);
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/news.png")).ok();
         return;
     }
     if std::env::var_os("SHOT_ARRANGE_TRACE").is_some() {
