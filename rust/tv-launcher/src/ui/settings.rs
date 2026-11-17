@@ -2,8 +2,8 @@
 mod view;
 
 use super::*;
-use crate::app::{load, Ctx, Nav, Screen, Slot};
-use crate::gfx::{color, Align, Canvas, Rgba, Weight};
+use crate::app::{Ctx, Nav, Screen, Slot, load};
+use crate::gfx::{Align, Canvas, Rgba, Weight, color};
 use crate::platform::system::{self, BtDevice, Lan, Wifi};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -33,6 +33,10 @@ pub struct Settings {
     wifi: Slot<Vec<Wifi>>,
     wifi_requested: bool,
     lan: Slot<Lan>,
+    network_details: Slot<system::NetworkDetails>,
+    system_stats: Slot<(system::SystemStats, system::CpuCounters)>,
+    stats_pending: bool,
+    stats_updated: Option<std::time::Instant>,
     /// the network a "forget it?" question is about
     forget: Option<Wifi>,
     bt: Slot<Vec<BtDevice>>,
@@ -55,6 +59,10 @@ impl Settings {
             wifi: load(&cx.tx, system::wifi_scan),
             wifi_requested: true,
             lan: load(&cx.tx, system::lan_status),
+            network_details: load(&cx.tx, system::network_details),
+            system_stats: Slot::empty(),
+            stats_pending: false,
+            stats_updated: None,
             forget: None,
             bt: Slot::empty(),
             bt_requested: false,
@@ -74,8 +82,9 @@ impl Settings {
             1 => self.bt.get().map(|v| v.len()).unwrap_or(0) + 1,
             2 => 2,
             3 => 5,
-            4 => 5,
+            4 => 6,
             5 => 2,
+            6 => 1,
             7 => 1,
             8 => 6,
             _ => {
@@ -93,13 +102,24 @@ impl Settings {
                     self.wifi = load(&cx.tx, system::wifi_scan);
                 }
                 self.lan = load(&cx.tx, system::lan_status);
+                self.network_details = load(&cx.tx, system::network_details);
             }
             1 if !self.bt_requested && !self.bt.is_set() => {
                 self.bt_requested = true;
                 self.bt = load(&cx.tx, || system::bt_devices(0));
             }
+            8 => self.refresh_system_stats(cx),
             _ => {}
         }
+    }
+
+    fn refresh_system_stats(&mut self, cx: &Ctx) {
+        if self.stats_pending {
+            return;
+        }
+        let previous = self.system_stats.get().map(|(_, counters)| counters);
+        self.system_stats = load(&cx.tx, move || system::system_stats(previous));
+        self.stats_pending = true;
     }
 
     fn activate(&mut self, cx: &mut Ctx) -> Nav {
@@ -114,6 +134,7 @@ impl Settings {
             (0, 0) => {
                 self.wifi = load(&cx.tx, system::wifi_scan);
                 self.lan = load(&cx.tx, system::lan_status);
+                self.network_details = load(&cx.tx, system::network_details);
                 cx.toast("Netzwerkstatus wird aktualisiert");
             }
             (0, 1) => {
@@ -200,6 +221,16 @@ impl Settings {
                 };
                 cx.save();
             }
+            (6, 0) => {
+                cx.cfg.remote_enabled = !cx.cfg.remote_enabled;
+                crate::remote::set_enabled(cx.cfg.remote_enabled);
+                cx.save();
+                cx.toast(if cx.cfg.remote_enabled {
+                    "Handy-Fernbedienung eingeschaltet"
+                } else {
+                    "Handy-Fernbedienung ausgeschaltet"
+                });
+            }
             (7, 0) => {
                 self.kb = Some((
                     Keyboard::new("Ort (z. B. Murr)", &cx.cfg.city, false),
@@ -220,7 +251,7 @@ impl Settings {
                 cx.reload_channels();
                 cx.toast("Senderliste wird neu geladen");
             }
-            (3, 2) | (3, 3) | (4, 0) | (4, 1) | (4, 2) | (4, 4) => self.cycle(cx, 1),
+            (3, 2) | (3, 3) | (4, 0) | (4, 1) | (4, 2) | (4, 4) | (4, 5) => self.cycle(cx, 1),
             (3, 4) => {
                 cx.cfg.livetv_watch.clear();
                 cx.save();
@@ -321,6 +352,11 @@ impl Settings {
             }
             (4, 2) => cx.cfg.sub_size = step(&[0, 1, 2], cx.cfg.sub_size),
             (4, 4) => cx.cfg.youtube_720p = !cx.cfg.youtube_720p,
+            (4, 5) => cx.cfg.do_not_disturb = !cx.cfg.do_not_disturb,
+            (6, 0) => {
+                cx.cfg.remote_enabled = !cx.cfg.remote_enabled;
+                crate::remote::set_enabled(cx.cfg.remote_enabled);
+            }
             _ => return,
         }
         cx.save();
@@ -365,7 +401,10 @@ impl Settings {
                 let q = text.trim().to_string();
                 let tx = cx.tx.clone();
                 std::thread::spawn(move || {
-                    let url = format!("https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=de", crate::net::url_encode(&q));
+                    let url = format!(
+                        "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=de",
+                        crate::net::url_encode(&q)
+                    );
                     let r = crate::net::get_json(&url);
                     let _ = tx.send(crate::app::Msg::Run(Box::new(move |cx| {
                         match r.ok().and_then(|j| j["results"].get(0).cloned()) {
@@ -393,6 +432,21 @@ impl Screen for Settings {
     }
     fn animating(&self, _: &Ctx) -> bool {
         self.kb.is_some() || self.native_view.moving()
+    }
+    fn poll(&mut self, cx: &mut Ctx) -> Nav {
+        if self.stats_pending && self.system_stats.is_set() {
+            self.stats_pending = false;
+            self.stats_updated = Some(std::time::Instant::now());
+        }
+        if self.section == 8
+            && !self.stats_pending
+            && self
+                .stats_updated
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.refresh_system_stats(cx);
+        }
+        Nav::None
     }
     fn text(&mut self, s: &str, cx: &mut Ctx) {
         if let Some((kb, _)) = self.kb.as_mut() {
@@ -496,7 +550,9 @@ impl Screen for Settings {
             }
             Key::Left | Key::Right
                 if (self.section == 3 && self.item >= 2)
-                    || (self.section == 4 && (self.item <= 2 || self.item == 4)) =>
+                    || (self.section == 4
+                        && (self.item <= 2 || self.item == 4 || self.item == 5))
+                    || (self.section == 6 && self.item == 0) =>
             {
                 self.cycle(cx, if k == Key::Left { -1 } else { 1 });
             }
@@ -704,6 +760,15 @@ impl Screen for Settings {
                         "‹ Aus ›".into()
                     },
                 ));
+                rows.push((
+                    "Nicht stören".into(),
+                    if cx.cfg.do_not_disturb {
+                        "‹ Ein ›"
+                    } else {
+                        "‹ Aus ›"
+                    }
+                    .into(),
+                ));
             }
             5 => {
                 rows.push((
@@ -717,9 +782,15 @@ impl Screen for Settings {
                 rows.push(("Lautstärke".into(), format!("‹ {} % ›", cx.cfg.volume)));
             }
             6 => {
-                let url = cx.remote_url.clone();
-                c.text(&url, x, 192.0, 26, Weight::Bold, color::TEXT, Align::Left);
-                draw_qr(c, &url, x, 240.0, 240.0);
+                rows.push((
+                    "Handy-Fernbedienung".into(),
+                    if cx.cfg.remote_enabled {
+                        "‹ Ein ›"
+                    } else {
+                        "‹ Aus ›"
+                    }
+                    .into(),
+                ));
             }
             7 => {
                 rows.push((
@@ -743,23 +814,6 @@ impl Screen for Settings {
                     "Messbericht".into(),
                     format!("Handy: {}/messbericht", cx.remote_url.trim_end_matches('/')),
                 ));
-                let temp = system::cpu_temp()
-                    .map(|t| format!(" · CPU {t:.0} °C"))
-                    .unwrap_or_default();
-                let ip = system::local_ip().unwrap_or_else(|| "keine IP".into());
-                c.text(
-                    &format!(
-                        "TV Launcher {} · Build {} · {ip}{temp}",
-                        env!("CARGO_PKG_VERSION"),
-                        crate::BUILD
-                    ),
-                    x,
-                    654.0,
-                    14,
-                    Weight::Regular,
-                    color::MUTED,
-                    Align::Left,
-                );
             }
         }
         let n_wifi = self.wifi.get().map(|v| v.len()).unwrap_or(0);
@@ -772,6 +826,15 @@ impl Screen for Settings {
             self.inside,
             &rows,
             &chevrons,
+        );
+        draw_settings_context(
+            c,
+            cx,
+            self.section,
+            self.item,
+            &rows,
+            &self.network_details,
+            &self.system_stats,
         );
         if let Some(r) = self.busy.get() {
             let (msg, col) = match r {
@@ -861,6 +924,601 @@ impl Screen for Settings {
             kb.draw(c, 220.0, 176.0, 840.0, cx.t());
         }
     }
+}
+
+const INFO_X: f32 = 64.0;
+const INFO_Y: f32 = 153.0;
+const INFO_W: f32 = 544.0;
+const INFO_H: f32 = 489.0;
+const CREAM: Rgba = Rgba(250, 247, 239, 255);
+const MUTED: Rgba = Rgba(180, 166, 136, 255);
+const GOLD: Rgba = Rgba(226, 187, 116, 255);
+
+fn info_panel(c: &mut Canvas, label: &str) {
+    c.rect(INFO_X, INFO_Y, INFO_W, INFO_H, 23.0, Rgba(43, 33, 18, 58));
+    c.text(
+        label,
+        INFO_X + 24.0,
+        INFO_Y + 31.0,
+        14,
+        Weight::Semi,
+        GOLD,
+        Align::Left,
+    );
+}
+
+fn setting_help(section: usize, item: usize) -> &'static str {
+    match (section, item) {
+        (1, 0) => {
+            "Starte die Suche erst, wenn dein Gerät im Kopplungsmodus ist. Bereits verbundene Geräte stehen oben."
+        }
+        (1, _) => {
+            "OK verbindet das ausgewählte Gerät. Für die erste Verbindung muss es sichtbar und in der Nähe sein."
+        }
+        (2, 0) => {
+            "Trage die Adresse des PCs ein, auf dem tv-server läuft. Die Filme erscheinen danach automatisch in der Mediathek."
+        }
+        (2, 1) => {
+            "Prüft, ob der PC erreichbar ist und ob der Film-Server seine Mediathek bereitstellt."
+        }
+        (3, 0) => {
+            "Eine eigene M3U-Adresse ersetzt die Standard-Senderliste. Leer lassen, um die mitgelieferte Liste zu verwenden."
+        }
+        (3, 1) => {
+            "Lädt die Senderliste erneut. Das hilft, wenn Sender fehlen oder die Playlist geändert wurde."
+        }
+        (3, 2) => {
+            "Begrenzt die maximale Bildhöhe. Auf dem Pi 3 ist 720p meist der beste Kompromiss aus Schärfe und flüssiger Wiedergabe."
+        }
+        (3, 3) => {
+            "Legt fest, ob nach dem Einschalten direkt Live TV oder zuerst die Startseite erscheint."
+        }
+        (3, 4) => {
+            "Löscht nur die Nutzungszeiten, die für die Sortierung nach meistgesehenen Sendern gespeichert sind."
+        }
+        (4, 0) => {
+            "Der Bildschirmschoner dimmt die Anzeige, wenn längere Zeit keine Taste gedrückt wird."
+        }
+        (4, 1) => {
+            "Schaltet den Fernseher nach der gewählten Zeit aus. Links und rechts ändern die Auswahl."
+        }
+        (4, 2) => "Ändert die Schriftgröße von Untertiteln in der Videowiedergabe.",
+        (4, 3) => {
+            "Zeigt den aktuell erkannten TV-Modus. Dieser Wert wird vom HDMI-Ausgang übernommen."
+        }
+        (4, 4) => {
+            "720p lädt YouTube-Menüs schneller und braucht weniger Arbeitsspeicher. Videos können etwas weicher aussehen."
+        }
+        (4, 5) => {
+            "Unterdrückt nicht wichtige Mitteilungen. Netzwerk- und Wiedergabefehler bleiben sichtbar."
+        }
+        (5, 0) => {
+            "Wähle HDMI für den Fernseher oder analog für die Kopfhörerbuchse des Raspberry Pi."
+        }
+        (5, 1) => "Stelle die Lautstärke in Schritten von fünf Prozent ein.",
+        (6, 0) => {
+            "Aktiviert die Fernbedienung im Heimnetz. Scanne den QR-Code mit dem Handy, wenn beide im selben WLAN sind."
+        }
+        (7, 0) => {
+            "Der Ort bestimmt die Wettervorhersage. Nach der Suche werden Koordinaten gespeichert, damit keine Ortsabfrage nötig ist."
+        }
+        (8, 0) => {
+            "Startet LibreELEC und den Launcher neu. Deine Einstellungen und Senderlisten bleiben erhalten."
+        }
+        (8, 1) => "Fährt den Raspberry Pi sauber herunter. Danach kannst du ihn vom Strom trennen.",
+        (8, 2) => {
+            "Beendet den Launcher und startet wieder Kodi. Der Wechsel kann einige Sekunden dauern."
+        }
+        (8, 3) => {
+            "Gibt neu ladbare Bilder frei. Einstellungen, Favoriten und gespeicherte WLANs bleiben erhalten."
+        }
+        (8, 4) => {
+            "Sucht ein Update aus der GitHub-Quelle. Es wird erst nach deiner Bestätigung installiert."
+        }
+        (8, 5) => {
+            "Der Messbericht enthält Laufzeiten und Speicherwerte, aber keine WLAN-Passwörter."
+        }
+        (9, 0) => {
+            "Zeigt WLAN, LAN, IP-Adresse und verfügbare Netze. Du kannst hier verbinden oder ein gespeichertes Netz vergessen."
+        }
+        (9, 1) => "Kopple Kopfhörer, Tastaturen und andere Bluetooth-Geräte mit dem Fernseher.",
+        (9, 2) => "Verbinde die Mediathek mit dem Film-Server auf deinem PC.",
+        (9, 3) => "Verwalte Playlist, Bildqualität und den Start von Live TV.",
+        (9, 4) => "Passe Bild, Untertitel, Ruhemodus und YouTube an.",
+        (9, 5) => "Wähle den Audioausgang und ändere die Lautstärke.",
+        (9, 6) => "Steuere den Launcher vom Handy aus, solange es im selben Heimnetz ist.",
+        (9, 7) => "Lege fest, für welchen Ort die Wetter-App Daten lädt.",
+        (9, 8) => {
+            "Sieh die Auslastung des Raspberry Pi und verwalte Update, Neustart und Speicher."
+        }
+        _ => {
+            "Hier findest du verständliche Hinweise zur ausgewählten Einstellung. Links und rechts ändern Werte; OK öffnet oder bestätigt."
+        }
+    }
+}
+
+fn metric_card(
+    c: &mut Canvas,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &str,
+    value: &str,
+    detail: &str,
+    fraction: Option<f32>,
+) {
+    c.rect(x, y, w, 101.0, 16.0, Rgba(50, 40, 27, 64));
+    c.text(
+        label,
+        x + 15.0,
+        y + 12.0,
+        12,
+        Weight::Semi,
+        MUTED,
+        Align::Left,
+    );
+    c.text(
+        value,
+        x + 15.0,
+        y + 34.0,
+        22,
+        Weight::Bold,
+        CREAM,
+        Align::Left,
+    );
+    c.text(
+        detail,
+        x + 15.0,
+        y + 68.0,
+        13,
+        Weight::Regular,
+        MUTED,
+        Align::Left,
+    );
+    if let Some(fraction) = fraction {
+        let width = (w - 30.0).max(1.0);
+        c.rect(x + 15.0, y + 89.0, width, 3.0, 1.5, Rgba(245, 235, 214, 28));
+        c.rect(
+            x + 15.0,
+            y + 89.0,
+            width * fraction.clamp(0.0, 1.0),
+            3.0,
+            1.5,
+            GOLD,
+        );
+    }
+}
+
+fn draw_settings_context(
+    c: &mut Canvas,
+    cx: &Ctx,
+    section: usize,
+    item: usize,
+    rows: &[(String, String)],
+    network: &Slot<system::NetworkDetails>,
+    stats: &Slot<(system::SystemStats, system::CpuCounters)>,
+) {
+    if section == 0 {
+        info_panel(c, "NETZWERK · LIVE-STATUS");
+        let mut data = network.get().unwrap_or_default();
+        if let Some((online, kind, name)) = cx.net.get() {
+            if online {
+                data.connected = true;
+                if data.name.is_empty() {
+                    data.name = name;
+                }
+                if data.kind.is_empty() {
+                    data.kind = if kind == "wifi" { "WLAN" } else { "LAN" }.into();
+                }
+            }
+        }
+        let title = if data.connected {
+            if data.name.is_empty() {
+                "Verbunden"
+            } else {
+                &data.name
+            }
+        } else {
+            "Keine Verbindung"
+        };
+        c.text(
+            title,
+            INFO_X + 24.0,
+            INFO_Y + 67.0,
+            25,
+            Weight::Bold,
+            CREAM,
+            Align::Left,
+        );
+        let connection = if data.connected {
+            [
+                data.kind.as_str(),
+                data.state.as_str(),
+                data.security.as_str(),
+            ]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+        } else {
+            "WLAN oder Netzwerkkabel prüfen".to_string()
+        };
+        c.text(
+            &connection,
+            INFO_X + 24.0,
+            INFO_Y + 106.0,
+            15,
+            Weight::Regular,
+            MUTED,
+            Align::Left,
+        );
+        let device = match (data.interface.is_empty(), data.hostname.is_empty()) {
+            (false, false) => format!("{} · {}", data.interface, data.hostname),
+            (false, true) => data.interface.clone(),
+            (true, false) => data.hostname.clone(),
+            (true, true) => "Gerätename nicht verfügbar".into(),
+        };
+        let network_fields = [
+            ("IP-ADRESSE", data.ip.as_str()),
+            ("ROUTER", data.gateway.as_str()),
+            ("DNS-SERVER", data.dns.as_str()),
+            ("GERÄT", device.as_str()),
+        ];
+        for (i, (label, value)) in network_fields.iter().enumerate() {
+            let y = INFO_Y + 145.0 + i as f32 * 55.0;
+            c.text(
+                label,
+                INFO_X + 24.0,
+                y,
+                12,
+                Weight::Semi,
+                MUTED,
+                Align::Left,
+            );
+            c.text(
+                if value.is_empty() {
+                    "Wird vom Router bezogen"
+                } else {
+                    value
+                },
+                INFO_X + 24.0,
+                y + 22.0,
+                17,
+                Weight::Semi,
+                CREAM,
+                Align::Left,
+            );
+        }
+        let signal = data.strength.map(|v| format!("{v} %"));
+        c.text(
+            "WLAN-SIGNAL",
+            INFO_X + 24.0,
+            INFO_Y + 355.0,
+            12,
+            Weight::Semi,
+            MUTED,
+            Align::Left,
+        );
+        let strength = data.strength.unwrap_or(0) as f32 / 100.0;
+        c.rect(
+            INFO_X + 24.0,
+            INFO_Y + 380.0,
+            350.0,
+            5.0,
+            2.5,
+            Rgba(245, 235, 214, 32),
+        );
+        c.rect(
+            INFO_X + 24.0,
+            INFO_Y + 380.0,
+            350.0 * strength,
+            5.0,
+            2.5,
+            GOLD,
+        );
+        c.text(
+            signal.as_deref().unwrap_or("–"),
+            INFO_X + INFO_W - 24.0,
+            INFO_Y + 369.0,
+            15,
+            Weight::Semi,
+            CREAM,
+            Align::Right,
+        );
+        let wifi_end = rows.len().saturating_sub(1);
+        let help = match item {
+            0 => "OK lädt Verbindung, IP-Adresse und Routerdaten neu.",
+            1 => "Zeigt, ob ein Netzwerkkabel steckt und ob es eine IP-Adresse bekommen hat.",
+            2 => {
+                "Sucht erneut nach WLANs in der Nähe. Die Liste kann kurz nach dem Scan erscheinen."
+            }
+            i if i == wifi_end => {
+                "Setzt WLAN- und LAN-Verbindungen zurück. Gespeicherte Netze werden gelöscht."
+            }
+            _ => "OK verbindet mit diesem WLAN. Beim verbundenen Netz kannst du es vergessen.",
+        };
+        c.text(
+            "AUSGEWÄHLT",
+            INFO_X + 24.0,
+            INFO_Y + 405.0,
+            12,
+            Weight::Semi,
+            MUTED,
+            Align::Left,
+        );
+        c.paragraph(
+            help,
+            INFO_X + 24.0,
+            INFO_Y + 428.0,
+            INFO_W - 48.0,
+            14,
+            Weight::Regular,
+            CREAM,
+            18.0,
+            2,
+        );
+        return;
+    }
+    if section == 8 {
+        info_panel(c, "SYSTEM · AKTUELLE AUSLASTUNG");
+        let stats = stats.get().map(|(value, _)| value).unwrap_or_default();
+        let used = stats
+            .memory_total_mb
+            .saturating_sub(stats.memory_available_mb);
+        let memory_ratio = if stats.memory_total_mb > 0 {
+            used as f32 / stats.memory_total_mb as f32
+        } else {
+            0.0
+        };
+        let cpu_value = stats
+            .cpu_percent
+            .map(|v| format!("{v} %"))
+            .unwrap_or_else(|| "…".into());
+        let cpu_detail = format!(
+            "{} Kerne · {}",
+            stats.cores,
+            stats
+                .cpu_temp_c
+                .map(|v| format!("{v:.0} °C"))
+                .unwrap_or_else(|| "Temperatur –".into())
+        );
+        metric_card(
+            c,
+            INFO_X + 24.0,
+            INFO_Y + 64.0,
+            238.0,
+            "ARBEITSSPEICHER",
+            &format!("{used} / {} MB", stats.memory_total_mb),
+            &format!("{} MB verfügbar", stats.memory_available_mb),
+            Some(memory_ratio),
+        );
+        metric_card(
+            c,
+            INFO_X + 282.0,
+            INFO_Y + 64.0,
+            238.0,
+            "PROZESSOR",
+            &cpu_value,
+            &cpu_detail,
+            stats.cpu_percent.map(|v| v as f32 / 100.0),
+        );
+        let (storage_value, storage_detail, storage_ratio) =
+            match (stats.storage_available_gb, stats.storage_total_gb) {
+                (Some(free), Some(total)) => (
+                    format!("{:.1} GB frei", free),
+                    format!("von {:.1} GB · /storage", total),
+                    Some((total - free).max(0.0) / total.max(0.1)),
+                ),
+                _ => (
+                    "Nicht verfügbar".into(),
+                    "Speicherstatus konnte nicht gelesen werden".into(),
+                    None,
+                ),
+            };
+        metric_card(
+            c,
+            INFO_X + 24.0,
+            INFO_Y + 180.0,
+            238.0,
+            "SYSTEMSPEICHER",
+            &storage_value,
+            &storage_detail,
+            storage_ratio,
+        );
+        metric_card(
+            c,
+            INFO_X + 282.0,
+            INFO_Y + 180.0,
+            238.0,
+            "LAUNCHER",
+            &format!("{} MB RAM", stats.process_rss_mb),
+            &format!(
+                "{} MHz · Build {}",
+                stats
+                    .cpu_mhz
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "–".into()),
+                crate::BUILD
+            ),
+            None,
+        );
+        let details = format!(
+            "Laufzeit  {}     ·     Systemlast  {}\nVersion  {}     ·     Kernel  {}\nCPU  {} MHz     ·     USB-Speicher  {}\nHardware  {}",
+            stats.uptime,
+            stats
+                .load_1m
+                .map(|v| format!("{v:.2}"))
+                .unwrap_or_else(|| "–".into()),
+            env!("CARGO_PKG_VERSION"),
+            stats.kernel,
+            stats
+                .cpu_mhz
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "–".into()),
+            stats.removable_drives,
+            stats.hardware,
+        );
+        c.paragraph(
+            &details,
+            INFO_X + 24.0,
+            INFO_Y + 314.0,
+            INFO_W - 48.0,
+            14,
+            Weight::Regular,
+            CREAM,
+            23.0,
+            4,
+        );
+        let selected = rows.get(item).map(|row| row.0.as_str()).unwrap_or("System");
+        c.text(
+            "AUSGEWÄHLT",
+            INFO_X + 24.0,
+            INFO_Y + 418.0,
+            12,
+            Weight::Semi,
+            MUTED,
+            Align::Left,
+        );
+        c.paragraph(
+            &format!("{selected} · {}", setting_help(8, item)),
+            INFO_X + 24.0,
+            INFO_Y + 439.0,
+            INFO_W - 48.0,
+            13,
+            Weight::Regular,
+            CREAM,
+            17.0,
+            2,
+        );
+        c.text(
+            "Live-Werte · Aktualisierung alle 2 Sekunden",
+            INFO_X + 24.0,
+            INFO_Y + 475.0,
+            12,
+            Weight::Regular,
+            MUTED,
+            Align::Left,
+        );
+        return;
+    }
+    let label = if section == 9 {
+        "TV-LAUNCHER · EINSTELLUNGEN".to_string()
+    } else {
+        SECTIONS[section].to_uppercase()
+    };
+    info_panel(c, &label);
+    if section == 6 {
+        let url = cx.remote_url.clone();
+        c.text(
+            "Fernbedienung im Heimnetz",
+            INFO_X + 24.0,
+            INFO_Y + 68.0,
+            24,
+            Weight::Bold,
+            CREAM,
+            Align::Left,
+        );
+        c.paragraph(
+            "Scanne den Code mit der Handykamera. Telefon und Fernseher müssen im selben WLAN sein.",
+            INFO_X + 24.0,
+            INFO_Y + 109.0,
+            INFO_W - 48.0,
+            15,
+            Weight::Regular,
+            MUTED,
+            21.0,
+            3,
+        );
+        draw_qr(c, &url, INFO_X + 143.0, INFO_Y + 182.0, 250.0);
+        c.text(
+            &url,
+            INFO_X + 24.0,
+            INFO_Y + 454.0,
+            14,
+            Weight::Semi,
+            GOLD,
+            Align::Left,
+        );
+        c.text(
+            if cx.cfg.remote_enabled {
+                "Fernbedienung ist eingeschaltet"
+            } else {
+                "Fernbedienung ist ausgeschaltet"
+            },
+            INFO_X + 24.0,
+            INFO_Y + 472.0,
+            13,
+            Weight::Regular,
+            MUTED,
+            Align::Left,
+        );
+        return;
+    }
+    let title = rows
+        .get(item)
+        .map(|row| row.0.as_str())
+        .unwrap_or("Einstellungen");
+    c.text(
+        title,
+        INFO_X + 24.0,
+        INFO_Y + 68.0,
+        24,
+        Weight::Bold,
+        CREAM,
+        Align::Left,
+    );
+    c.paragraph(
+        setting_help(section, item),
+        INFO_X + 24.0,
+        INFO_Y + 110.0,
+        INFO_W - 48.0,
+        16,
+        Weight::Regular,
+        MUTED,
+        23.0,
+        5,
+    );
+    if let Some((_, value)) = rows.get(item).filter(|(_, value)| !value.is_empty()) {
+        c.rect(
+            INFO_X + 24.0,
+            INFO_Y + 272.0,
+            INFO_W - 48.0,
+            1.0,
+            0.5,
+            Rgba(226, 187, 116, 36),
+        );
+        c.text(
+            "AKTUELLER WERT",
+            INFO_X + 24.0,
+            INFO_Y + 294.0,
+            12,
+            Weight::Semi,
+            MUTED,
+            Align::Left,
+        );
+        c.paragraph(
+            value,
+            INFO_X + 24.0,
+            INFO_Y + 320.0,
+            INFO_W - 48.0,
+            20,
+            Weight::Semi,
+            GOLD,
+            27.0,
+            4,
+        );
+    }
+    c.paragraph(
+        "Links und rechts ändern einen Wert. OK öffnet oder bestätigt. Mit Zurück kommst du zur Übersicht.",
+        INFO_X + 24.0,
+        INFO_Y + 424.0,
+        INFO_W - 48.0,
+        14,
+        Weight::Regular,
+        MUTED,
+        20.0,
+        3,
+    );
 }
 
 /// Small line icons for the section list.
