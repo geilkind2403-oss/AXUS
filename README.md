@@ -8,3 +8,5 @@ A lightweight TV launcher for Raspberry Pi and LibreELEC. The current launcher i
 - `browser/` — Buildroot configuration for the optional YouTube TV browser runtime.
 
 The browser runtime is built separately from the launcher so the Pi can run the home screen without keeping a browser open.
+
+Version codenames are a personal tribute and imply no affiliation with or endorsement by the people named.
