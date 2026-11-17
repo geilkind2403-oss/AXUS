@@ -1271,6 +1271,16 @@ impl Canvas {
                 self.scaled.push(e);
                 src
             }
+            None if dw == img.width() && dh == img.height() => {
+                // already at its display size: a plain copy (the resampling
+                // pipeline costs the Pi ~0.1 s for a 700 px picture even 1:1)
+                if self.scaled.len() >= 40 {
+                    self.scaled.remove(0);
+                }
+                let pm = Arc::new(img.clone());
+                self.scaled.push((key, pm.clone()));
+                pm
+            }
             None => {
                 let Some(mut pm) = Pixmap::new(dw, dh) else {
                     return;

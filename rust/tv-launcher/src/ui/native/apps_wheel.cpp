@@ -110,7 +110,10 @@ extern "C" void tv_apps_wheel_draw(const Input* in, Animation* a,
 
     const bool entering = in->pass == 0 && in->entry >= 0.0f;
     const float enter = entering ? ease_out(in->entry) : 1.0f;
-    const float draw_scale = entering ? 0.91f + 0.09f * enter : 1.0f;
+    // No zoom while entering: every size would resample the textures again
+    // (most of a second per frame on the Pi); the spin carries the entry.
+    const float draw_scale = 1.0f;
+    (void)enter;
     Draw d{ctx, emit, draw_scale};
     const u32 white = rgba(250, 247, 239, 255);
     const u32 muted = rgba(181, 175, 162, 255);

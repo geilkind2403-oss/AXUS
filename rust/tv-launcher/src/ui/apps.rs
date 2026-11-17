@@ -29,23 +29,34 @@ pub(super) struct AppAssets {
 static APP_ASSETS: OnceLock<AppAssets> = OnceLock::new();
 static APP_ASSETS_WARMING: AtomicBool = AtomicBool::new(false);
 
+/// Texture sizes in physical pixels, exactly as large as the wheel shows
+/// them (C++: ring 478, centre 224, glow 112, badge 62 logical px). A
+/// picture at its display size is copied, not resampled: scaling a 512 px
+/// ring up to 717 px cost the Pi most of a second on every open.
+fn phys(logical: f32) -> usize {
+    (logical * crate::gfx::RENDER_SCALE).round() as usize
+}
+
 fn warm_glass() -> Option<Image> {
     // Build the annulus as a tiny, cached software material rather than a
     // fixed outlined PNG. Broad, angle-dependent reflections and a soft rim
     // let the warm backdrop show through like liquid glass. This runs once on
     // the asset worker; navigation frames only composite the finished texture.
-    const SIZE: usize = 512;
-    let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
+    let size = phys(478.0);
+    // the shape was designed on 512 px: radii in those units
+    let k = 512.0 / size as f32;
+    let mut texture = tiny_skia::Pixmap::new(size as u32, size as u32)?;
     let data = texture.data_mut();
     let smooth = |a: f32, b: f32, x: f32| {
         let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
     let glow = |x: f32| (-x * x).exp();
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - SIZE as f32 * 0.5;
-            let dy = y as f32 + 0.5 - SIZE as f32 * 0.5;
+    const SIZE: usize = 512;
+    for y in 0..size {
+        for x in 0..size {
+            let dx = (x as f32 + 0.5) * k - SIZE as f32 * 0.5;
+            let dy = (y as f32 + 0.5) * k - SIZE as f32 * 0.5;
             let radius = (dx * dx + dy * dy).sqrt();
             let angle = dy.atan2(dx);
             let outer = smooth(256.0, 246.0, radius);
@@ -68,7 +79,7 @@ fn warm_glass() -> Option<Image> {
             let red = (181.0 + 70.0 * sheen * warm).clamp(0.0, 255.0) as u32;
             let green = (159.0 + 62.0 * sheen * warm).clamp(0.0, 255.0) as u32;
             let blue = (117.0 + 53.0 * sheen * warm).clamp(0.0, 255.0) as u32;
-            let offset = (y * SIZE + x) * 4;
+            let offset = (y * size + x) * 4;
             data[offset] = (blue * alpha / 255) as u8;
             data[offset + 1] = (green * alpha / 255) as u8;
             data[offset + 2] = (red * alpha / 255) as u8;
@@ -79,7 +90,9 @@ fn warm_glass() -> Option<Image> {
 }
 
 fn logo_glow() -> Option<Image> {
-    const SIZE: usize = 128;
+    let size = phys(112.0);
+    #[allow(non_snake_case)]
+    let SIZE = size;
     let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
     for (index, pixel) in texture.data_mut().chunks_exact_mut(4).enumerate() {
         let x = (index % SIZE) as f32 + 0.5 - SIZE as f32 * 0.5;
@@ -95,7 +108,8 @@ fn logo_glow() -> Option<Image> {
 }
 
 fn center_well() -> Option<Image> {
-    const SIZE: usize = 256;
+    #[allow(non_snake_case)]
+    let SIZE = phys(224.0);
     let mut texture = tiny_skia::Pixmap::new(SIZE as u32, SIZE as u32)?;
     let data = texture.data_mut();
     let smooth = |a: f32, b: f32, x: f32| {
@@ -127,18 +141,21 @@ fn center_well() -> Option<Image> {
 }
 
 fn softened_icon(bytes: &[u8]) -> Option<Image> {
-    let mut image = crate::gfx::decode_image(bytes, 128, 128)?;
+    let n = phys(62.0);
+    let mut image = crate::gfx::decode_image(bytes, n as u32, n as u32)?;
+    let n = image.width() as usize;
+    let k = 128.0 / n as f32;
     let data = Arc::make_mut(&mut image).data_mut();
-    for y in 0..128usize {
-        for x in 0..128usize {
-            let dx = x as f32 + 0.5 - 64.0;
-            let dy = y as f32 + 0.5 - 64.0;
+    for y in 0..n {
+        for x in 0..n {
+            let dx = (x as f32 + 0.5) * k - 64.0;
+            let dy = (y as f32 + 0.5) * k - 64.0;
             // Circular, feathered app badges avoid sharp square corners in
             // both the wheel and the launch zoom animation.
             let distance = dx.hypot(dy) - 52.0;
             let edge = (distance / 12.0).clamp(0.0, 1.0);
             let coverage = 1.0 - edge * edge * (3.0 - 2.0 * edge);
-            let pixel = &mut data[(y * 128 + x) * 4..(y * 128 + x + 1) * 4];
+            let pixel = &mut data[(y * n + x) * 4..(y * n + x + 1) * 4];
             for channel in pixel {
                 *channel = (*channel as f32 * coverage).round() as u8;
             }
