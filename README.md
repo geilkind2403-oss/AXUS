@@ -1,4 +1,4 @@
-# TV Launcher
+# AXUS
 
 A lightweight TV launcher for Raspberry Pi and LibreELEC. The current launcher is written in Rust and is designed for remote control, direct display output and low idle resource use.
 
