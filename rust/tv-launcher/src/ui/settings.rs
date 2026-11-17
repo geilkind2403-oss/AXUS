@@ -249,7 +249,7 @@ impl Settings {
             }
             (7, 0) => {
                 self.kb = Some((
-                    Keyboard::new("Ort (z. B. Murr)", &cx.cfg.city, false),
+                    Keyboard::new("Ort (z. B. Berlin)", &cx.cfg.city, false),
                     Edit::City,
                 ))
             }
