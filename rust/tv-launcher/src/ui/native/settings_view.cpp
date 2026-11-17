@@ -56,10 +56,16 @@ void fit(Emit fn, void* ctx, const char* s, size_t n, float x, float y,
          float width, uint32_t px, uint32_t weight, uint32_t color) {
     emit(fn, ctx, TextFit, x, y, width, 0, 0, 0, color, px, weight, Left, 0, s, n);
 }
+// Sonic-quick: the focus is most of the way there after two frames and
+// lands in about 0.15 s (it was 0.4 s), so a press feels instant and fewer
+// frames need drawing.
 float approach(float value, float target, float dt) {
-    const float k = dt / (0.075f + dt);
+    const float k = dt / (0.032f + dt);
     const float next = value + (target - value) * k;
-    return (target - next < 0.25f && target - next > -0.25f) ? target : next;
+    return (target - next < 0.6f && target - next > -0.6f) ? target : next;
+}
+void icon(Emit fn, void* ctx, uint32_t which, float x, float y, uint32_t c) {
+    emit(fn, ctx, Icon, x, y, 0, 0, 0, 0, c, 0, Regular, Left, which);
 }
 constexpr float RowX = 650.0f;
 constexpr float RowW = 570.0f;
@@ -107,9 +113,39 @@ extern "C" void tv_settings_draw_rows(const Input* in, const Animation* a,
         const bool focused = root ? i == in->item : (in->inside && i == in->item);
         const float focus_y = focused ? a->row_y : y;
         const uint32_t body = focused ? rgba(76, 57, 25, 92) : rgba(9, 9, 8, 66);
-        rect(fn, ctx, RowX, focus_y, RowW, RowH, 15.0f, body);
+        if (focused) {
+            // speed lines: while the focus flies, fading copies trail behind
+            // it (away from where it is going), gone the moment it lands
+            const float d = y - focus_y;
+            const float ad = d < 0.0f ? -d : d;
+            if (ad > 3.0f) {
+                for (int k = 2; k >= 1; --k) {
+                    const float gy = focus_y - d * 0.22f * static_cast<float>(k);
+                    const uint32_t ga = static_cast<uint32_t>(
+                        (ad > 55.0f ? 1.0f : ad / 55.0f) * (44.0f - 14.0f * static_cast<float>(k)));
+                    rect(fn, ctx, RowX + 6.0f * static_cast<float>(k), gy,
+                         RowW - 12.0f * static_cast<float>(k), RowH, 15.0f,
+                         rgba(226, 187, 116, ga));
+                }
+            }
+            rect(fn, ctx, RowX, focus_y, RowW, RowH, 15.0f, body);
+            // the ring only once it has landed (a rounded stroke is costly
+            // to draw, and in flight the trail says enough)
+            if (ad <= 3.0f) emit(fn, ctx, Stroke, RowX + 0.5f, focus_y + 0.5f, RowW - 1.0f, RowH - 1.0f,
+                 15.0f, 1.5f, rgba(226, 187, 116, 170));
+            // a gold bar on the left edge says "you are here"
+            rect(fn, ctx, RowX + 7.0f, focus_y + 11.0f, 3.0f, RowH - 22.0f, 1.5f,
+                 rgba(255, 218, 137, 235));
+        } else {
+            rect(fn, ctx, RowX, focus_y, RowW, RowH, 15.0f, body);
+        }
+        const float label_x = root ? RowX + 62.0f : RowX + 22.0f;
+        if (root) {
+            icon(fn, ctx, i, RowX + 36.0f, y + RowH * 0.5f,
+                 focused ? rgba(255, 218, 137, 255) : rgba(205, 171, 105, 200));
+        }
         fit(fn, ctx, rows[i].label.data, rows[i].label.size,
-            RowX + 22.0f, y + 11.0f, root ? RowW - 62.0f : 280.0f, 18,
+            label_x, y + 11.0f, root ? RowW - 102.0f : 280.0f, 18,
             focused ? Semi : Regular,
             focused ? rgba(255, 250, 236, 255) : rgba(238, 233, 223, 255));
         if (!root && rows[i].value.size != 0) {

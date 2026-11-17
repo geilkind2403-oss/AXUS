@@ -1381,6 +1381,51 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         gfx::save_png(&app.canvas.pm, &format!("{dir}/news.png")).ok();
         return;
     }
+    if std::env::var_os("SHOT_SETTINGS_TRACE").is_some() {
+        // Settings: frame cost per key at 60 Hz -- main list down, into a
+        // section, down its rows, back out
+        app.stack.push(Box::new(ui::settings::Settings::new(&app.cx)));
+        app.canvas.invalidate();
+        settle(app, 500);
+        let keys = [
+            Key::Down, Key::Down, Key::Down, Key::Down, Key::Ok, Key::Down, Key::Down,
+            Key::Down, Key::Up, Key::Back, Key::Up, Key::Up,
+        ];
+        let (mut n, mut total, mut worst, mut over) = (0usize, 0.0f64, 0.0f64, 0usize);
+        for (ki, k) in keys.into_iter().enumerate() {
+            app.key(k);
+            let t0 = Instant::now();
+            let mut last = Instant::now();
+            let mut frames = Vec::new();
+            while t0.elapsed() < Duration::from_millis(300) {
+                let now = Instant::now();
+                ui::set_frame_dt(now.duration_since(last).as_secs_f32());
+                last = now;
+                let f = Instant::now();
+                if app.frame() {
+                    let ms = f.elapsed().as_secs_f64() * 1000.0;
+                    frames.push(format!("{ms:.1}"));
+                    if ki == 6 && frames.len() == 2 {
+                        gfx::save_png(&app.canvas.pm, &format!("{dir}/settings-mid.png")).ok();
+                    }
+                    n += 1;
+                    total += ms;
+                    worst = worst.max(ms);
+                    if ms > 15.0 {
+                        over += 1;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            log(&format!("Einstellungen {k:?}: {} Bilder | {}", frames.len(), frames.join(" ")));
+        }
+        log(&format!(
+            "Einstellungen gesamt: {n} Bilder, Schnitt {:.1} ms, max {worst:.1} ms, {over} über 15 ms",
+            total / n.max(1) as f64
+        ));
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/settings.png")).ok();
+        return;
+    }
     if std::env::var_os("SHOT_ARRANGE_TRACE").is_some() {
         // arrange mode: frames drawn in one second, and their cost
         settle(app, 400);

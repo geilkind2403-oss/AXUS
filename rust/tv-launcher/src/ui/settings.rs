@@ -515,8 +515,9 @@ impl Screen for Settings {
         if self.section == 9 && !self.inside {
             match k {
                 Key::Back => return Nav::Pop,
-                Key::Up if self.item > 0 => self.item -= 1,
-                Key::Down if self.item + 1 < SECTIONS.len() => self.item += 1,
+                // round the ends: last ▼ goes to the top, first ▲ to the bottom
+                Key::Up => self.item = (self.item + SECTIONS.len() - 1) % SECTIONS.len(),
+                Key::Down => self.item = (self.item + 1) % SECTIONS.len(),
                 Key::Right | Key::Ok => return self.activate(cx),
                 _ => {}
             }
@@ -579,8 +580,8 @@ impl Screen for Settings {
                 self.inside = false;
                 self.item = section;
             }
-            Key::Up if self.item > 0 => self.item -= 1,
-            Key::Down if self.item + 1 < n => self.item += 1,
+            Key::Up if n > 0 => self.item = (self.item + n - 1) % n,
+            Key::Down if n > 0 => self.item = (self.item + 1) % n,
             Key::Ok => return self.activate(cx),
             _ => {}
         }
