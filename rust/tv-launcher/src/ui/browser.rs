@@ -37,115 +37,88 @@ fn mounted(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether a bind mount already has the expected source. Keeping this input
-/// setup mounted between browser launches avoids spawning several `umount`
-/// and `mount` processes every time YouTube (or another TV app) opens.
-fn bind_mount_matches(source: &Path, target: &Path) -> bool {
-    let source = source.canonicalize().unwrap_or(source.to_path_buf());
-    let target = target.canonicalize().unwrap_or(target.to_path_buf());
-    std::fs::read_to_string("/proc/mounts")
-        .map(|mounts| {
-            mounts.lines().any(|line| {
-                let mut fields = line.split_whitespace();
-                let mounted_source = fields.next().unwrap_or("").replace("\\040", " ");
-                let mounted_target = fields.next().unwrap_or("").replace("\\040", " ");
-                Path::new(&mounted_source) == source && Path::new(&mounted_target) == target
-            })
-        })
-        .unwrap_or(false)
-}
-
 /// Hide host keyboards/remotes from Cog, then expose only the launcher's
 /// virtual keyboard. This lets the launcher take focus for its PiP menu while
 /// the browser keeps its DRM primary plane and video playback running.
 fn isolate_browser_input(root: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let host_event = crate::platform::uinput::launcher_event_path()
         .ok_or_else(|| "Virtuelle Fernbedienung in /sys/class/input nicht gefunden".to_string())?;
-    let input_dir = root.join("dev/input");
-    let empty_dir = root.join("input-empty");
-    std::fs::create_dir_all(&input_dir).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&empty_dir).map_err(|e| e.to_string())?;
-
     let Some(event_name) = host_event.file_name() else {
         return Err("Name des virtuellen Eingabegeräts fehlt".into());
     };
+    let rdev = std::fs::metadata(&host_event)
+        .map_err(|e| format!("{}: {e}", host_event.display()))?
+        .rdev();
+    let input_dir = root.join("dev/input");
+    let _ = std::fs::create_dir_all(&input_dir);
     let chroot_event = input_dir.join(event_name);
+    let canon = |p: &Path| {
+        p.canonicalize()
+            .unwrap_or_else(|_| p.to_path_buf())
+            .to_string_lossy()
+            .into_owned()
+    };
+    let input_mount = canon(&input_dir);
+    // the old way left an "input-empty" folder with mounts on it
+    let empty_mount = canon(&root.join("input-empty"));
+    let mounts_below = |base: &str| -> Vec<(String, String)> {
+        std::fs::read_to_string("/proc/mounts")
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let mut f = line.split_whitespace();
+                let _src = f.next()?;
+                let target = f.next()?.replace("\\040", " ");
+                let fstype = f.next()?.to_string();
+                Some((target, fstype))
+            })
+            .filter(|(t, _)| t == base || t.starts_with(&(base.to_string() + "/")))
+            .collect()
+    };
 
-    // The launcher keeps its uinput device alive. When both bind mounts still
-    // point at that device and the empty directory, the chroot is already
-    // isolated correctly; skip the costly mount command round trip.
-    let input_mount = input_dir
-        .canonicalize()
-        .unwrap_or_else(|_| input_dir.clone())
-        .to_string_lossy()
-        .into_owned();
-    let input_mounts: Vec<String> = std::fs::read_to_string("/proc/mounts")
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .map(|path| {
-            Path::new(&path.replace("\\040", " "))
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(path.replace("\\040", " ")))
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|path| path == &input_mount || path.starts_with(&(input_mount.clone() + "/")))
-        .collect();
-    if input_mounts.len() == 2
-        && bind_mount_matches(&empty_dir, &input_dir)
-        && bind_mount_matches(&host_event, &chroot_event)
+    // Already right: our own tmpfs on dev/input and the device node in it
+    // with the launcher's current device number.
+    let here = mounts_below(&input_mount);
+    if here.len() == 1
+        && here[0].1 == "tmpfs"
+        && std::fs::metadata(&chroot_event)
+            .map(|m| m.file_type().is_char_device() && m.rdev() == rdev)
+            .unwrap_or(false)
     {
         return Ok(());
     }
 
-    // Mounts persist after Cog exits and after a launcher restart. Tear down
-    // only the chroot's input subtree (deepest first), never host /dev/input.
-    let mut old_mounts: Vec<String> = std::fs::read_to_string("/proc/mounts")
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .map(|path| {
-            let path = path.replace("\\040", " ");
-            Path::new(&path)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(path))
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|path| path == &input_mount || path.starts_with(&(input_mount.clone() + "/")))
+    // Tear down what is there (deepest first, lazily: a busy one goes when
+    // its last user does), including leftovers of the old bind-mount setup.
+    let mut old: Vec<String> = mounts_below(&input_mount)
+        .into_iter()
+        .chain(mounts_below(&empty_mount))
+        .map(|(t, _)| t)
         .collect();
-    old_mounts.sort_by_key(|path| std::cmp::Reverse(path.len()));
-    for mount in old_mounts {
-        let status = Command::new("umount")
-            .arg(&mount)
-            .status()
-            .map_err(|e| format!("umount {mount}: {e}"))?;
-        if !status.success() {
-            return Err(format!(
-                "Eingabe-Mount im Browser konnte nicht entfernt werden: {mount}"
-            ));
-        }
+    old.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    old.dedup();
+    for m in old {
+        let _ = Command::new("umount").arg("-l").arg(&m).status();
     }
 
-    for entry in std::fs::read_dir(&empty_dir)
-        .map_err(|e| e.to_string())?
-        .flatten()
-    {
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-    let bind = Command::new("mount")
-        .args(["--bind"])
-        .arg(&empty_dir)
+    // The chroot's /dev is a recursive bind of the host's: with shared
+    // propagation a mount on its input folder would also land on the host's
+    // /dev/input (and the launcher's own remotes would vanish). Private first.
+    let dev_dir = root.join("dev");
+    let _ = Command::new("mount").arg("--make-rprivate").arg(&dev_dir).status();
+
+    // A small tmpfs that only holds the launcher's remote: Cog sees no
+    // physical keyboard, so the launcher keeps the real remote for its menu.
+    let ok = Command::new("mount")
+        .args(["-t", "tmpfs", "-o", "mode=755,size=64k", "tmpfs"])
         .arg(&input_dir)
         .status()
-        .map_err(|e| e.to_string())?;
-    if !bind.success() {
-        return Err("Leeres Eingabeverzeichnis für Cog konnte nicht eingebunden werden".into());
+        .map_err(|e| e.to_string())?
+        .success();
+    if !ok {
+        return Err("Eingabeverzeichnis für den Browser konnte nicht angelegt werden".into());
     }
-
     if !crate::platform::uinput::wait_until_tagged(
         &host_event,
         std::time::Duration::from_millis(1500),
@@ -154,15 +127,14 @@ fn isolate_browser_input(root: &Path) -> Result<(), String> {
             "Die virtuelle Fernbedienung wurde nicht als Tastatur erkannt. Der Browser wurde zum Schutz vor einer nicht bedienbaren Ansicht nicht gestartet.".into(),
         );
     }
-    std::fs::File::create(&chroot_event).map_err(|e| format!("{}: {e}", chroot_event.display()))?;
-    let bind = Command::new("mount")
-        .args(["--bind"])
-        .arg(&host_event)
-        .arg(&chroot_event)
-        .status()
+    let c_path = std::ffi::CString::new(chroot_event.to_string_lossy().as_bytes())
         .map_err(|e| e.to_string())?;
-    if !bind.success() {
-        return Err("Virtuelle Fernbedienung konnte Cog nicht bereitgestellt werden".into());
+    let r = unsafe { libc::mknod(c_path.as_ptr(), libc::S_IFCHR | 0o660, rdev as libc::dev_t) };
+    if r != 0 {
+        return Err(format!(
+            "Virtuelle Fernbedienung konnte Cog nicht bereitgestellt werden: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     crate::log("Browser-Eingabe isoliert: Cog empfängt Launcher-Fernbedienung, nicht die physischen Geräte");
     Ok(())

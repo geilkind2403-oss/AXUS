@@ -713,7 +713,6 @@ impl Kms {
                 }
             }
         }
-        let total: usize = jobs.iter().map(|j| j.2).sum();
         // Measured on the Pi: several cores do not copy into the scanout
         // buffer faster (the memory bus is the limit); a whole frame as one
         // copy was quickest (10 ms against 12 ms split up).
