@@ -110,13 +110,15 @@ pub struct Release {
 }
 
 impl Release {
-    /// "Jenna Ortega": from the release title, else from the version number
+    /// "Jenna": the first name from the release title, else from the version
+    /// number (codenames are first names only)
     pub fn codename(&self) -> String {
         let from_title = self
             .name
             .strip_prefix(&self.tag)
-            .map(|r| r.trim_start_matches(['-', ' ', '·']).replace('-', " "))
-            .filter(|r| !r.trim().is_empty());
+            .map(|r| r.trim_start_matches(['-', ' ', '·']))
+            .and_then(|r| r.split(['-', ' ']).find(|w| !w.is_empty()))
+            .map(str::to_string);
         from_title.unwrap_or_else(|| codename(&self.tag).to_string())
     }
     /// "0.0.3.7" for "v0.0.3.7"
@@ -134,9 +136,10 @@ pub fn codename(version: &str) -> &'static str {
     let v = version.trim_start_matches('v');
     let line: Vec<&str> = v.splitn(4, ['.', '+']).collect();
     match line.get(2).copied().unwrap_or("") {
-        "1" => "Adriana Lima",
-        "2" => "Madison Beer",
-        "3" => "Jenna Ortega",
+        "1" => "Adriana",
+        "2" => "Madison",
+        "3" => "Jenna",
+        "4" => "Sydney",
         _ => "",
     }
 }
@@ -160,7 +163,7 @@ pub fn running_version() -> String {
     four_part(env!("CARGO_PKG_VERSION"))
 }
 
-/// The name of the running version, e.g. "Jenna Ortega".
+/// The name of the running version, e.g. "Jenna".
 pub fn running_codename() -> &'static str {
     codename(env!("CARGO_PKG_VERSION"))
 }
@@ -432,11 +435,12 @@ mod tests {
 
     #[test]
     fn codenames_by_line() {
-        assert_eq!(codename("0.0.1"), "Adriana Lima");
-        assert_eq!(codename("v0.0.1.1"), "Adriana Lima");
-        assert_eq!(codename("0.0.2"), "Madison Beer");
-        assert_eq!(codename("0.0.3+7"), "Jenna Ortega");
-        assert_eq!(codename("v0.0.3.7"), "Jenna Ortega");
+        assert_eq!(codename("0.0.1"), "Adriana");
+        assert_eq!(codename("v0.0.1.1"), "Adriana");
+        assert_eq!(codename("0.0.2"), "Madison");
+        assert_eq!(codename("0.0.3+7"), "Jenna");
+        assert_eq!(codename("v0.0.3.7"), "Jenna");
+        assert_eq!(codename("v0.0.4.0"), "Sydney");
         assert_eq!(codename("0.0.9"), "");
     }
 
@@ -451,9 +455,10 @@ mod tests {
 
     #[test]
     fn codename_comes_from_the_release_title() {
-        assert_eq!(rel("v0.0.3.7", "v0.0.3.7-Jenna-Ortega").codename(), "Jenna Ortega");
-        assert_eq!(rel("v0.0.4", "v0.0.4-Some-New-Name").codename(), "Some New Name");
+        assert_eq!(rel("v0.0.3.7", "v0.0.3.7-Jenna-Ortega").codename(), "Jenna");
+        assert_eq!(rel("v0.0.4.0", "v0.0.4.0-Sydney").codename(), "Sydney");
+        
         // no name in the title: from the version line
-        assert_eq!(rel("v0.0.2", "v0.0.2").codename(), "Madison Beer");
+        assert_eq!(rel("v0.0.2", "v0.0.2").codename(), "Madison");
     }
 }
