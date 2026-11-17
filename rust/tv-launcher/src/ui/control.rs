@@ -759,6 +759,13 @@ impl Screen for Control {
             });
             self.full_redraw = true;
         }
+        // Over a film or the browser the menu plane must be see-through
+        // everywhere but the menu: an old picture left in it (Home's
+        // wallpaper) covered the browser, which then looked frozen.
+        if self.over_video && self.full_redraw {
+            c.pm.data_mut().fill(0);
+            c.mark_damage_rect(0.0, 0.0, crate::gfx::W as f32, crate::gfx::H as f32);
+        }
         // Home behind it (main.rs has just drawn it, sharp, when we asked)
         let minute = crate::app::local_hms().1;
         let fresh_backdrop = self.needs_backdrop();

@@ -1375,6 +1375,30 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         return;
     }
+    if std::env::var_os("SHOT_ARRANGE_TRACE").is_some() {
+        // arrange mode: frames drawn in one second, and their cost
+        settle(app, 400);
+        app.key(Key::LongOk);
+        let t0 = Instant::now();
+        let (mut n, mut total, mut worst) = (0, 0.0f64, 0.0f64);
+        let mut last = Instant::now();
+        while t0.elapsed() < Duration::from_secs(1) {
+            let now = Instant::now();
+            ui::set_frame_dt(now.duration_since(last).as_secs_f32());
+            last = now;
+            let f = Instant::now();
+            if app.frame() {
+                let ms = f.elapsed().as_secs_f64() * 1000.0;
+                n += 1;
+                total += ms;
+                worst = worst.max(ms);
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        log(&format!("Anordnen: {n} Bilder in 1 s, Schnitt {:.1} ms, max {worst:.1} ms", total / n.max(1) as f64));
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/arrange.png")).ok();
+        return;
+    }
     if std::env::var_os("SHOT_APPS_OPEN_TRACE").is_some() {
         // frame times from Home's App-Kreis button into the wheel
         app.key(Key::Down);

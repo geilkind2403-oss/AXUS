@@ -24,6 +24,8 @@ pub struct Home {
     last_focus_rect: Option<(f32, f32, f32, f32)>,
     /// the arrange-mode outlines are on the kept picture (wipe them next frame)
     edit_drawn: bool,
+    /// when the arrange outlines were last drawn (they pulse at 20 fps)
+    edit_tick: Option<Instant>,
     /// which item the focus frame was last drawn for (redraw only on change)
     focus_drawn: Option<usize>,
     orb: Orb,
@@ -129,6 +131,7 @@ impl Home {
             news_overlay_key: None,
             last_focus_rect: None,
             edit_drawn: false,
+            edit_tick: None,
             focus_drawn: None,
             orb: Orb::new(),
             clap: None,
@@ -212,6 +215,8 @@ impl Screen for Home {
 
     fn key(&mut self, k: Key, cx: &mut Ctx) -> Nav {
         let f = self.focus;
+        // a key in arrange mode shows its result at once
+        self.edit_tick = None;
         if k == Key::LongOk {
             self.editing = !self.editing;
             self.moving = None;
@@ -441,10 +446,16 @@ impl Screen for Home {
             // Arrange mode draws pulsing outlines over every tile: they are
             // wiped with the whole base picture (also once after it ends),
             // or they pile up frame by frame and stay.
+            // the outlines only pulse: 20 pictures a second are plenty, and
+            // each is a whole-screen restore (60 made arranging sluggish)
+            let edit_due = self.editing
+                && self
+                    .edit_tick
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(50));
             if force_restore
                 || c.full_base_restore_required()
-                || self.editing
-                || self.edit_drawn
+                || edit_due
+                || (self.edit_drawn && !self.editing)
             {
                 c.restore_image(base);
                 self.last_focus_rect = None;
@@ -521,22 +532,29 @@ impl Screen for Home {
             }
         }
         self.focus_drawn = Some(self.focus);
-        if let Some(base) = self.base_image.as_ref() {
+        // in arrange mode the hint text runs where the orb sits
+        if let Some(base) = self.base_image.as_ref().filter(|_| !self.editing) {
             self.orb
                 .tick(c, base, self.focus == 8, base_restored || focus_dirty);
         }
-        if self.editing {
+        if self.editing && base_restored {
             draw_edit_pulse(
                 c,
                 self.edit_started.unwrap_or_else(Instant::now),
                 self.moving,
                 &self.order,
             );
+            self.edit_tick = Some(Instant::now());
         }
         if base_restored {
             // The full base is already drawn. Raster the small dynamic status,
             // headline and focus overlay once without another full worker pass.
-            c.finish_pending();
+            if self.editing {
+                // the outlines cover the whole screen: all cores
+                c.finish_pending_damage();
+            } else {
+                c.finish_pending();
+            }
         } else {
             c.finish_pending_damage();
         }
