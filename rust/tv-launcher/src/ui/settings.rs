@@ -900,7 +900,7 @@ impl Screen for Settings {
                 ));
                 rows.push((
                     "Versionsliste neu laden".into(),
-                    format!("läuft: {} · {}", env!("CARGO_PKG_VERSION"), crate::updater::running_codename()),
+                    format!("läuft: {} · {}", crate::updater::running_version(), crate::updater::running_codename()),
                 ));
             }
         }
@@ -1470,7 +1470,7 @@ fn draw_settings_context(
                 .load_1m
                 .map(|v| format!("{v:.2}"))
                 .unwrap_or_else(|| "–".into()),
-            format!("{} {}", env!("CARGO_PKG_VERSION"), crate::updater::running_codename()),
+            format!("{} {}", crate::updater::running_version(), crate::updater::running_codename()),
             stats.kernel,
             stats
                 .cpu_mhz

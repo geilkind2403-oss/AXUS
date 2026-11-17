@@ -82,7 +82,7 @@ pub fn start() {
         let _ = writeln!(
             out,
             "START TV Launcher {} Build {}",
-            env!("CARGO_PKG_VERSION"),
+            crate::updater::running_version(),
             crate::BUILD
         );
         *g = Some(Rec {
@@ -387,7 +387,7 @@ fn summarize(raw: &str) -> String {
     let _ = writeln!(
         s,
         "MESSBERICHT TV Launcher {} Build {}\n",
-        env!("CARGO_PKG_VERSION"),
+        crate::updater::running_version(),
         crate::BUILD
     );
     let _ = writeln!(

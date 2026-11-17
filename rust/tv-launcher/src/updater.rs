@@ -125,9 +125,7 @@ impl Release {
     }
     /// whether this is the version running now ("0.0.3+7" is v0.0.3.7)
     pub fn installed(&self) -> bool {
-        let running = env!("CARGO_PKG_VERSION").replace('+', ".");
-        let running = running.strip_suffix(".0").unwrap_or(&running);
-        self.version() == running
+        four_part(self.version()) == running_version()
     }
 }
 
@@ -141,6 +139,25 @@ pub fn codename(version: &str) -> &'static str {
         "3" => "Jenna Ortega",
         _ => "",
     }
+}
+
+/// A version always in four parts: "0.0.3+7" and "v0.0.3.7" are "0.0.3.7",
+/// "v0.0.1" is "0.0.1.0".
+pub fn four_part(v: &str) -> String {
+    let mut parts: Vec<&str> = v
+        .trim_start_matches('v')
+        .split(['.', '+'])
+        .filter(|p| !p.is_empty())
+        .collect();
+    while parts.len() < 4 {
+        parts.push("0");
+    }
+    parts.join(".")
+}
+
+/// The running version, four parts ("0.0.3.8").
+pub fn running_version() -> String {
+    four_part(env!("CARGO_PKG_VERSION"))
 }
 
 /// The name of the running version, e.g. "Jenna Ortega".
@@ -421,6 +438,15 @@ mod tests {
         assert_eq!(codename("0.0.3+7"), "Jenna Ortega");
         assert_eq!(codename("v0.0.3.7"), "Jenna Ortega");
         assert_eq!(codename("0.0.9"), "");
+    }
+
+    #[test]
+    fn versions_have_four_parts() {
+        assert_eq!(four_part("0.0.3+8"), "0.0.3.8");
+        assert_eq!(four_part("v0.0.3.7"), "0.0.3.7");
+        assert_eq!(four_part("v0.0.1"), "0.0.1.0");
+        assert_eq!(four_part("0.0.2"), "0.0.2.0");
+        assert_eq!(four_part("v0.0.2.0"), "0.0.2.0");
     }
 
     #[test]

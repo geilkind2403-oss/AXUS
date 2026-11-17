@@ -630,7 +630,7 @@ fn main() {
     let mut sleep_warned = false;
     log(&format!(
         "TV Launcher {} (Build {}) läuft · Handy: {}",
-        env!("CARGO_PKG_VERSION"),
+        crate::updater::running_version(),
         BUILD,
         app.cx.remote_url
     ));
