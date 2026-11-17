@@ -50,6 +50,9 @@ struct Rec {
 }
 
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
+/// Serializes log appends with a reset so a flush already in flight cannot
+/// recreate telemetry files after the user clears them.
+static FILES: Mutex<()> = Mutex::new(());
 
 fn stamp(out: &mut String) {
     let (h, m, s) = crate::app::local_hms();
@@ -94,14 +97,17 @@ pub fn start() {
     }
     let _ = std::thread::Builder::new()
         .name("perf-writer".into())
-        .spawn(|| loop {
-            std::thread::sleep(FLUSH);
-            flush();
+        .spawn(|| {
+            loop {
+                std::thread::sleep(FLUSH);
+                flush();
+            }
         });
 }
 
 /// Writes what was recorded so far to the file (also before an export).
 pub fn flush() {
+    let _files = FILES.lock().unwrap_or_else(|e| e.into_inner());
     let text = {
         let mut g = REC.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_mut() {
@@ -123,6 +129,43 @@ pub fn flush() {
     {
         let _ = f.write_all(text.as_bytes());
     }
+}
+
+/// Clears old in-memory samples and both saved report files. Recording then
+/// continues with fresh measurements for the next report.
+pub fn reset() -> Result<(), String> {
+    let _files = FILES.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = crate::app::data_dir();
+    let failure = clear_report_files(&dir)
+        .err()
+        .map(|error| error.to_string());
+    {
+        let mut g = REC.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = g.as_mut() {
+            r.out.clear();
+            r.last_key = None;
+            r.key_answered = true;
+            r.screen = "";
+            r.anim = None;
+            r.idle = None;
+            r.last_sys = Instant::now();
+            stamp(&mut r.out);
+            let _ = writeln!(r.out, "RESET performance data cleared; recording continues");
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+fn clear_report_files(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut failure = None;
+    for name in ["perf.log", "perf.log.1"] {
+        if let Err(error) = std::fs::remove_file(dir.join(name)) {
+            if error.kind() != std::io::ErrorKind::NotFound && failure.is_none() {
+                failure = Some(error);
+            }
+        }
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// A key press reached the launcher.
@@ -266,7 +309,11 @@ fn sys(out: &mut String) {
         .map(|kb| format!("{:.1}", kb / 1024.0))
         .unwrap_or_else(|_| "-".into());
     stamp(out);
-    let _ = writeln!(out, "SYS  temp={temp} rss={rss} threads={}", field("Threads:"));
+    let _ = writeln!(
+        out,
+        "SYS  temp={temp} rss={rss} threads={}",
+        field("Threads:")
+    );
 }
 
 /// The report for the phone: a summary of the slowest things, then all
@@ -304,7 +351,10 @@ fn summarize(raw: &str) -> String {
             anims.push((max, line));
             let e = screens.entry(screen).or_default();
             if let Some(frames) = rest.split('|').nth(1) {
-                for f in frames.split_whitespace().filter_map(|v| v.parse::<f32>().ok()) {
+                for f in frames
+                    .split_whitespace()
+                    .filter_map(|v| v.parse::<f32>().ok())
+                {
                     e.0 += 1;
                     e.1 += f as f64;
                     e.2 += (f > 16.7) as u64;
@@ -312,11 +362,19 @@ fn summarize(raw: &str) -> String {
                 }
             }
         } else if let Some(rest) = body.strip_prefix("OPEN ") {
-            if let Some(ms) = rest.split_whitespace().nth(1).and_then(|v| v.parse::<f32>().ok()) {
+            if let Some(ms) = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|v| v.parse::<f32>().ok())
+            {
                 opens.push((ms, line));
             }
         } else if let Some(rest) = body.strip_prefix("ANTW ") {
-            if let Some(ms) = rest.split_whitespace().nth(2).and_then(|v| v.parse::<f32>().ok()) {
+            if let Some(ms) = rest
+                .split_whitespace()
+                .nth(2)
+                .and_then(|v| v.parse::<f32>().ok())
+            {
                 answers.push((ms, line));
             }
         }
@@ -332,7 +390,10 @@ fn summarize(raw: &str) -> String {
         env!("CARGO_PKG_VERSION"),
         crate::BUILD
     );
-    let _ = writeln!(s, "== Animationen je Bereich (Bilder, Schnitt, über 16,7 ms, schlechtestes) ==");
+    let _ = writeln!(
+        s,
+        "== Animationen je Bereich (Bilder, Schnitt, über 16,7 ms, schlechtestes) =="
+    );
     for (name, (n, sum, over, worst)) in &screens {
         if *n > 0 {
             let _ = writeln!(
@@ -344,7 +405,10 @@ fn summarize(raw: &str) -> String {
         }
     }
     for (title, list) in [
-        ("== Langsamste Animationen (nach schlechtestem Bild) ==", &anims),
+        (
+            "== Langsamste Animationen (nach schlechtestem Bild) ==",
+            &anims,
+        ),
         ("== Langsamste Öffnungen (Taste bis erstes Bild) ==", &opens),
         ("== Langsamste Antworten auf Tasten ==", &answers),
     ] {
@@ -373,6 +437,25 @@ mod tests {
         assert!(s.contains("1 über 16,7 ms"), "{s}");
         assert!(s.contains("OPEN home>apps 420 ms"), "{s}");
         assert!(s.contains("ANTW Ok home 22.5 ms"), "{s}");
+    }
+
+    #[test]
+    fn reset_removes_current_and_rotated_reports() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("perf-reset-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("perf.log"), "old current data").unwrap();
+        std::fs::write(dir.join("perf.log.1"), "old rotated data").unwrap();
+
+        clear_report_files(&dir).unwrap();
+
+        assert!(!dir.join("perf.log").exists());
+        assert!(!dir.join("perf.log.1").exists());
+        clear_report_files(&dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
