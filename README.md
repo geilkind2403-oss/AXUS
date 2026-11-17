@@ -3,7 +3,7 @@
 ### **A**ccelerated e**X**perience for **U**r **S**creen
 
 A TV launcher for the Raspberry Pi that starts fast, draws straight to the screen and stays
-quiet when nothing is happening. Remote first, browser optional, no Kodi, no desktop.
+quiet when nothing is happening. Remote first, browser optional, no desktop.
 
 ```
    ┌──────────────────────────────────────────┐
