@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const INSTALLED_BINARY: &str = "/storage/tv-launcher/tv-launcher";
-const RELEASE_API: &str = "https://api.github.com/repos/geilkind2403-oss/tv-launcher/releases/latest";
+/// The repository was renamed from tv-launcher to AXUS; GitHub redirects the
+/// old name, but the new one is asked first.
+const REPOS: [&str; 2] = ["geilkind2403-oss/AXUS", "geilkind2403-oss/tv-launcher"];
 const ASSET_NAME: &str = "tv-launcher-update.tar.gz";
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -29,11 +31,8 @@ pub fn stage_github_update() -> Result<UpdateInfo, String> {
         return Err("Updates lassen sich nur auf der installierten Pi-Version anwenden".into());
     }
 
-    let token = std::env::var("TV_UPDATE_TOKEN")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let release_response = github_get(RELEASE_API, token.as_deref(), "application/vnd.github+json")
+    let token = token();
+    let (repo, release_response) = repo_get("releases/latest", token.as_deref())
         .map_err(|e| {
             if e.contains("404") && token.is_none() {
                 "GitHub liefert keine Version. Bei einem privaten Repo TV_UPDATE_TOKEN (Contents: Read-only) in /storage/tv-launcher/env eintragen.".into()
@@ -58,11 +57,35 @@ pub fn stage_github_update() -> Result<UpdateInfo, String> {
         .and_then(|asset| asset["id"].as_u64())
         .ok_or_else(|| format!("Release {tag} enthält {ASSET_NAME} nicht"))?;
 
-    let asset_url = format!(
-        "https://api.github.com/repos/geilkind2403-oss/tv-launcher/releases/assets/{asset_id}"
-    );
-    let archive = github_get(&asset_url, token.as_deref(), "application/octet-stream")
-        .map_err(|e| format!("Update {tag} konnte nicht geladen werden: {e}"))?;
+    stage_asset(repo, asset_id, tag, token.as_deref())
+}
+
+fn token() -> Option<String> {
+    std::env::var("TV_UPDATE_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// GET api.github.com/repos/<repo>/<path>, the new repository name first.
+fn repo_get(path: &str, token: Option<&str>) -> Result<(&'static str, Vec<u8>), String> {
+    let mut last = String::new();
+    for repo in REPOS {
+        let url = format!("https://api.github.com/repos/{repo}/{path}");
+        match github_get(&url, token, "application/vnd.github+json") {
+            Ok(b) => return Ok((repo, b)),
+            Err(e) if e.contains("404") => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
+}
+
+/// Downloads one release's package, verifies it and stages it.
+fn stage_asset(repo: &str, asset_id: u64, tag: &str, token: Option<&str>) -> Result<UpdateInfo, String> {
+    let asset_url = format!("https://api.github.com/repos/{repo}/releases/assets/{asset_id}");
+    let archive = github_get(&asset_url, token, "application/octet-stream")
+        .map_err(|e| format!("Version {tag} konnte nicht geladen werden: {e}"))?;
     if archive.is_empty() || archive.len() as u64 > MAX_PACKAGE_BYTES {
         return Err("GitHub-Update hat eine unerwartete Dateigröße".into());
     }
@@ -73,6 +96,127 @@ pub fn stage_github_update() -> Result<UpdateInfo, String> {
     let result = validate_and_stage(&package);
     let _ = fs::remove_file(&package);
     result
+}
+
+/// One published version, as kept in the release cache.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Release {
+    pub tag: String,
+    /// the release title, e.g. "v0.0.3.7-Jenna-Ortega"
+    pub name: String,
+    pub date: String,
+    pub repo: String,
+    pub asset_id: u64,
+}
+
+impl Release {
+    /// "Jenna Ortega": from the release title, else from the version number
+    pub fn codename(&self) -> String {
+        let from_title = self
+            .name
+            .strip_prefix(&self.tag)
+            .map(|r| r.trim_start_matches(['-', ' ', '·']).replace('-', " "))
+            .filter(|r| !r.trim().is_empty());
+        from_title.unwrap_or_else(|| codename(&self.tag).to_string())
+    }
+    /// "0.0.3.7" for "v0.0.3.7"
+    pub fn version(&self) -> &str {
+        self.tag.trim_start_matches('v')
+    }
+    /// whether this is the version running now ("0.0.3+7" is v0.0.3.7)
+    pub fn installed(&self) -> bool {
+        let running = env!("CARGO_PKG_VERSION").replace('+', ".");
+        let running = running.strip_suffix(".0").unwrap_or(&running);
+        self.version() == running
+    }
+}
+
+/// The celebrity name of each 0.0.X line (like Android's sweets).
+pub fn codename(version: &str) -> &'static str {
+    let v = version.trim_start_matches('v');
+    let line: Vec<&str> = v.splitn(4, ['.', '+']).collect();
+    match line.get(2).copied().unwrap_or("") {
+        "1" => "Adriana Lima",
+        "2" => "Madison Beer",
+        "3" => "Jenna Ortega",
+        _ => "",
+    }
+}
+
+/// The name of the running version, e.g. "Jenna Ortega".
+pub fn running_codename() -> &'static str {
+    codename(env!("CARGO_PKG_VERSION"))
+}
+
+fn release_cache() -> PathBuf {
+    crate::app::data_dir().join("releases.json")
+}
+
+/// The versions saved by the last refresh (newest first); instant, offline.
+pub fn cached_releases() -> Vec<Release> {
+    fs::read(release_cache())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Asks GitHub for every release with an update package and saves the list.
+pub fn refresh_releases() -> Result<Vec<Release>, String> {
+    let token = token();
+    let (repo, body) = repo_get("releases?per_page=100", token.as_deref())
+        .map_err(|e| format!("Versionsliste nicht geladen: {e}"))?;
+    let list: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("GitHub-Antwort ist ungültig: {e}"))?;
+    let mut out = Vec::new();
+    for r in list.as_array().into_iter().flatten() {
+        if r["draft"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let tag = r["tag_name"].as_str().unwrap_or("");
+        // only the 0.0.x line: every one of them carries the self-updater
+        // (it came with the very first), so from any of them "Software-Update
+        // suchen" leads back to the newest version
+        if !tag.starts_with("v0.") {
+            continue;
+        }
+        let Some(asset_id) = r["assets"].as_array().and_then(|a| {
+            a.iter()
+                .find(|x| x["name"].as_str() == Some(ASSET_NAME))
+                .and_then(|x| x["id"].as_u64())
+        }) else {
+            continue;
+        };
+        out.push(Release {
+            tag: tag.to_string(),
+            name: r["name"].as_str().unwrap_or(tag).to_string(),
+            date: r["published_at"].as_str().unwrap_or("").chars().take(10).collect(),
+            repo: repo.to_string(),
+            asset_id,
+        });
+    }
+    out.sort_by(|a, b| b.date.cmp(&a.date).then(b.tag.cmp(&a.tag)));
+    if out.is_empty() {
+        return Err("GitHub nennt keine Version mit Update-Paket".into());
+    }
+    let dir = crate::app::data_dir();
+    let _ = fs::create_dir_all(&dir);
+    if let Ok(b) = serde_json::to_vec(&out) {
+        let tmp = dir.join("releases.json.tmp");
+        if fs::write(&tmp, b).is_ok() {
+            let _ = fs::rename(tmp, release_cache());
+        }
+    }
+    Ok(out)
+}
+
+/// Stages a chosen (older or newer) version; installed like an update.
+pub fn stage_release(r: &Release) -> Result<UpdateInfo, String> {
+    let running = std::env::current_exe().map_err(|e| format!("Launcher-Pfad: {e}"))?;
+    if running != Path::new(INSTALLED_BINARY) {
+        return Err("Versionen lassen sich nur auf der installierten Pi-Version wechseln".into());
+    }
+    let token = token();
+    stage_asset(&r.repo, r.asset_id, &r.tag, token.as_deref())
 }
 
 fn github_get(url: &str, token: Option<&str>, accept: &str) -> Result<Vec<u8>, String> {
@@ -252,5 +396,38 @@ pub fn apply_staged_update() -> Result<(), String> {
         Ok(())
     } else {
         Err("Update-Dienst konnte nicht gestartet werden".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rel(tag: &str, name: &str) -> Release {
+        Release {
+            tag: tag.into(),
+            name: name.into(),
+            date: String::new(),
+            repo: REPOS[0].into(),
+            asset_id: 1,
+        }
+    }
+
+    #[test]
+    fn codenames_by_line() {
+        assert_eq!(codename("0.0.1"), "Adriana Lima");
+        assert_eq!(codename("v0.0.1.1"), "Adriana Lima");
+        assert_eq!(codename("0.0.2"), "Madison Beer");
+        assert_eq!(codename("0.0.3+7"), "Jenna Ortega");
+        assert_eq!(codename("v0.0.3.7"), "Jenna Ortega");
+        assert_eq!(codename("0.0.9"), "");
+    }
+
+    #[test]
+    fn codename_comes_from_the_release_title() {
+        assert_eq!(rel("v0.0.3.7", "v0.0.3.7-Jenna-Ortega").codename(), "Jenna Ortega");
+        assert_eq!(rel("v0.0.4", "v0.0.4-Some-New-Name").codename(), "Some New Name");
+        // no name in the title: from the version line
+        assert_eq!(rel("v0.0.2", "v0.0.2").codename(), "Madison Beer");
     }
 }

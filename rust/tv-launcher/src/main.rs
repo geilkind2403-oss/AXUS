@@ -1381,6 +1381,24 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         gfx::save_png(&app.canvas.pm, &format!("{dir}/news.png")).ok();
         return;
     }
+    if std::env::var_os("SHOT_SETTINGS_SYSTEM").is_some() {
+        // Settings > System, focus on "Version wählen", one ▶ step
+        app.stack.push(Box::new(ui::settings::Settings::new(&app.cx)));
+        app.canvas.invalidate();
+        settle(app, 300);
+        for k in [Key::Up, Key::Ok] {
+            app.key(k);
+            settle(app, 200);
+        }
+        for _ in 0..7 {
+            app.key(Key::Down);
+            settle(app, 120);
+        }
+        app.key(Key::Right);
+        settle(app, 400);
+        gfx::save_png(&app.canvas.pm, &format!("{dir}/settings-system.png")).ok();
+        return;
+    }
     if std::env::var_os("SHOT_SETTINGS_TRACE").is_some() {
         // Settings: frame cost per key at 60 Hz -- main list down, into a
         // section, down its rows, back out

@@ -43,6 +43,12 @@ pub struct Settings {
     bt_requested: bool,
     busy: Slot<Result<String, String>>,
     update: Slot<Result<crate::updater::UpdateInfo, String>>,
+    /// every published version, from the saved list (GitHub only on request)
+    releases: Slot<Result<Vec<crate::updater::Release>, String>>,
+    /// the version shown in "Version wählen"
+    pick: usize,
+    /// a chosen version being downloaded; asks to install once it is ready
+    switching: Option<crate::updater::Release>,
     kb: Option<(Keyboard, Edit)>,
     confirm: Option<usize>,
     native_view: view::Animation,
@@ -68,6 +74,16 @@ impl Settings {
             bt_requested: false,
             busy: Slot::empty(),
             update: Slot::empty(),
+            releases: {
+                let s = Slot::empty();
+                let cached = crate::updater::cached_releases();
+                if !cached.is_empty() {
+                    s.set(Ok(cached));
+                }
+                s
+            },
+            pick: 0,
+            switching: None,
             kb: None,
             confirm: None,
             native_view: view::Animation::default(),
@@ -86,7 +102,7 @@ impl Settings {
             5 => 2,
             6 => 1,
             7 => 1,
-            8 => 7,
+            8 => 9,
             _ => {
                 let _ = cx;
                 0
@@ -269,6 +285,28 @@ impl Settings {
                 cx.toast("Messbericht gespeichert – am Handy herunterladen");
             }
             (8, 6) => self.confirm = Some(6),
+            (8, 7) => match self.releases.get() {
+                Some(Ok(list)) if !list.is_empty() => {
+                    let r = list[self.pick.min(list.len() - 1)].clone();
+                    if r.installed() {
+                        cx.toast(format!("{} läuft bereits", r.tag));
+                    } else {
+                        cx.toast(format!("Lade {} · {} …", r.tag, r.codename()));
+                        let staged = r.clone();
+                        self.update = load(&cx.tx, move || crate::updater::stage_release(&staged));
+                        self.switching = Some(r);
+                    }
+                }
+                _ => {
+                    self.releases = load(&cx.tx, crate::updater::refresh_releases);
+                    cx.toast("Versionsliste wird von GitHub geladen …");
+                }
+            },
+            (8, 8) => {
+                self.releases = load(&cx.tx, crate::updater::refresh_releases);
+                self.pick = 0;
+                cx.toast("Versionsliste wird von GitHub geladen …");
+            }
             (8, 4) => match self.update.get() {
                 Some(Ok(info)) if !info.current => self.confirm = Some(3),
                 Some(Ok(_)) => cx.toast("Die installierte Version ist bereits aktuell"),
@@ -324,6 +362,13 @@ impl Settings {
             list[((i + dir).rem_euclid(list.len() as i32)) as usize]
         };
         match (self.section, self.item) {
+            (8, 7) => {
+                let n = self.releases.get().and_then(Result::ok).map(|l| l.len()).unwrap_or(0);
+                if n > 0 {
+                    self.pick = ((self.pick as i32 + dir).rem_euclid(n as i32)) as usize;
+                }
+                return;
+            }
             (3, 2) => cx.cfg.livetv_max_h = step(&[576, 720, 1080], cx.cfg.livetv_max_h),
             (3, 3) => cx.cfg.start_livetv = !cx.cfg.start_livetv,
             (4, 0) => cx.cfg.screensaver_min = step(&[0, 5, 10, 30], cx.cfg.screensaver_min),
@@ -435,6 +480,20 @@ impl Screen for Settings {
         self.kb.is_some() || self.native_view.moving()
     }
     fn poll(&mut self, cx: &mut Ctx) -> Nav {
+        if self.switching.is_some() && self.update.is_set() {
+            match self.update.get() {
+                Some(Ok(info)) if !info.current => self.confirm = Some(7),
+                Some(Ok(_)) => {
+                    self.switching = None;
+                    cx.toast("Diese Version läuft bereits");
+                }
+                Some(Err(e)) => {
+                    self.switching = None;
+                    cx.toast(e);
+                }
+                None => {}
+            }
+        }
         if self.stats_pending && self.system_stats.is_set() {
             self.stats_pending = false;
             self.stats_updated = Some(std::time::Instant::now());
@@ -507,6 +566,7 @@ impl Screen for Settings {
             }
             self.confirm = None;
             self.forget = None;
+            self.switching = None;
             return Nav::None;
         }
         if k == Key::Home {
@@ -558,7 +618,8 @@ impl Screen for Settings {
                 if (self.section == 3 && self.item >= 2)
                     || (self.section == 4
                         && (self.item <= 2 || self.item == 4 || self.item == 5))
-                    || (self.section == 6 && self.item == 0) =>
+                    || (self.section == 6 && self.item == 0)
+                    || (self.section == 8 && self.item == 7) =>
             {
                 self.cycle(cx, if k == Key::Left { -1 } else { 1 });
             }
@@ -821,6 +882,26 @@ impl Screen for Settings {
                     format!("Handy: {}/messbericht", cx.remote_url.trim_end_matches('/')),
                 ));
                 rows.push(("Messdaten zurücksetzen".into(), String::new()));
+                rows.push((
+                    "Version wählen".into(),
+                    match self.releases.get() {
+                        Some(Ok(list)) if !list.is_empty() => {
+                            let r = &list[self.pick.min(list.len() - 1)];
+                            format!(
+                                "‹ {} · {}{} ›",
+                                r.tag,
+                                r.codename(),
+                                if r.installed() { " · läuft" } else { "" }
+                            )
+                        }
+                        Some(Err(e)) => e,
+                        _ => "OK lädt die Versionsliste".into(),
+                    },
+                ));
+                rows.push((
+                    "Versionsliste neu laden".into(),
+                    format!("läuft: {} · {}", env!("CARGO_PKG_VERSION"), crate::updater::running_codename()),
+                ));
             }
         }
         let n_wifi = self.wifi.get().map(|v| v.len()).unwrap_or(0);
@@ -883,6 +964,13 @@ impl Screen for Settings {
                         "„{}“ vergessen und trennen?",
                         self.forget.as_ref().map(|w| w.name.as_str()).unwrap_or("")
                     );
+                    &update_question
+                }
+                7 => {
+                    update_question = match &self.switching {
+                        Some(r) => format!("{} · {} installieren?", r.tag, r.codename()),
+                        None => "Diese Version installieren?".into(),
+                    };
                     &update_question
                 }
                 6 => {
@@ -1041,6 +1129,12 @@ fn setting_help(section: usize, item: usize) -> &'static str {
         }
         (8, 5) => {
             "Der Messbericht enthält Laufzeiten und Speicherwerte, aber keine WLAN-Passwörter."
+        }
+        (8, 7) => {
+            "◀▶ wählt eine Version, OK installiert sie. Zurück zur neuesten: „Software-Update suchen“."
+        }
+        (8, 8) => {
+            "Fragt GitHub nach allen Versionen und speichert die Liste. Danach öffnet „Version wählen“ sie sofort, ohne Suche."
         }
         (8, 6) => {
             "Löscht gespeicherte Millisekunden- und Animationsmessungen auf dem Pi. Die Erfassung läuft danach mit einem frischen Bericht weiter."
@@ -1376,7 +1470,7 @@ fn draw_settings_context(
                 .load_1m
                 .map(|v| format!("{v:.2}"))
                 .unwrap_or_else(|| "–".into()),
-            env!("CARGO_PKG_VERSION"),
+            format!("{} {}", env!("CARGO_PKG_VERSION"), crate::updater::running_codename()),
             stats.kernel,
             stats
                 .cpu_mhz
