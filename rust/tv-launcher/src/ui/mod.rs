@@ -233,81 +233,89 @@ pub fn status(c: &mut Canvas, cx: &Ctx) {
     status_with_phone_accent(c, cx, Rgba::hex(0x75c9ff));
 }
 
-/// Draw the shared status capsule with a screen-specific remote-control tint.
-pub fn status_with_phone_accent(c: &mut Canvas, cx: &Ctx, phone_accent: Rgba) {
+/// The clock pill (time, network, phone remote) in the glass of Home's
+/// cards, at the same place on every screen: the fast menu opens below it.
+pub fn status_with_phone_accent(c: &mut Canvas, cx: &Ctx, _phone_accent: Rgba) {
+    clock_pill(c, cx, crate::gfx::W as f32 - PAD - 224.0, false);
+}
+
+/// The pill at `status_x` (224 px wide, at the top); `focused`: Home's
+/// gold ring when it is selected there.
+pub fn clock_pill(c: &mut Canvas, cx: &Ctx, status_x: f32, focused: bool) {
+    let y = 20.0;
+    home::header_glass(c, status_x, y, 224.0, 46.0, focused);
+
     let (hour, minute, _) = crate::app::local_hms();
-    let right = crate::gfx::W as f32 - PAD;
-    let (x, y, w, capsule_h) = (right - 284.0, 20.0, 284.0, 46.0);
-    c.rect(x, y, w, capsule_h, 23.0, Rgba::hex(0x23252c).alpha(0.94));
-    c.stroke_rect(x, y, w, capsule_h, 23.0, 1.0, color::BORDER.alpha(0.9));
     c.text(
         &format!("{hour:02}:{minute:02}"),
-        x + 18.0,
+        status_x + 12.0,
         y + 12.0,
-        19,
+        17,
         Weight::Semi,
-        color::TEXT,
+        if focused { home::GOLD } else { color::TEXT },
         Align::Left,
     );
     c.line(
-        &[(x + 82.0, y + 10.0), (x + 82.0, y + capsule_h - 10.0)],
+        &[(status_x + 63.0, y + 11.0), (status_x + 63.0, y + 35.0)],
         1.0,
-        color::BORDER.alpha(0.9),
+        Rgba(255, 244, 220, 34),
     );
     if let Some((ok, kind, name)) = cx.net.get() {
-        let state = if ok { Rgba::hex(0x59d39a) } else { color::RED };
-        c.circle(x + 99.0, y + capsule_h * 0.5, 3.2, state);
+        c.circle(
+            status_x + 77.0,
+            y + 23.0,
+            3.0,
+            if ok { Rgba::hex(0x59d39a) } else { color::RED },
+        );
         if ok {
             if kind == "wifi" {
-                icon_wifi(c, x + 119.0, y + capsule_h * 0.5 - 2.0, 17.0, color::TEXT)
+                icon_wifi(c, status_x + 94.0, y + 21.0, 16.0, color::TEXT);
             } else {
-                icon_ethernet(c, x + 119.0, y + capsule_h * 0.5, 17.0, color::TEXT)
+                icon_ethernet(c, status_x + 94.0, y + 23.0, 16.0, color::TEXT);
             }
-            let name = c.ellipsize(&name, 12, Weight::Regular, 79.0);
-            c.text(
+            c.text_fit(
                 &name,
-                x + 135.0,
+                status_x + 109.0,
                 y + 16.0,
-                12,
+                11,
                 Weight::Regular,
                 color::MUTED,
-                Align::Left,
+                49.0,
             );
         } else {
             c.text(
                 "Offline",
-                x + 111.0,
+                status_x + 89.0,
                 y + 15.0,
-                13,
+                11,
                 Weight::Semi,
                 color::RED,
                 Align::Left,
             );
         }
-    } else {
-        c.circle(x + 99.0, y + capsule_h * 0.5, 3.2, color::MUTED);
-        c.text(
-            "Netzwerk",
-            x + 111.0,
-            y + 15.0,
-            13,
-            Weight::Regular,
-            color::MUTED,
-            Align::Left,
-        );
     }
     c.line(
-        &[(x + 239.0, y + 10.0), (x + 239.0, y + capsule_h - 10.0)],
+        &[(status_x + 164.0, y + 11.0), (status_x + 164.0, y + 35.0)],
         1.0,
-        color::BORDER.alpha(0.9),
+        Rgba(255, 244, 220, 34),
     );
     let phone = if cx.cfg.remote_enabled {
-        phone_accent
+        home::GOLD
     } else {
         color::MUTED
     };
-    c.stroke_rect(x + 255.0, y + 13.0, 12.0, 20.0, 3.0, 1.4, phone);
-    c.circle(x + 261.0, y + 29.0, 0.8, phone);
+    c.stroke_rect(status_x + 176.0, y + 12.0, 12.0, 21.0, 3.0, 1.4, phone);
+    c.circle(status_x + 182.0, y + 30.0, 0.9, phone);
+    c.text(
+        if cx.cfg.remote_enabled { "AN" } else { "AUS" },
+        status_x + 208.0,
+        y + 16.0,
+        9,
+        Weight::Semi,
+        phone,
+        Align::Center,
+    );
+
 }
 
 /// Where the notification is drawn this frame (it slides in from below), or

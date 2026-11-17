@@ -252,7 +252,12 @@ impl App {
         }
         if k == Key::LongOk && self.top().name() != "control" {
             let over_video = self.top().video();
-            self.apply(Nav::Push(Box::new(ui::control::Control::new(over_video))));
+            let control = if self.top().name() == "home" {
+                ui::control::Control::new(over_video)
+            } else {
+                ui::control::Control::over_screen(over_video)
+            };
+            self.apply(Nav::Push(Box::new(control)));
             self.dirty = true;
             return;
         }

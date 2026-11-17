@@ -283,10 +283,20 @@ impl Control {
     }
 
     pub fn new(over_video: bool) -> Self {
+        Self::over(over_video, true)
+    }
+
+    /// The menu over another screen than Home: the glass prepared from
+    /// Home's picture must not be used there (it showed Home's wallpaper).
+    pub fn over_screen(over_video: bool) -> Self {
+        Self::over(over_video, false)
+    }
+
+    fn over(over_video: bool, from_home: bool) -> Self {
         let now = Instant::now();
         // the glass built while Home stood still, if it shows Home as it is
         let minute = crate::app::local_hms().1;
-        let ready = if over_video {
+        let ready = if over_video || !from_home {
             None
         } else {
             let mut p = prepared().lock().unwrap_or_else(|e| e.into_inner());

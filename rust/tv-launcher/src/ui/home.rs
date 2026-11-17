@@ -45,7 +45,7 @@ struct Tile {
 }
 
 /// Home's accent: the warm gold of Settings, Live TV and the fast menu.
-const GOLD: Rgba = Rgba(226, 187, 116, 255);
+pub(super) const GOLD: Rgba = Rgba(226, 187, 116, 255);
 /// Extra cached pixels around each card for its soft lift shadow.
 const TILE_BLEED: f32 = 10.0;
 
@@ -620,78 +620,8 @@ fn draw_home_status(
     let status_x = apps_tile.x;
     let status_w = apps_tile.w;
     header_glass(c, weather_x, y, weather_w, PILL_H, focus == 6);
-    header_glass(c, status_x, y, status_w, PILL_H, focus == 7);
-
-    let (hour, minute, _) = crate::app::local_hms();
-    c.text(
-        &format!("{hour:02}:{minute:02}"),
-        status_x + 12.0,
-        y + 12.0,
-        17,
-        Weight::Semi,
-        if focus == 7 { GOLD } else { color::TEXT },
-        Align::Left,
-    );
-    c.line(
-        &[(status_x + 63.0, y + 11.0), (status_x + 63.0, y + 35.0)],
-        1.0,
-        Rgba(255, 244, 220, 34),
-    );
-    if let Some((ok, kind, name)) = cx.net.get() {
-        c.circle(
-            status_x + 77.0,
-            y + 23.0,
-            3.0,
-            if ok { Rgba::hex(0x59d39a) } else { color::RED },
-        );
-        if ok {
-            if kind == "wifi" {
-                icon_wifi(c, status_x + 94.0, y + 21.0, 16.0, color::TEXT);
-            } else {
-                icon_ethernet(c, status_x + 94.0, y + 23.0, 16.0, color::TEXT);
-            }
-            c.text_fit(
-                &name,
-                status_x + 109.0,
-                y + 16.0,
-                11,
-                Weight::Regular,
-                color::MUTED,
-                49.0,
-            );
-        } else {
-            c.text(
-                "Offline",
-                status_x + 89.0,
-                y + 15.0,
-                11,
-                Weight::Semi,
-                color::RED,
-                Align::Left,
-            );
-        }
-    }
-    c.line(
-        &[(status_x + 164.0, y + 11.0), (status_x + 164.0, y + 35.0)],
-        1.0,
-        Rgba(255, 244, 220, 34),
-    );
-    let phone = if cx.cfg.remote_enabled {
-        GOLD
-    } else {
-        color::MUTED
-    };
-    c.stroke_rect(status_x + 176.0, y + 12.0, 12.0, 21.0, 3.0, 1.4, phone);
-    c.circle(status_x + 182.0, y + 30.0, 0.9, phone);
-    c.text(
-        if cx.cfg.remote_enabled { "AN" } else { "AUS" },
-        status_x + 208.0,
-        y + 16.0,
-        9,
-        Weight::Semi,
-        phone,
-        Align::Center,
-    );
+    let _ = status_w;
+    super::clock_pill(c, cx, status_x, focus == 7);
 
     if let Some(Ok(w)) = cx.weather.get() {
         let (sky, text) = crate::weather::describe(w.code);
@@ -737,7 +667,7 @@ const PILL_H: f32 = 46.0;
 /// The weather and clock buttons in the glass of the big cards: a soft lift
 /// shadow, the warm translucent pane, a light top and a faint rim; focused,
 /// a gold wash and ring like the card focus.
-fn header_glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, focused: bool) {
+pub(super) fn header_glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, focused: bool) {
     let r = h / 2.0;
     c.rect(x - 2.0, y + 2.0, w + 4.0, h, r + 2.0, Rgba(0, 0, 0, 34));
     c.rect(x, y, w, h, r, Rgba(30, 27, 25, 150));
