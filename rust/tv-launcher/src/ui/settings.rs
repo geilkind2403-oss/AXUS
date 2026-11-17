@@ -86,7 +86,7 @@ impl Settings {
             5 => 2,
             6 => 1,
             7 => 1,
-            8 => 6,
+            8 => 7,
             _ => {
                 let _ = cx;
                 0
@@ -268,6 +268,7 @@ impl Settings {
                 crate::perf::flush();
                 cx.toast("Messbericht gespeichert – am Handy herunterladen");
             }
+            (8, 6) => self.confirm = Some(6),
             (8, 4) => match self.update.get() {
                 Some(Ok(info)) if !info.current => self.confirm = Some(3),
                 Some(Ok(_)) => cx.toast("Die installierte Version ist bereits aktuell"),
@@ -494,6 +495,10 @@ impl Screen for Settings {
                             });
                         }
                     }
+                    6 => match crate::perf::reset() {
+                        Ok(()) => cx.toast("Messdaten gelöscht · neue Messung läuft weiter"),
+                        Err(e) => cx.toast(format!("Messdaten konnten nicht gelöscht werden: {e}")),
+                    },
                     _ => match crate::updater::apply_staged_update() {
                         Ok(()) => cx.toast("Update wird installiert; der Launcher startet neu"),
                         Err(e) => cx.toast(e),
@@ -814,6 +819,7 @@ impl Screen for Settings {
                     "Messbericht".into(),
                     format!("Handy: {}/messbericht", cx.remote_url.trim_end_matches('/')),
                 ));
+                rows.push(("Messdaten zurücksetzen".into(), String::new()));
             }
         }
         let n_wifi = self.wifi.get().map(|v| v.len()).unwrap_or(0);
@@ -878,6 +884,9 @@ impl Screen for Settings {
                     );
                     &update_question
                 }
+                6 => {
+                    "Gespeicherte Messdaten wirklich löschen? Neue Messungen laufen danach weiter."
+                }
                 _ => {
                     update_question = format!(
                         "Update {} installieren?",
@@ -890,15 +899,29 @@ impl Screen for Settings {
                     &update_question
                 }
             };
-            c.text(
-                q,
-                640.0,
-                300.0,
-                24,
-                Weight::Bold,
-                color::TEXT,
-                Align::Center,
-            );
+            if which == 6 {
+                c.paragraph(
+                    q,
+                    382.0,
+                    290.0,
+                    516.0,
+                    19,
+                    Weight::Bold,
+                    color::TEXT,
+                    26.0,
+                    2,
+                );
+            } else {
+                c.text(
+                    q,
+                    640.0,
+                    300.0,
+                    24,
+                    Weight::Bold,
+                    color::TEXT,
+                    Align::Center,
+                );
+            }
             c.text(
                 "OK = Ja · jede andere Taste = Nein",
                 640.0,
@@ -1017,6 +1040,9 @@ fn setting_help(section: usize, item: usize) -> &'static str {
         }
         (8, 5) => {
             "Der Messbericht enthält Laufzeiten und Speicherwerte, aber keine WLAN-Passwörter."
+        }
+        (8, 6) => {
+            "Löscht gespeicherte Millisekunden- und Animationsmessungen auf dem Pi. Die Erfassung läuft danach mit einem frischen Bericht weiter."
         }
         (9, 0) => {
             "Zeigt WLAN, LAN, IP-Adresse und verfügbare Netze. Du kannst hier verbinden oder ein gespeichertes Netz vergessen."
