@@ -1044,7 +1044,6 @@ name = "tvcore"
 version = "0.0.3+8"
 dependencies = [
  "serde",
- "serde_json",
  "sha1",
 ]
 

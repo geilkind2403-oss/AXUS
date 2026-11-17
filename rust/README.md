@@ -1,12 +1,12 @@
 # TV Launcher – Rust version (Raspberry Pi 3 + LibreELEC)
 
-The Electron launcher (`src/`, `server/`) rewritten in Rust, for a Raspberry Pi 3
-running LibreELEC **without Kodi**. Two programs:
+A TV launcher in Rust for a Raspberry Pi 3 running LibreELEC **without Kodi**.
+Two programs:
 
-| Program | Runs on | Replaces |
+| Program | Runs on | Does |
 |---|---|---|
-| `tv-launcher` | the Pi (one static 7 MB binary, no libraries needed) | the Electron app |
-| `tv-server` | the PC (Windows / Linux) | `server/mediaserver.js` + `server/musicserver.js` (music: set `MUSIC_PORT=0` to switch it off) |
+| `tv-launcher` | the Pi (one static 7 MB binary, no libraries needed) | the whole TV interface |
+| `tv-server` | the PC (Windows / Linux) | serves the film library to the Pi |
 
 ## Why it is fast on a Pi 3
 
@@ -117,13 +117,10 @@ Put `tv-server.exe` anywhere, next to it a `tv-server.conf`:
 
 ```
 MEDIA_DIR=D:\Filme
-MUSIC_DIR=D:\Musik
 ```
 
 and `ffmpeg.exe` + `ffprobe.exe` (or have them in PATH). Start it; it prints the
-addresses to enter on the Pi (Einstellungen › PC-Server). Same API and the same film
-ids as the old Node servers, so saved resume positions carry over and the old Electron
-launcher works with it too.
+addresses to enter on the Pi (Einstellungen › PC-Server).
 
 ## Development
 
@@ -158,9 +155,6 @@ written against the kernel interfaces and compiles, but could not be run here. T
 demuxers, audio decoding, UI, server and the ARM build itself are tested (the ARM binary
 was run under emulation). Expect a round of fixes after the first start on the Pi:
 `journalctl -u tv-launcher` shows what happened.
-
-Music is left out of the Pi launcher for now (the PC server still serves music for the
-old Electron app; `tvcore` keeps the music scanner for when it comes back).
 
 YouTube uses YouTube's internal app API (like Kodi's YouTube add-on and SmartTube do);
 when YouTube changes it, `src/youtube.rs` needs an update.

@@ -2,7 +2,7 @@
 name = "tv-server"
 version.workspace = true
 edition.workspace = true
-description = "Film + music server for the TV launcher (runs on the PC)"
+description = "Film server for the TV launcher (runs on the PC)"
 
 [dependencies]
 tvcore = { path = "../tvcore" }

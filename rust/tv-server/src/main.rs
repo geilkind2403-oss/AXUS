@@ -1,21 +1,16 @@
-//! TV Launcher server -- one program on the PC for both libraries:
-//!   films on port 8420 (was mediaserver.js), music on port 8421 (was
-//!   musicserver.js). Same HTTP API as the old Node servers, so the old
-//!   Electron launcher keeps working against it, plus what the Raspberry Pi
-//!   needs: /play/<id>?v=h264 for any film (the Pi 3 only decodes H.264).
+//! TV Launcher server -- runs on the PC and serves the film library to the
+//! Pi on port 8420, including /play/<id>?v=h264 for any film (the Pi 3 only
+//! decodes H.264).
 //!
 //! Settings: environment variables, or a `tv-server.conf` (KEY=value lines)
 //! next to the program -- handy on Windows, where it's started by double click.
 //!   MEDIA_DIR   film library root          (default: ./media)
-//!   MUSIC_DIR   music library root         (default: ./music)
 //!   DATA_DIR    progress + caches          (default: ./data)
 //!   PORT        film port                  (default: 8420)
-//!   MUSIC_PORT  music port                 (default: 8421, 0 = off)
 //!   SERVER_NAME shown in the launcher      (default: host name)
 //!   API_KEY     optional shared key (?key=... or header X-Api-Key)
 mod films;
 mod http;
-mod music;
 mod video;
 
 use std::path::PathBuf;
@@ -31,10 +26,8 @@ pub fn log(msg: &str) {
 
 pub struct Config {
     pub media_dir: PathBuf,
-    pub music_dir: PathBuf,
     pub data_dir: PathBuf,
     pub port: u16,
-    pub music_port: u16,
     pub name: String,
     pub api_key: String,
 }
@@ -59,10 +52,8 @@ fn load_config() -> Config {
     let dir = |k: &str, d: &str| get(k).map(PathBuf::from).unwrap_or_else(|| base.join(d));
     Config {
         media_dir: dir("MEDIA_DIR", "media"),
-        music_dir: dir("MUSIC_DIR", "music"),
         data_dir: dir("DATA_DIR", "data"),
         port: get("PORT").and_then(|p| p.parse().ok()).unwrap_or(8420),
-        music_port: get("MUSIC_PORT").and_then(|p| p.parse().ok()).unwrap_or(8421),
         name: get("SERVER_NAME").unwrap_or_else(hostname),
         api_key: get("API_KEY").unwrap_or_default(),
     }
@@ -131,9 +122,5 @@ pub fn key_query(api_key: &str) -> String {
 fn main() {
     let cfg = Arc::new(load_config());
     log(&format!("TV Launcher Server {VERSION} läuft"));
-    if cfg.music_port != 0 {
-        let c = cfg.clone();
-        std::thread::spawn(move || music::run(c));
-    }
     films::run(cfg);
 }
