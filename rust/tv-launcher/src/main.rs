@@ -489,7 +489,7 @@ fn background_refresh(cx: &mut Ctx) {
 /// Weather and headlines are there (else: no network yet, try again soon).
 fn feeds_ready(cx: &Ctx) -> bool {
     cx.weather.with(|w| matches!(w, Some(Ok(_))))
-        && cx.news.with(|n| n.map(|n| !n.is_empty()).unwrap_or(false))
+        && news::FRESH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// While Home stands still, build the fast menu's glass from the Home
@@ -561,6 +561,10 @@ fn main() {
         channels: app::Slot::empty(),
         sleep_at: None,
     };
+    // last session's headlines at once; the fresh ones replace them
+    if let Some(cached) = news::load_cached() {
+        cx.news.set(cached);
+    }
     background_refresh(&mut cx);
     {
         let (s, d, p) = (
@@ -767,7 +771,7 @@ fn main() {
         }
         // every ten minutes; every minute while something is still missing
         // (switched on before the WLAN was up)
-        let refresh_every = if feeds_ready(&app.cx) { 600 } else { 60 };
+        let refresh_every = if feeds_ready(&app.cx) { 600 } else { 10 };
         if last_refresh.elapsed() > Duration::from_secs(refresh_every) {
             last_refresh = Instant::now();
             background_refresh(&mut app.cx);

@@ -161,6 +161,11 @@ impl NewsScreen {
                     cx.news.set(cached);
                 }
             }
+            // nothing there yet (no network at start): ask now, not at the
+            // next refresh round
+            if cx.news.with(|n| n.map(|n| n.is_empty()).unwrap_or(true)) {
+                crate::app::refresh(&cx.tx, &cx.news, crate::news::fetch, |n| !n.is_empty());
+            }
         }
         let revision = cx.news.revision();
         if revision == self.data_revision {

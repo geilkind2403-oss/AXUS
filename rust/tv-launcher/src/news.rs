@@ -23,9 +23,13 @@ fn https(v: &Value) -> String {
         .to_string()
 }
 
+/// A download from Tagesschau worked this session (the cache alone is old).
+pub static FRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn fetch() -> Vec<NewsItem> {
     let items = fetch_online();
     if !items.is_empty() {
+        FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
         save_cache(&items);
         items
     } else {
