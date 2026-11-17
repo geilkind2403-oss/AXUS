@@ -714,7 +714,18 @@ impl Kms {
             }
         }
         let total: usize = jobs.iter().map(|j| j.2).sum();
-        let threads = if total >= 512 << 10 { 4 } else { 1 };
+        // Measured on the Pi: several cores do not copy into the scanout
+        // buffer faster (the memory bus is the limit); a whole frame as one
+        // copy was quickest (10 ms against 12 ms split up).
+        let threads = 1;
+        if full
+            && pitch == source_row
+            && bgra.len() == source_row * self.ui_h as usize
+            && len >= bgra.len()
+        {
+            jobs.clear();
+            jobs.push((0, 0, bgra.len()));
+        }
         let per = jobs.len().div_ceil(threads).max(1);
         let (src_base, dst_base) = (bgra.as_ptr() as usize, dst.0 as usize);
         let copy = move |part: &[(usize, usize, usize)]| {
