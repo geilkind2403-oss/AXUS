@@ -6,6 +6,12 @@ use crate::news::NewsItem;
 use crate::platform::input::Key;
 use std::time::{Duration, Instant};
 
+/// The preview photo, decoded at the size it is shown (physical px): a
+/// picture that needs no resampling is copied, not filtered.
+const PREVIEW_PX: (u32, u32) = (
+    (544.0 * crate::gfx::RENDER_SCALE) as u32,
+    (306.0 * crate::gfx::RENDER_SCALE) as u32,
+);
 const X: f32 = 650.0;
 const RIGHT: f32 = 1220.0;
 const ROW_W: f32 = RIGHT - X;
@@ -117,6 +123,8 @@ pub struct NewsScreen {
     article: Option<ArticleView>,
     base_cache: LayerCache,
     base_image: Option<Image>,
+    /// the last list pictures by key, so ◀▶ back to a category is a copy
+    base_kept: Vec<((u64, usize, usize, bool, usize), Image)>,
     base_key: Option<(u64, usize, usize, bool, usize)>,
     ambient_until: Option<Instant>,
     last_focus_row: Option<f32>,
@@ -136,6 +144,7 @@ impl NewsScreen {
             article: None,
             base_cache: LayerCache::default(),
             base_image: None,
+            base_kept: Vec::new(),
             base_key: None,
             ambient_until: None,
             last_focus_row: None,
@@ -308,7 +317,7 @@ impl NewsScreen {
             );
             return;
         };
-        if let Some(image) = cx.images.get_cover(&item.image, 544, 306) {
+        if let Some(image) = cx.images.get_cover(&item.image, PREVIEW_PX.0, PREVIEW_PX.1) {
             c.image_cover(&image, 64.0, 150.0, 544.0, 306.0, 18.0);
         } else {
             draw_editorial_placeholder(c);
@@ -571,14 +580,33 @@ impl Screen for NewsScreen {
         if self.ambient_until.is_none() {
             self.ambient_until = Some(now + Duration::from_millis(400));
         }
-        let ambient_moving = self.ambient_until.is_some_and(|until| now < until);
+        // only while the backdrop really changes (it does not fade on the Pi)
+        let ambient_moving = self.ambient_until.is_some_and(|until| now < until) && c.ambient_moving();
         let mut base_changed = false;
-        if first_frame || self.base_key != Some(key) || ambient_moving {
+        let kept = (!ambient_moving && self.base_key != Some(key))
+            .then(|| self.base_kept.iter().find(|(k, _)| *k == key).map(|(_, i)| i.clone()))
+            .flatten();
+        if let Some(img) = kept {
+            c.restore_image(&img);
+            self.base_image = Some(img);
+            self.base_key = Some(key);
+            self.base_cache = LayerCache::default();
+            base_changed = true;
+            self.last_focus_row = None;
+            self.last_preview_key = None;
+            self.last_article_key = None;
+        } else if first_frame || self.base_key != Some(key) || ambient_moving {
             c.ambient(crate::gfx::Ambient::LiquidGold);
             self.draw_static(c, &indices);
             base_changed = c.finish_cached(&mut self.base_cache);
             if base_changed || self.base_image.is_none() {
-                self.base_image = Some(c.snapshot());
+                let img = c.snapshot();
+                self.base_kept.retain(|(k, _)| *k != key);
+                self.base_kept.push((key, img.clone()));
+                if self.base_kept.len() > 4 {
+                    self.base_kept.remove(0);
+                }
+                self.base_image = Some(img);
             }
             self.base_key = Some(key);
             if base_changed {
@@ -602,8 +630,8 @@ impl Screen for NewsScreen {
             let image_revision = if source.is_empty() {
                 0
             } else {
-                cx.images.get_cover(source, 544, 306);
-                cx.images.cover_source_revision(source, 544, 306)
+                cx.images.get_cover(source, PREVIEW_PX.0, PREVIEW_PX.1);
+                cx.images.cover_source_revision(source, PREVIEW_PX.0, PREVIEW_PX.1)
             };
             let preview_key = (
                 self.data_revision,
@@ -635,8 +663,8 @@ impl Screen for NewsScreen {
                 .as_ref()
                 .filter(|item| !item.image.is_empty())
                 .map(|item| {
-                    cx.images.get_cover(&item.image, 544, 306);
-                    cx.images.cover_source_revision(&item.image, 544, 306)
+                    cx.images.get_cover(&item.image, PREVIEW_PX.0, PREVIEW_PX.1);
+                    cx.images.cover_source_revision(&item.image, PREVIEW_PX.0, PREVIEW_PX.1)
                 })
                 .unwrap_or(0);
             let preview_key = (

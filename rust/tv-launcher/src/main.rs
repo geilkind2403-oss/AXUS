@@ -1352,6 +1352,24 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         gfx::save_png(&app.canvas.pm, &format!("{dir}/return.png")).ok();
         return;
     }
+    if std::env::var_os("SHOT_NEWS_TRACE").is_some() {
+        // frame times in News: opening, then six categories to the right
+        settle(app, 300);
+        app.stack.push(Box::new(ui::news::NewsScreen::new()));
+        let mut keys = vec![None; 1];
+        keys.extend([Some(Key::Right); 6].iter().copied());
+        keys.extend([Some(Key::Left); 3].iter().copied());
+        for k in keys {
+            if let Some(k) = k {
+                app.key(k);
+            }
+            let f = Instant::now();
+            app.frame();
+            log(&format!("News {k:?}: {:.1} ms", f.elapsed().as_secs_f64() * 1000.0));
+            settle(app, 150);
+        }
+        return;
+    }
     if std::env::var_os("SHOT_APPS_OPEN_TRACE").is_some() {
         // frame times from Home's App-Kreis button into the wheel
         app.key(Key::Down);
