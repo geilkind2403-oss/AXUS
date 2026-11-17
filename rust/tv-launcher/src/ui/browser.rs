@@ -15,9 +15,6 @@ use std::time::Instant;
 
 pub const YOUTUBE_TV: &str = "https://www.youtube.com/tv";
 pub const PRIME_VIDEO: &str = "https://www.primevideo.com/";
-pub const ARD_MEDIATHEK: &str = "https://www.ardmediathek.de/live";
-pub const ZDF_STREAMING: &str = "https://www.zdf.de/live-tv";
-pub const ARTE_LIVE: &str = "https://www.arte.tv/de/live/";
 
 pub fn root() -> PathBuf {
     crate::app::data_dir().join("..").join("browser")

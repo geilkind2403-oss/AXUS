@@ -115,8 +115,6 @@ pub struct Kms {
     crtc: crtc::Handle,
     conn: connector::Handle,
     mode: Mode,
-    /// the browser has the screen: draw nothing
-    suspended: bool,
     primary: plane::Handle,
     overlay: Option<plane::Handle>,
     pub mode_size: (u32, u32),
@@ -434,7 +432,6 @@ impl Kms {
         Ok(Kms {
             conn: conn.handle(),
             mode,
-            suspended: false,
             card,
             crtc,
             primary,
@@ -520,50 +517,6 @@ impl Kms {
         (0, 0, self.ui_w << 16, self.ui_h << 16)
     }
 
-    /// Shows a finished UI frame (BGRA bytes, ui_w x ui_h). While a film
-    /// plays, the UI goes to the overlay plane with alpha; `visible=false`
-    /// hides the overlay altogether (nothing on top of the picture).
-    /// Gives the screen away (the YouTube TV browser takes DRM master).
-    pub fn suspend(&mut self) {
-        self.sync();
-        self.suspended = true;
-        if let Err(e) = self.card.release_master_lock() {
-            crate::log(&format!("DRM master abgeben: {e}"));
-        }
-    }
-
-    /// Takes the screen back and sets our mode and planes again.
-    pub fn resume(&mut self) {
-        let acquired = (0..30).any(|_| {
-            if self.card.acquire_master_lock().is_ok() {
-                true
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                false
-            }
-        });
-        if !acquired {
-            crate::log("DRM master konnte nach 750 ms nicht zurückgeholt werden");
-        }
-        if let Err(e) = self.card.set_crtc(
-            self.crtc,
-            Some(self._black.1),
-            (0, 0),
-            &[self.conn],
-            Some(self.mode),
-        ) {
-            crate::log(&format!(
-                "Bildschirmmodus nach YouTube TV nicht wiederhergestellt: {e}"
-            ));
-        }
-        self.video_on = false;
-        self.overlay_on = false;
-        if let Some(ov) = self.overlay {
-            self.queue(ov, None, None, (0, 0, 0, 0), (0, 0, 0, 0));
-        }
-        self.suspended = false;
-    }
-
     /// Keep DRM master and let Cog share the same DRM file. Cog updates the
     /// primary plane while the launcher draws its menu on the ARGB overlay.
     pub fn start_browser(&mut self) -> i32 {
@@ -615,10 +568,6 @@ impl Kms {
 
     pub fn present_ui(&mut self, bgra: &[u8], visible: bool, mut damage: Damage) {
         let changed = damage.full || damage.len > 0;
-        if self.suspended {
-            self.ui_missed |= changed;
-            return;
-        }
         // over the browser the menu plane fills the screen as it runs now
         // (the display controller scales it, e.g. down to 720p)
         let (mw, mh) = if self.browser { self.screen_size() } else { self.mode_size };
