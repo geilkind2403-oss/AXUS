@@ -74,6 +74,16 @@ fn handle(mut req: tiny_http::Request, tx: &Sender<Msg>) {
             }
             None => tiny_http::Response::from_string("unknown key").with_status_code(400),
         }
+    } else if url == "/testlauf" {
+        let msg = if crate::selftest::start(tx.clone()) {
+            "Testlauf läuft (etwa 2 Minuten, bitte nichts drücken). Danach den Messbericht herunterladen."
+        } else {
+            "Ein Testlauf läuft schon."
+        };
+        let _ = req.respond(tiny_http::Response::from_string(msg).with_header(
+            tiny_http::Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
+        ));
+        return;
     } else if url == "/messbericht" {
         let r = tiny_http::Response::from_string(crate::perf::report())
             .with_header(
@@ -135,6 +145,7 @@ small{color:var(--m);margin-top:14px;text-align:center}
 <div class="row"><button data-k="voldown">🔉 −</button><button data-k="mute">🔇</button><button data-k="volup">🔊 +</button></div>
 <form id="f"><input id="t" placeholder="Text / Suche eingeben" autocomplete="off"><button>Senden</button></form>
 <small>Text geht in das Suchfeld bzw. Passwortfeld, das gerade offen ist.</small>
+<a href="/testlauf" style="margin-top:22px;color:#e2bb74;font-weight:600;text-decoration:none;border:1px solid #6b5630;border-radius:14px;padding:12px 18px">🧪 Testlauf starten</a>
 <a href="/messbericht" download style="margin-top:22px;color:#e2bb74;font-weight:600;text-decoration:none;border:1px solid #6b5630;border-radius:14px;padding:12px 18px">📊 Messbericht herunterladen</a>
 <script>
 const send=k=>{fetch('/key/'+k,{method:'POST'});navigator.vibrate&&navigator.vibrate(12)};

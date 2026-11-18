@@ -308,12 +308,136 @@ fn sys(out: &mut String) {
         .parse::<f32>()
         .map(|kb| format!("{:.1}", kb / 1024.0))
         .unwrap_or_else(|_| "-".into());
+    let mem = meminfo();
+    let m = |k: &str| mem.iter().find(|(n, _)| n == k).map(|(_, v)| format!("{}", v / 1024)).unwrap_or_else(|| "-".into());
     stamp(out);
     let _ = writeln!(
         out,
-        "SYS  temp={temp} rss={rss} threads={}",
-        field("Threads:")
+        "SYS  temp={temp} rss={rss} threads={} mhz={} frei={} cma_frei={} drossel={}",
+        field("Threads:"),
+        cpu_mhz().map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+        m("MemAvailable"),
+        m("CmaFree"),
+        throttled().unwrap_or_else(|| "-".into()),
     );
+}
+
+/// /proc/meminfo as (name, kB).
+fn meminfo() -> Vec<(String, u64)> {
+    std::fs::read_to_string("/proc/meminfo")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            Some((k.to_string(), v.split_whitespace().next()?.parse().ok()?))
+        })
+        .collect()
+}
+
+fn read_trim(p: &str) -> Option<String> {
+    std::fs::read_to_string(p).ok().map(|s| s.trim_matches(|c: char| c.is_whitespace() || c == '\0').to_string())
+}
+
+/// Current CPU clock in MHz.
+fn cpu_mhz() -> Option<u64> {
+    read_trim("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")?
+        .parse::<u64>()
+        .ok()
+        .map(|k| k / 1000)
+}
+
+/// The Pi firmware's throttle flags (0x0 = never slowed down).
+fn throttled() -> Option<String> {
+    read_trim("/sys/devices/platform/soc/soc:firmware/get_throttled")
+        .or_else(|| {
+            let out = std::process::Command::new("vcgencmd").arg("get_throttled").output().ok()?;
+            let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Some(t.trim_start_matches("throttled=").to_string())
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// What this machine is: the head of every report.
+fn system_section() -> String {
+    let mut s = String::from("== System ==\n");
+    let mem = meminfo();
+    let mb = |k: &str| mem.iter().find(|(n, _)| n == k).map(|(_, v)| format!("{} MB", v / 1024)).unwrap_or_else(|| "-".into());
+    let model = read_trim("/proc/device-tree/model").unwrap_or_else(|| "-".into());
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let maxf = read_trim("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|k| format!("{} MHz", k / 1000))
+        .unwrap_or_else(|| "-".into());
+    let gov = read_trim("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").unwrap_or_else(|| "-".into());
+    let kernel = read_trim("/proc/sys/kernel/osrelease").unwrap_or_else(|| "-".into());
+    let uptime = read_trim("/proc/uptime")
+        .and_then(|u| u.split_whitespace().next()?.parse::<f32>().ok())
+        .map(|u| format!("{:.0} min", u / 60.0))
+        .unwrap_or_else(|| "-".into());
+    let temp = crate::platform::system::cpu_temp().map(|t| format!("{t:.0} °C")).unwrap_or_else(|| "-".into());
+    let _ = writeln!(s, "Gerät: {model}");
+    let _ = writeln!(s, "Kerne: {cores}, Takt jetzt {} MHz, max {maxf}, Regler {gov}", cpu_mhz().map(|v| v.to_string()).unwrap_or_else(|| "-".into()));
+    let _ = writeln!(s, "Drosselung (0x0 = nie): {}", throttled().unwrap_or_else(|| "-".into()));
+    let _ = writeln!(s, "Temperatur: {temp}");
+    let _ = writeln!(s, "RAM: gesamt {}, verfügbar {}, Swap frei {}", mb("MemTotal"), mb("MemAvailable"), mb("SwapFree"));
+    let _ = writeln!(s, "Videospeicher (CMA): gesamt {}, frei {}", mb("CmaTotal"), mb("CmaFree"));
+    let _ = writeln!(s, "Kernel: {kernel}, läuft seit {uptime}");
+    let _ = writeln!(
+        s,
+        "Zeichnen: {}x{} (Skala {}), Sparmodus-Erkennung {}",
+        (crate::gfx::W as f32 * crate::gfx::render_scale()) as u32,
+        (crate::gfx::H as f32 * crate::gfx::render_scale()) as u32,
+        crate::gfx::render_scale(),
+        if crate::gfx::low_end() { "schwache Hardware" } else { "normal" }
+    );
+    let mut status = String::new();
+    sys(&mut status);
+    let _ = writeln!(s, "Jetzt: {}", status.get(13..).unwrap_or("").trim());
+    if let Ok(c) = std::fs::read_to_string(crate::app::data_dir().join("crash.log")) {
+        let _ = writeln!(s, "\n== Abstürze (crash.log, neueste zuletzt) ==");
+        let lines: Vec<&str> = c.lines().collect();
+        for l in &lines[lines.len().saturating_sub(40)..] {
+            let _ = writeln!(s, "{l}");
+        }
+    } else {
+        let _ = writeln!(s, "\nAbstürze: keine aufgezeichnet");
+    }
+    s
+}
+
+/// Records a crash (panic) with where it happened, kept across restarts.
+pub fn install_crash_log() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let screen = REC
+            .try_lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|r| r.screen))
+            .unwrap_or("?");
+        let mut line = String::new();
+        stamp(&mut line);
+        let _ = write!(
+            line,
+            "ABSTURZ v{} Build {} Bereich {screen}: {info}",
+            crate::updater::running_version(),
+            crate::BUILD
+        );
+        let line = line.replace('\n', " ");
+        let path = crate::app::data_dir().join("crash.log");
+        let _ = std::fs::create_dir_all(crate::app::data_dir());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
+        // never block here: the panic may have happened under the lock
+        if let Ok(mut g) = REC.try_lock() {
+            if let Some(r) = g.as_mut() {
+                r.out.push_str(&line);
+                r.out.push('\n');
+            }
+        }
+        prev(info);
+    }));
 }
 
 /// The report for the phone: a summary of the slowest things, then all
@@ -338,8 +462,44 @@ fn summarize(raw: &str) -> String {
     let mut answers: Vec<(f32, &str)> = Vec::new();
     // per screen: frames, sum, over 16 ms, worst
     let mut screens: BTreeMap<String, (u64, f64, u64, f32)> = BTreeMap::new();
+    let mut all_frames: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    // per test step (self test): order, frames, worst answer
+    let mut steps: Vec<(String, Vec<f32>, f32)> = Vec::new();
+    let mut in_test = false;
     for line in raw.lines() {
         let body = line.get(13..).unwrap_or("");
+        if let Some(name) = body.strip_prefix("LOG  TEST ") {
+            if name.starts_with("ende") {
+                in_test = false;
+            } else {
+                in_test = true;
+                steps.push((name.to_string(), Vec::new(), 0.0));
+            }
+            continue;
+        }
+        if in_test {
+            if let Some(st) = steps.last_mut() {
+                if let Some(rest) = body.strip_prefix("ANTW ") {
+                    if let Some(ms) = rest.split_whitespace().nth(2).and_then(|v| v.parse::<f32>().ok()) {
+                        st.2 = st.2.max(ms);
+                    }
+                }
+                if let Some(rest) = body.strip_prefix("ANIM ") {
+                    if let Some(fr) = rest.split('|').nth(1) {
+                        st.1.extend(fr.split_whitespace().filter_map(|v| v.parse::<f32>().ok()));
+                    }
+                }
+            }
+        }
+        if let Some(rest) = body.strip_prefix("ANIM ") {
+            if let Some(fr) = rest.split('|').nth(1) {
+                let screen = rest.split_whitespace().next().unwrap_or("").to_string();
+                all_frames
+                    .entry(screen)
+                    .or_default()
+                    .extend(fr.split_whitespace().filter_map(|v| v.parse::<f32>().ok()));
+            }
+        }
         if let Some(rest) = body.strip_prefix("ANIM ") {
             let screen = rest.split_whitespace().next().unwrap_or("").to_string();
             let max = rest
@@ -390,6 +550,33 @@ fn summarize(raw: &str) -> String {
         crate::updater::running_version(),
         crate::BUILD
     );
+    if !cfg!(test) {
+        s.push_str(&system_section());
+        s.push('\n');
+    }
+    let pct = |v: &mut Vec<f32>, p: f32| -> f32 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[((v.len() - 1) as f32 * p).round() as usize]
+    };
+    let _ = writeln!(s, "== Bildzeiten je Bereich (Median / 95 % / 99 %) ==");
+    for (name, v) in all_frames.iter_mut() {
+        let (a, b, c) = (pct(v, 0.5), pct(v, 0.95), pct(v, 0.99));
+        let _ = writeln!(s, "{name}: {} Bilder, Median {a:.1} ms, 95 % unter {b:.1} ms, 99 % unter {c:.1} ms", v.len());
+    }
+    if !steps.is_empty() {
+        let _ = writeln!(s, "\n== Testlauf je Schritt (Bilder, Median, schlechtestes Bild, langsamste Antwort) ==");
+        for (name, v, ans) in steps.iter_mut() {
+            let n = v.len();
+            let worst = v.iter().cloned().fold(0.0f32, f32::max);
+            let med = pct(v, 0.5);
+            let flag = if worst > 16.7 || *ans > 16.7 { "  <-- zu langsam" } else { "" };
+            let _ = writeln!(s, "{name}: {n} Bilder, Median {med:.1} ms, schlechtestes {worst:.1} ms, Antwort {ans:.1} ms{flag}");
+        }
+    }
+    s.push('\n');
     let _ = writeln!(
         s,
         "== Animationen je Bereich (Bilder, Schnitt, über 16,7 ms, schlechtestes) =="
@@ -437,6 +624,23 @@ mod tests {
         assert!(s.contains("1 über 16,7 ms"), "{s}");
         assert!(s.contains("OPEN home>apps 420 ms"), "{s}");
         assert!(s.contains("ANTW Ok home 22.5 ms"), "{s}");
+    }
+
+    #[test]
+    fn test_steps_are_summarized() {
+        let raw = "\
+12:00:00.000 LOG  TEST Live TV Liste
+12:00:00.100 ANTW Down livetv 40.0 ms
+12:00:00.200 ANIM livetv Down n=2 dauer=20 max=40.0 ueber16=1 | 12.0 40.0
+12:00:01.000 LOG  TEST Wetter Animation
+12:00:01.200 ANIM weather x n=2 dauer=20 max=9.0 ueber16=0 | 8.0 9.0
+12:00:02.000 LOG  TEST ende
+";
+        let s = summarize(raw);
+        assert!(s.contains("Live TV Liste: 2 Bilder"), "{s}");
+        assert!(s.contains("Antwort 40.0 ms  <-- zu langsam"), "{s}");
+        assert!(s.contains("Wetter Animation: 2 Bilder, Median 9.0 ms"), "{s}");
+        assert!(s.contains("livetv: 2 Bilder, Median"), "{s}");
     }
 
     #[test]

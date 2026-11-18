@@ -15,6 +15,7 @@ mod news;
 mod platform;
 mod player;
 mod remote;
+mod selftest;
 mod tvlist_fx;
 mod ui;
 mod updater;
@@ -481,6 +482,7 @@ fn prepare_control_blur(app: &mut App, top_name: &str, idle: Duration) {
 }
 
 fn main() {
+    perf::install_crash_log();
     let args: Vec<String> = std::env::args().collect();
     let shot_dir = args
         .iter()
@@ -588,6 +590,9 @@ fn main() {
         });
     }
     remote::start(tx.clone(), app.cx.cfg.remote_enabled);
+    if std::env::var_os("TV_SELFTEST").is_some() {
+        selftest::start(tx.clone());
+    }
     if app.cx.cfg.start_livetv {
         let s = ui::livetv::LiveTv::new(&mut app.cx);
         app.stack.push(Box::new(s));
