@@ -1426,7 +1426,7 @@ impl Canvas {
             Some(Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..))
         );
         // Mostly new anyway (scrolling, a new backdrop): one pass over everything.
-        if changed.len() * 3 > sigs.len() * 2 || self.damage.full || !from_background {
+        if self.damage.full || !from_background {
             self.mark_full_damage();
             self.raster_pending();
             self.strip_sigs = sigs;
@@ -1438,7 +1438,11 @@ impl Canvas {
             self.strip_sigs = sigs;
             return self.damage.len > 0;
         }
+        let most = changed.len() * 3 > sigs.len() * 2;
         self.raster_tiles(&changed, rows);
+        if most {
+            self.mark_full_damage();
+        }
         self.strip_sigs = sigs;
         true
     }
@@ -1449,30 +1453,74 @@ impl Canvas {
     fn raster_tiles(&mut self, tiles: &[usize], rows: usize) {
         let (w, h) = (self.pm.width() as usize, self.pm.height() as usize);
         let colw = w.div_ceil(COLS).max(1);
-        // per strip: runs of columns (a gap of one tile is bridged)
-        let mut boxes: Vec<(usize, usize, usize, usize)> = Vec::new(); // x0,x1,y0,y1
+        // Per tile: the last command that paints all of it opaque. Drawing
+        // starts there -- the background and shadows under a solid panel
+        // are not drawn at all.
+        let tile_box = |t: usize| {
+            let (st, col) = (t / COLS, t % COLS);
+            (
+                (col * colw) as i32,
+                (st * rows) as i32,
+                ((col + 1) * colw).min(w) as i32,
+                ((st + 1) * rows).min(h) as i32,
+            )
+        };
+        let mut start: std::collections::HashMap<usize, (usize, Option<(i32, i32)>), std::hash::BuildHasherDefault<Fx>> =
+            tiles.iter().map(|t| (*t, (0usize, None))).collect();
+        {
+            let mut clip: Option<(i32, i32)> = None;
+            for (ci, c) in self.cmds.iter().enumerate() {
+                let (bx0, by0, bx1, by1) = match c {
+                    Cmd::ClipY(r) => {
+                        clip = *r;
+                        continue;
+                    }
+                    Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..) => (0, 0, w as i32, h as i32),
+                    Cmd::Spans { x, y, w: sw, h: sh, .. } => (*x, *y, *x + *sw, *y + *sh),
+                    _ => continue,
+                };
+                let c0 = (bx0.max(0) as usize) / colw;
+                let c1 = ((bx1.min(w as i32) - 1).max(0) as usize) / colw;
+                let s0 = (by0.max(0) as usize) / rows;
+                let s1 = ((by1.min(h as i32) - 1).max(0) as usize) / rows;
+                for st in s0..=s1.min(h.div_ceil(rows) - 1) {
+                    for col in c0..=c1.min(COLS - 1) {
+                        let t = st * COLS + col;
+                        if let Some(e) = start.get_mut(&t) {
+                            if covers(c, clip, tile_box(t)) {
+                                *e = (ci, clip);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // per strip: runs of columns with the same start (a gap of one
+        // tile is bridged when the start matches)
+        let mut boxes: Vec<(usize, usize, usize, usize, usize, Option<(i32, i32)>)> = Vec::new();
         let mut i = 0;
         while i < tiles.len() {
             let strip = tiles[i] / COLS;
-            let mut runs: Vec<(usize, usize)> = Vec::new();
+            let mut runs: Vec<(usize, usize, usize, Option<(i32, i32)>)> = Vec::new();
             while i < tiles.len() && tiles[i] / COLS == strip {
                 let col = tiles[i] % COLS;
+                let (sk, cl) = start[&tiles[i]];
                 match runs.last_mut() {
-                    Some(r) if col <= r.1 + 1 => r.1 = col + 1,
-                    _ => runs.push((col, col + 1)),
+                    Some(r) if col == r.1 && r.2 == sk => r.1 = col + 1,
+                    _ => runs.push((col, col + 1, sk, cl)),
                 }
                 i += 1;
             }
             let (y0, y1) = (strip * rows, ((strip + 1) * rows).min(h));
-            for (c0, c1) in runs {
+            for (c0, c1, sk, cl) in runs {
                 let (x0, x1) = (c0 * colw, (c1 * colw).min(w));
                 if let Some(b) = boxes
                     .iter_mut()
-                    .find(|b| b.0 == x0 && b.1 == x1 && b.3 == y0)
+                    .find(|b| b.0 == x0 && b.1 == x1 && b.3 == y0 && b.4 == sk)
                 {
                     b.3 = y1;
                 } else {
-                    boxes.push((x0, x1, y0, y1));
+                    boxes.push((x0, x1, y0, y1, sk, cl));
                 }
             }
         }
@@ -1482,10 +1530,10 @@ impl Canvas {
         }
         let cmds = &self.cmds;
         let bd = self.backdrop.as_deref();
-        let draw = |b: &(usize, usize, usize, usize)| -> Vec<u8> {
+        let draw = |b: &(usize, usize, usize, usize, usize, Option<(i32, i32)>)| -> Vec<u8> {
             let bw = b.1 - b.0;
             let mut buf = vec![0u8; bw * (b.3 - b.2) * 4];
-            raster_x(cmds, &mut buf, bw as i32, b.2 as i32, bd, b.0 as i32, w as i32);
+            raster_x(&cmds[b.4..], &mut buf, bw as i32, b.2 as i32, bd, b.0 as i32, w as i32, b.5);
             buf
         };
         let done: Vec<Vec<u8>> = if self.threads > 1 && boxes.len() > 1 {
@@ -2149,7 +2197,45 @@ fn div255(x: u32) -> u32 {
 
 /// Draws the recorded commands into one band of rows [y0, y0 + band height).
 fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixmap>) {
-    raster_x(cmds, band, w, y0, backdrop, 0, w)
+    raster_x(cmds, band, w, y0, backdrop, 0, w, None)
+}
+
+/// Whether a command paints every pixel of the box [x0,x1)x[y0,y1) fully
+/// opaque (so everything drawn there before it is hidden).
+fn covers(c: &Cmd, clip: Option<(i32, i32)>, b: (i32, i32, i32, i32)) -> bool {
+    if let Some((t, bt)) = clip {
+        if b.1 < t || b.3 > bt {
+            return false;
+        }
+    }
+    match c {
+        Cmd::Clear(p) => p[3] == 255,
+        Cmd::Backdrop => true,
+        Cmd::Screen(_, a) => *a >= 255,
+        Cmd::Spans { x, y, w, h, r, fill } => {
+            let opaque = match fill {
+                Fill::Solid(p) => p[3] >= 255,
+                Fill::VGrad(t, bt) | Fill::HGrad(t, bt) => t.3 == 255 && bt.3 == 255,
+                Fill::Image { alpha, .. } => *alpha == 256,
+            };
+            if !opaque {
+                return false;
+            }
+            let r = r.ceil() as i32 + 1;
+            let inside = |ax: i32, ay: i32, bx: i32, by: i32| b.0 >= ax && b.1 >= ay && b.2 <= bx && b.3 <= by;
+            // the rounded box minus its corners: two crossing rectangles
+            if let Fill::Image { src, ox, oy, .. } = fill {
+                // the picture must cover the box too
+                let (sx0, sy0) = (*ox, *oy);
+                let (sx1, sy1) = (sx0 + src.width() as i32, sy0 + src.height() as i32);
+                if !(b.0 >= sx0 && b.1 >= sy0 && b.2 <= sx1 && b.3 <= sy1) {
+                    return false;
+                }
+            }
+            inside(*x + r, *y, *x + *w - r, *y + *h) || inside(*x, *y + r, *x + *w, *y + *h - r)
+        }
+        _ => false,
+    }
 }
 
 /// Draws the columns [xa, xa + w) of rows starting at y0 into `band`
@@ -2162,6 +2248,7 @@ fn raster_x(
     backdrop: Option<&Pixmap>,
     xa: i32,
     full_w: i32,
+    clip0: Option<(i32, i32)>,
 ) {
     let row_bytes = w as usize * 4;
     let (band_y0, band_y1) = (y0, y0 + (band.len() / row_bytes) as i32);
@@ -2169,7 +2256,7 @@ fn raster_x(
         return;
     }
     let whole_band = band;
-    let mut clip: Option<(i32, i32)> = None;
+    let mut clip: Option<(i32, i32)> = clip0;
     for cmd in cmds {
         if let Cmd::ClipY(rows) = cmd {
             clip = *rows;
