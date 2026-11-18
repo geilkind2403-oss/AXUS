@@ -331,9 +331,9 @@ fn make_frosted() {
     }
     let Some(bg) = scene() else { return };
     let (w, h) = (bg.width() as usize, bg.height() as usize);
-    // the gold backdrop is already soft: no blur needed (saves seconds
-    // at start on a single slow core)
-    let mut buf = bg.data().to_vec();
+    // blurred at a quarter of the size and scaled back up: looks the same
+    // as a full-size blur, ~16x less work (seconds on one slow core)
+    let mut buf = soft(bg.data(), w, h, 4);
     // tint: darker and warmer, so text on the glass reads (BGRA)
     for px in buf.chunks_exact_mut(4) {
         px[0] = (px[0] as f32 * 0.62 + 6.0) as u8;
@@ -706,3 +706,74 @@ fn arc_open(cx: f32, cy: f32, r: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
+
+/// A strong, cheap blur: shrink by `k` (box average), blur the small
+/// picture a little, and scale back up bilinearly. BGRA in and out.
+fn soft(src: &[u8], w: usize, h: usize, k: usize) -> Vec<u8> {
+    let (sw, sh) = (w.div_ceil(k), h.div_ceil(k));
+    let mut small = vec![0u32; sw * sh * 4];
+    let mut count = vec![0u32; sw * sh];
+    for y in 0..h {
+        let row = &src[y * w * 4..(y + 1) * w * 4];
+        let sy = y / k;
+        for x in 0..w {
+            let i = sy * sw + x / k;
+            count[i] += 1;
+            for c in 0..4 {
+                small[i * 4 + c] += row[x * 4 + c] as u32;
+            }
+        }
+    }
+    let mut s: Vec<f32> = small
+        .iter()
+        .enumerate()
+        .map(|(i, v)| *v as f32 / count[i / 4].max(1) as f32)
+        .collect();
+    // three box passes each way, radius 3 at the small size
+    let r = 3i32;
+    for _ in 0..3 {
+        let mut t = s.clone();
+        for y in 0..sh {
+            for x in 0..sw {
+                for c in 0..4 {
+                    let mut acc = 0.0;
+                    for d in -r..=r {
+                        let xx = (x as i32 + d).clamp(0, sw as i32 - 1) as usize;
+                        acc += s[(y * sw + xx) * 4 + c];
+                    }
+                    t[(y * sw + x) * 4 + c] = acc / (2 * r + 1) as f32;
+                }
+            }
+        }
+        for y in 0..sh {
+            for x in 0..sw {
+                for c in 0..4 {
+                    let mut acc = 0.0;
+                    for d in -r..=r {
+                        let yy = (y as i32 + d).clamp(0, sh as i32 - 1) as usize;
+                        acc += t[(yy * sw + x) * 4 + c];
+                    }
+                    s[(y * sw + x) * 4 + c] = acc / (2 * r + 1) as f32;
+                }
+            }
+        }
+    }
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let fy = ((y as f32 + 0.5) / k as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (y0, ty) = (fy as usize, fy.fract());
+        let y1 = (y0 + 1).min(sh - 1);
+        for x in 0..w {
+            let fx = ((x as f32 + 0.5) / k as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let x1 = (x0 + 1).min(sw - 1);
+            for c in 0..4 {
+                let p = |xx: usize, yy: usize| s[(yy * sw + xx) * 4 + c];
+                let top = p(x0, y0) + (p(x1, y0) - p(x0, y0)) * tx;
+                let bot = p(x0, y1) + (p(x1, y1) - p(x0, y1)) * tx;
+                out[(y * w + x) * 4 + c] = (top + (bot - top) * ty) as u8;
+            }
+        }
+    }
+    out
+}

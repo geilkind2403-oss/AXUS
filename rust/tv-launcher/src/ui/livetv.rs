@@ -76,6 +76,13 @@ pub struct LiveTv {
     guide_since: Instant,
     /// the wave's own clock: it stands still while keys are pressed
     wave_t: f32,
+    /// what one whole wave picture costs here (ms, smoothed)
+    wave_cost_ms: f32,
+    /// the text layer last given to the C++ side, its rows, and the pixel
+    /// rows changed since the last drawn frame
+    text_snap: Option<std::sync::Arc<tiny_skia::Pixmap>>,
+    last_rows: Vec<(f32, f32, f32, f32, bool)>,
+    text_dirty: Option<(usize, usize)>,
     last_key: Instant,
     last_frame: Instant,
     /// What the frame shows now: the wave's step, the text, the focus.
@@ -161,6 +168,10 @@ impl LiveTv {
             focus_y: ROW_Y,
             guide_since: Instant::now(),
             wave_t: 0.0,
+            wave_cost_ms: 10.0,
+            text_snap: None,
+            last_rows: Vec::new(),
+            text_dirty: None,
             last_key: Instant::now(),
             last_frame: Instant::now(),
             wave_step: None,
@@ -369,6 +380,9 @@ impl LiveTv {
             t.set_hole(Some(PIP));
             self.tvl = Some(t);
             self.text_key = None;
+            self.text_snap = None;
+            self.last_rows.clear();
+            self.wave_step = None;
         }
         #[cfg(target_os = "linux")]
         crate::platform::kms::set_video_window(Some((
@@ -437,45 +451,68 @@ impl LiveTv {
                     (ROW_X, y, ROW_W, ROW_H, chs[i].url == playing)
                 })
                 .collect();
+            let snap = c.snapshot();
+            // which pixel rows changed (text and row boxes): only those are
+            // composed again, unless the wave itself moves on
+            let mut dirty = changed_rows(self.text_snap.as_deref(), &snap);
+            if rows != self.last_rows {
+                let s = c.pm.height() as f32 / crate::gfx::H as f32;
+                let a = ((ROW_Y - 16.0) * s) as usize;
+                let b = (((ROW_Y + VISIBLE as f32 * ROW_STEP + 16.0) * s) as usize)
+                    .min(c.pm.height() as usize);
+                dirty = Some(match dirty {
+                    Some((x, y)) => (x.min(a), y.max(b)),
+                    None => (a, b),
+                });
+            }
+            self.text_dirty = match (self.text_dirty, dirty) {
+                (Some((a, b)), Some((x, y))) => Some((a.min(x), b.max(y))),
+                (d, None) | (None, d) => d,
+            };
+            self.text_snap = Some(snap.clone());
             let t = self.tvl.as_mut().unwrap();
             t.set_rows(&rows, ROW_R);
-            t.set_text(c.snapshot());
+            self.last_rows = rows;
+            t.set_text(snap);
         }
         // The wave drifts in steps of 1/15 s: a whole new frame 15 times a
         // second. In between only the strip the focus moved through.
         // The wave holds still while keys come in (and briefly after), so a
         // press never waits for a whole new 1080p wave picture.
-        // low-end: the wave stands still (a new wave picture is a whole
-        // frame); only the rows that change are drawn again
-        let low = crate::gfx::low_end();
-        if !low && now.duration_since(self.last_key).as_secs_f32() > 0.8 {
+        // The wave moves everywhere; on slow hardware it takes fewer steps
+        // a second (measured), so the CPU stays free for the keys.
+        if now.duration_since(self.last_key).as_secs_f32() > 0.8 {
             self.wave_t += dt;
         }
-        let step = (self.wave_t * 15.0).floor() as u64;
+        let rate = (1000.0 / (self.wave_cost_ms * 2.5)).clamp(3.0, 15.0);
+        let step = (self.wave_t * rate).floor() as u64;
         let focus = (!chs.is_empty()).then_some([ROW_X, self.focus_y, ROW_W, ROW_H, ROW_R]);
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
         let t = self.tvl.as_mut().unwrap();
-        let full = self.wave_step != Some(step)
-            || (!low && self.drawn_key != self.text_key);
-        if !full && low && self.drawn_key != self.text_key {
-            // only the list's rows (text changed there)
-            let a = ROW_Y - 16.0;
-            let b = ROW_Y + VISIBLE as f32 * ROW_STEP + 16.0;
-            let ph = c.pm.height() as usize;
-            t.render_rows(
-                c.pm.data_mut(),
-                (a.max(0.0) * scale) as usize,
-                ((b * scale).ceil() as usize).min(ph),
-                focus,
-                threads,
-            );
-            c.mark_damage_rect(0.0, a, crate::gfx::W as f32, b - a);
-        } else if full {
-            t.advance(step as f32 / 15.0);
+        let full = self.wave_step != Some(step);
+        if full {
+            t.advance(self.wave_t);
+            let t0 = Instant::now();
             t.render(c.pm.data_mut(), focus, threads);
+            let ms = t0.elapsed().as_secs_f32() * 1000.0;
+            self.wave_cost_ms = self.wave_cost_ms * 0.8 + ms * 0.2;
             c.mark_damage_rect(0.0, 0.0, crate::gfx::W as f32, crate::gfx::H as f32);
+        } else if self.text_dirty.is_some() {
+            // only the pixel rows whose text changed (plus the focus move)
+            if let Some((mut a, mut b)) = self.text_dirty {
+                if self.drawn_focus != Some(self.focus_y) {
+                    let glow = 14.0;
+                    let fa = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
+                    let fb = self.drawn_focus.unwrap_or(self.focus_y).max(self.focus_y) + ROW_H + glow;
+                    a = a.min((fa.max(0.0) * scale) as usize);
+                    b = b.max((fb * scale).ceil() as usize);
+                }
+                let b = b.min(c.pm.height() as usize);
+                t.render_rows(c.pm.data_mut(), a, b, focus, threads);
+                c.mark_damage_rect(0.0, a as f32 / scale, crate::gfx::W as f32, (b - a) as f32 / scale + 1.0);
+            }
         } else if self.drawn_focus != Some(self.focus_y) {
             let glow = 14.0;
             let a = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
@@ -492,6 +529,7 @@ impl LiveTv {
             return true; // nothing moved
         }
         self.wave_step = Some(step);
+        self.text_dirty = None;
         self.drawn_key = self.text_key;
         self.drawn_focus = Some(self.focus_y);
         c.request_present();
@@ -572,7 +610,7 @@ impl Screen for LiveTv {
     }
     fn motion_over_video(&self) -> bool {
         // the list's wave moves: 30 pictures a second while it is open
-        (self.guide && self.standalone_app_id.is_none() && !crate::gfx::low_end())
+        (self.guide && self.standalone_app_id.is_none())
             || self.guide_in.moving()
             || self.banner_in.moving()
             || (self.guide && (self.list.moving() || self.group_list.moving()))
@@ -1772,4 +1810,20 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channe
         color::MUTED,
         Align::Left,
     );
+}
+
+/// The first and last+1 pixel rows in which two text layers differ.
+fn changed_rows(old: Option<&tiny_skia::Pixmap>, new: &tiny_skia::Pixmap) -> Option<(usize, usize)> {
+    let h = new.height() as usize;
+    let Some(old) = old.filter(|o| o.width() == new.width() && o.height() == new.height()) else {
+        return Some((0, h));
+    };
+    let row = new.width() as usize * 4;
+    let (a, b) = (old.data(), new.data());
+    let first = (0..h).find(|&y| a[y * row..(y + 1) * row] != b[y * row..(y + 1) * row])?;
+    let last = (first..h)
+        .rev()
+        .find(|&y| a[y * row..(y + 1) * row] != b[y * row..(y + 1) * row])
+        .unwrap_or(first);
+    Some((first, last + 1))
 }

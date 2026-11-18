@@ -218,7 +218,10 @@ impl WeatherScreen {
     /// Time for the next animated frame (60 fps, 30 when the Pi is busy).
     fn frame_due(&self, now: Instant) -> bool {
         match self.last_fx {
-            Some(last) if self.half_rate => now.duration_since(last).as_millis() >= 30,
+            // slow hardware: keep moving, but leave the CPU at least 60 % free
+            Some(last) if self.half_rate => {
+                now.duration_since(last).as_secs_f32() * 1000.0 >= (self.cost_ms * 2.5).max(30.0)
+            }
             _ => true,
         }
     }
@@ -248,11 +251,6 @@ impl Screen for WeatherScreen {
         }
     }
     fn animating(&self, cx: &Ctx) -> bool {
-        // low-end: the sky stands still once drawn (the moving band cost
-        // ~60 ms a frame on one 400 MHz core)
-        if crate::gfx::low_end() && self.last_fx.is_some() {
-            return false;
-        }
         self.fx.is_some() && cx.weather.with(|w| matches!(w, Some(Ok(_))))
     }
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
