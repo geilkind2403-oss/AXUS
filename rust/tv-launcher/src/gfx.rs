@@ -1713,6 +1713,19 @@ impl Canvas {
         self.text(&t, x, y, px, w, c, Align::Left)
     }
 
+    /// Shows the part of a full-screen picture (canvas size, aligned to the
+    /// screen) that lies inside a rounded box: a window onto it. Costs one
+    /// blend of the box; the picture is shared, never copied.
+    pub fn image_window(&mut self, img: &Image, x: f32, y: f32, w: f32, h: f32, r: f32) {
+        if img.width() != self.pm.width() || img.height() != self.pm.height() {
+            return;
+        }
+        let ox = (self.offset.0 * self.scale).round() as i32;
+        let oy = (self.offset.1 * self.scale).round() as i32;
+        let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u32;
+        self.spans(x, y, w, h, r, Fill::Image { src: img.clone(), ox, oy, alpha });
+    }
+
     /// Draws a picture that is already at its display size (physical px),
     /// top-left at (x, y): no scaling and no copy into the scaled-image
     /// cache, so any number of such pictures cost one blend each.

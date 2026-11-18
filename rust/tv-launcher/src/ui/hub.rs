@@ -85,8 +85,9 @@ enum HubFocus {
 pub struct Hub {
     tab: usize,
     focus: HubFocus,
-    /// PANES_DONE when last drawn: a newly finished pane means a redraw
-    panes_seen: u64,
+    /// whether the last frame had the frosted glass (it arrives once, from
+    /// the start worker)
+    glass_drawn: bool,
 }
 
 fn hero_image() -> Option<Image> {
@@ -171,7 +172,7 @@ impl Hub {
         Hub {
             tab: 0,
             focus: HubFocus::Bar(0),
-            panes_seen: 0,
+            glass_drawn: false,
         }
     }
 
@@ -283,13 +284,12 @@ impl Screen for Hub {
     }
 
     fn animating(&self, _cx: &Ctx) -> bool {
-        // while glass panes are being made, and once more when one is done
-        panes_busy()
-            || PANES_DONE.load(std::sync::atomic::Ordering::Acquire) != self.panes_seen
+        // only until the frosted layer has arrived and been drawn once
+        !self.glass_drawn
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
-        self.panes_seen = PANES_DONE.load(std::sync::atomic::Ordering::Acquire);
+        self.glass_drawn = FROSTED.get().is_some();
         match scene() {
             Some(bg) => c.screen(&bg),
             None => c.ambient(crate::gfx::Ambient::LiquidGold),
@@ -311,29 +311,32 @@ fn focus_ring(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32) {
     c.stroke_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, r + 1.0, 2.5, Rgba(240, 204, 136, 235));
 }
 
-/// Liquid glass. Each pane is made once from the real picture behind it:
-/// that picture, frosted (blurred), bent towards the middle near the edges
-/// like the rim of a lens, lightly tinted, with a bright rim where the light
-/// from the top left catches it and a shade on the opposite edge. Per frame
-/// a pane is a copy, so it costs no more than a plain fill.
+/// Liquid glass with a fixed memory cost: the whole background is frosted
+/// ONCE into one full-screen layer, and every pane is a window onto its own
+/// piece of that layer (no image per pane). The light on the glass (a bright
+/// top edge, a fine dark outer edge, a shade at the bottom) is a few lines.
 fn panel(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, focused: bool) {
-    // the pane image carries its shadow and dark edge in a margin around it:
-    // one copy per pane, no shapes drawn on top
-    match glass_pane(x, y, w, h, r, focused) {
-        Some(img) => c.image_native(&img, x - SHADOW, y - SHADOW),
-        // not made yet: a plain dark pane until it is
-        None => {
-            c.rect(x, y, w, h, r, Rgba(24, 19, 14, 190));
-            c.stroke_rect(x + 0.5, y + 0.5, w - 1.0, h - 1.0, r, 1.0, Rgba(255, 238, 205, 60));
-        }
+    // lift
+    c.rect(x - 2.0, y + 7.0, w + 4.0, h, r + 2.0, Rgba(0, 0, 0, 60));
+    match frosted() {
+        Some(f) => c.image_window(&f, x, y, w, h, r),
+        None => c.rect(x, y, w, h, r, Rgba(24, 19, 14, 200)),
     }
+    if focused {
+        c.rect(x, y, w, h, r, Rgba(226, 170, 90, 52));
+    }
+    // edges: bright along the top, shade along the bottom (straight lines:
+    // a rounded outline costs a lot more to draw)
+    let inset = r.max(12.0);
+    c.line(&[(x + inset, y + 1.4), (x + w - inset, y + 1.4)], 1.6, Rgba(255, 250, 236, if focused { 210 } else { 150 }));
+    c.line(&[(x + inset, y + h - 1.2), (x + w - inset, y + h - 1.2)], 1.2, Rgba(0, 0, 0, 70));
     if focused {
         focus_ring(c, x, y, w, h, r);
     }
 }
 
 /// The Home background: the hero picture over the whole screen, darkened so
-/// text stays readable (darker towards the bottom).
+/// text stays readable (darker towards the bottom). 8 MB on the Pi, once.
 fn scene() -> Option<Image> {
     static SCENE: OnceLock<Option<Image>> = OnceLock::new();
     SCENE
@@ -357,75 +360,44 @@ fn scene() -> Option<Image> {
         .clone()
 }
 
-type PaneKey = (i32, i32, i32, i32, i32, bool);
+/// The frosted layer every pane looks through: the background blurred,
+/// darkened a little more and tinted warm. Made once, on the start worker;
+/// None until then (panes show a plain dark fill for that moment).
+static FROSTED: OnceLock<Image> = OnceLock::new();
 
-fn panes() -> &'static std::sync::Mutex<std::collections::HashMap<PaneKey, Image>> {
-    static PANES: OnceLock<std::sync::Mutex<std::collections::HashMap<PaneKey, Image>>> = OnceLock::new();
-    PANES.get_or_init(Default::default)
+fn frosted() -> Option<Image> {
+    FROSTED.get().cloned()
 }
 
-/// panes being made on a worker, and a counter that moves when one is done
-fn pending() -> &'static std::sync::Mutex<std::collections::HashSet<PaneKey>> {
-    static P: OnceLock<std::sync::Mutex<std::collections::HashSet<PaneKey>>> = OnceLock::new();
-    P.get_or_init(Default::default)
-}
-static PANES_DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// A pane, made (and kept) on first use.
-fn glass_pane_now(x: f32, y: f32, w: f32, h: f32, r: f32, focused: bool) -> Option<Image> {
-    let key = (x as i32, y as i32, w as i32, h as i32, r as i32, focused);
-    if let Some(img) = panes().lock().ok()?.get(&key).cloned() {
-        return Some(img);
+fn make_frosted() {
+    if FROSTED.get().is_some() {
+        return;
     }
-    let bg = scene()?;
-    let img = build_pane(&bg, x, y, w, h, r, focused)?;
-    panes().lock().ok()?.insert(key, img.clone());
-    PANES_DONE.fetch_add(1, std::sync::atomic::Ordering::Release);
-    Some(img)
-}
-
-/// A pane if it is ready; else it is started on a worker and None comes
-/// back (the caller draws a plain pane for now): a tab is never held up.
-fn glass_pane(x: f32, y: f32, w: f32, h: f32, r: f32, focused: bool) -> Option<Image> {
-    let key = (x as i32, y as i32, w as i32, h as i32, r as i32, focused);
-    if let Some(img) = panes().lock().ok()?.get(&key).cloned() {
-        return Some(img);
+    let Some(bg) = scene() else { return };
+    let s = crate::gfx::RENDER_SCALE;
+    let (w, h) = (bg.width() as usize, bg.height() as usize);
+    let mut buf = bg.data().to_vec();
+    blur(&mut buf, w, h, (12.0 * s) as usize);
+    // tint: darker and warmer, so text on the glass reads (BGRA)
+    for px in buf.chunks_exact_mut(4) {
+        px[0] = (px[0] as f32 * 0.62 + 6.0) as u8;
+        px[1] = (px[1] as f32 * 0.66 + 10.0) as u8;
+        px[2] = (px[2] as f32 * 0.70 + 16.0) as u8;
+        px[3] = 255;
     }
-    if pending().lock().ok()?.insert(key) {
-        std::thread::spawn(move || {
-            let _ = glass_pane_now(x, y, w, h, r, focused);
-            if let Ok(mut p) = pending().lock() {
-                p.remove(&key);
-            }
-        });
+    if let Some(mut pm) = tiny_skia::Pixmap::new(w as u32, h as u32) {
+        pm.data_mut().copy_from_slice(&buf);
+        let _ = FROSTED.set(std::sync::Arc::new(pm));
     }
-    None
 }
 
-fn panes_busy() -> bool {
-    pending().lock().map(|p| !p.is_empty()).unwrap_or(false)
-}
-
-/// Makes the background and the glass panes of "For you" on a worker at
-/// start, so Home's first frame is mostly copies (on a 400 MHz Pi a pane
-/// takes a while to make).
+/// Makes the background, the frosted layer and the hero picture on one
+/// worker at start: Home's first frame does no image work.
 pub fn prewarm() {
     std::thread::spawn(|| {
-        let _ = hero_image();
         let _ = scene();
-        let n = ROW_APPS.len() as f32;
-        let gap = 18.0;
-        let tw = (MAIN_W - gap * (n - 1.0)) / n;
-        let th = BOTTOM - ROW_Y;
-        let mut jobs = vec![(PAD, Y0, SIDE_W, BOTTOM - Y0, 22.0, false)];
-        for i in 0..ROW_APPS.len() {
-            let tx = MAIN_X + i as f32 * (tw + gap);
-            jobs.push((tx, ROW_Y, tw, th, 18.0, false));
-            jobs.push((tx, ROW_Y, tw, th, 18.0, true));
-        }
-        for (x, y, w, h, r, f) in jobs {
-            let _ = glass_pane_now(x, y, w, h, r, f);
-        }
+        make_frosted();
+        let _ = hero_image();
     });
 }
 
@@ -452,118 +424,6 @@ fn blur(buf: &mut [u8], w: usize, h: usize, radius: usize) {
         pass(buf, &mut tmp, w, 4, h, w * 4, radius);
         pass(&tmp, buf, h, w * 4, w, 4, radius);
     }
-}
-
-/// the margin around a pane image for its shadow (logical px)
-const SHADOW: f32 = 18.0;
-
-fn build_pane(scene: &tiny_skia::Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, focused: bool) -> Option<Image> {
-    let s = crate::gfx::RENDER_SCALE;
-    let sm = (SHADOW * s).round() as usize;
-    let (pw, ph) = ((w * s).round() as usize, (h * s).round() as usize);
-    let (x0, y0) = ((x * s).round() as isize, (y * s).round() as isize);
-    let (sw, sh) = (scene.width() as isize, scene.height() as isize);
-    let edge = 24.0 * s; // the bending rim
-    let bend = 46.0 * s; // how far the rim pulls the picture in
-    let m = (bend + 4.0 * s) as isize; // margin read around the pane
-    let (bw, bh) = (pw + 2 * m as usize, ph + 2 * m as usize);
-    // the picture behind the pane (with a margin), frosted
-    let src = scene.data();
-    let mut back = vec![0u8; bw * bh * 4];
-    for by in 0..bh {
-        let sy = (y0 - m + by as isize).clamp(0, sh - 1) as usize;
-        for bx in 0..bw {
-            let sx = (x0 - m + bx as isize).clamp(0, sw - 1) as usize;
-            let si = (sy * sw as usize + sx) * 4;
-            back[(by * bw + bx) * 4..][..4].copy_from_slice(&src[si..si + 4]);
-        }
-    }
-    blur(&mut back, bw, bh, (6.0 * s) as usize);
-
-    let (ow, oh) = (pw + 2 * sm, ph + 2 * sm);
-    let mut pm = tiny_skia::Pixmap::new(ow as u32, oh as u32)?;
-    let out = pm.data_mut();
-    let rr = (r * s).min(pw as f32 / 2.0).min(ph as f32 / 2.0);
-    let (hx, hy) = (pw as f32 / 2.0 - rr, ph as f32 / 2.0 - rr);
-    let sdf = |px: f32, py: f32| {
-        let qx = px.abs() - hx;
-        let qy = py.abs() - hy;
-        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - rr
-    };
-    // shadow and dark edge, in the margin and under the pane
-    let drop = 6.0 * s;
-    let soft = 9.0 * s;
-    for j in 0..oh {
-        for i in 0..ow {
-            let px = i as f32 + 0.5 - sm as f32 - pw as f32 / 2.0;
-            let py = j as f32 + 0.5 - sm as f32 - ph as f32 / 2.0;
-            let d = sdf(px, py - drop).max(0.0);
-            let mut a = 0.50 * (-(d / soft) * (d / soft)).exp();
-            let e = sdf(px, py);
-            if e > -0.5 && e < 1.6 * s {
-                a = a.max(0.45 * (1.0 - (e / (1.6 * s)).clamp(0.0, 1.0)));
-            }
-            out[(j * ow + i) * 4 + 3] = (a * 255.0) as u8; // black: only alpha
-        }
-    }
-    let (lx, ly) = (-0.55f32, -0.83f32); // light from the top left
-    let (tint, ta) = if focused {
-        ([60.0, 128.0, 190.0], 0.22) // gold (BGR)
-    } else {
-        ([14.0, 20.0, 30.0], 0.22)
-    };
-    let lift = if focused { 6.0 } else { 0.0 };
-    for j in 0..ph {
-        for i in 0..pw {
-            let px = i as f32 + 0.5 - pw as f32 / 2.0;
-            let py = j as f32 + 0.5 - ph as f32 / 2.0;
-            let qx = px.abs() - hx;
-            let qy = py.abs() - hy;
-            let outside = sdf(px, py);
-            let cover = (0.5 - outside).clamp(0.0, 1.0);
-            if cover <= 0.0 {
-                continue;
-            }
-            let depth = -outside; // distance in from the edge
-            // outward normal of the nearest edge
-            let (nx, ny) = if qx > 0.0 && qy > 0.0 {
-                let l = qx.hypot(qy).max(1e-3);
-                (qx / l * px.signum(), qy / l * py.signum())
-            } else if qx > qy {
-                (px.signum(), 0.0)
-            } else {
-                (0.0, py.signum())
-            };
-            // lens: near the rim the picture is pulled in from further out
-            let t = (1.0 - depth / edge).clamp(0.0, 1.0);
-            let pull = t * t * t * bend;
-            let sx = (m as f32 + i as f32 - nx * pull).clamp(0.0, (bw - 1) as f32) as usize;
-            let sy = (m as f32 + j as f32 - ny * pull).clamp(0.0, (bh - 1) as f32) as usize;
-            let b = &back[(sy * bw + sx) * 4..][..3];
-            // light: a bright rim facing the light, a shade on the far side,
-            // and a soft inner glow all along the rim
-            let facing = -(nx * lx + ny * ly);
-            let rim = (1.0 - depth / (1.8 * s)).clamp(0.0, 1.0);
-            // only the rim catches light: no haze over the pane. A ground
-            // bevel just inside it gives the glass its thickness: lit where it
-            // faces the light, in shade on the far side
-            let bevel = (1.0 - depth / (8.0 * s)).clamp(0.0, 1.0).powi(2);
-            let spec = rim * (0.20 + 0.75 * facing.max(0.0))
-                + bevel * 0.30 * facing.max(0.0)
-                + t.powi(6) * 0.10;
-            let shade = rim * (-facing).max(0.0) * 0.35 + bevel * 0.45 * (-facing).max(0.0);
-            let o = ((j + sm) * ow + i + sm) * 4;
-            let under = out[o + 3] as f32 / 255.0; // shadow already there
-            let a = cover + under * (1.0 - cover);
-            for ch in 0..3 {
-                let v = b[ch] as f32 * (1.0 - ta) + tint[ch] * ta + lift;
-                let v = v + (255.0 - v) * spec - v * shade;
-                out[o + ch] = (v.clamp(0.0, 255.0) * cover) as u8;
-            }
-            out[o + 3] = (a * 255.0) as u8;
-        }
-    }
-    Some(std::sync::Arc::new(pm))
 }
 
 impl Hub {
@@ -701,7 +561,8 @@ impl Hub {
         let (hx, hy, hw, hh) = (MAIN_X, Y0, MAIN_W, HERO_H);
         c.rect(hx, hy, hw, hh, 22.0, Rgba(24, 18, 12, 255));
         if let Some(img) = hero_image() {
-            c.image_cover(&img, hx, hy, hw, hh, 22.0);
+            // already at its display size: drawn as is, no scaled copy
+            c.image_native(&img, hx, hy);
         }
         c.vgradient(hx, hy + hh * 0.5, hw, hh * 0.5, 22.0, Rgba(0, 0, 0, 0), Rgba(0, 0, 0, 70));
         c.stroke_rect(hx + 0.5, hy + 0.5, hw - 1.0, hh - 1.0, 22.0, 1.0, Rgba(255, 236, 200, 40));

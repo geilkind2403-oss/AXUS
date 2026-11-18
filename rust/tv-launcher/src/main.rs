@@ -1365,6 +1365,11 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
             }
             settle(app, 900);
             gfx::save_png(&app.canvas.pm, &format!("{dir}/{name}.png")).ok();
+            let rss = std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|st| st.lines().find(|l| l.starts_with("VmRSS")).map(|l| l.to_string()))
+                .unwrap_or_default();
+            log(&format!("{name}: {rss}"));
         }
         return;
     }
