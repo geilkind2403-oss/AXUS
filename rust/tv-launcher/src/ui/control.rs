@@ -661,7 +661,7 @@ fn content_canvas(threads: usize) -> Canvas {
     Canvas::new_scaled_with_threads(
         REGION.2 as u32,
         REGION.3 as u32,
-        crate::gfx::RENDER_SCALE,
+        crate::gfx::render_scale(),
         threads,
     )
 }

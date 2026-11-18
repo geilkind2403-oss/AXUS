@@ -90,43 +90,11 @@ pub struct Hub {
     glass_drawn: bool,
 }
 
-fn hero_image() -> Option<Image> {
-    static HERO: OnceLock<Option<Image>> = OnceLock::new();
-    HERO.get_or_init(|| {
-        let s = crate::gfx::RENDER_SCALE;
-        let mut img = crate::gfx::decode_cover_image(
-            include_bytes!("../../assets/home/hero.jpg"),
-            (MAIN_W * s) as u32,
-            (HERO_H * s) as u32,
-        )?;
-        // darker towards the left so the text reads: baked in once, so it
-        // costs nothing per frame (and has no visible steps)
-        let pm = std::sync::Arc::make_mut(&mut img);
-        let w = pm.width() as usize;
-        let data = pm.data_mut();
-        let k: Vec<u32> = (0..w)
-            .map(|x| {
-                let t = (x as f32 / w as f32 / 0.65).min(1.0);
-                let dark = 0.72 * (1.0 - t * t * (3.0 - 2.0 * t));
-                ((1.0 - dark) * 256.0) as u32
-            })
-            .collect();
-        for row in data.chunks_exact_mut(w * 4) {
-            for (px, k) in row.chunks_exact_mut(4).zip(&k) {
-                for ch in &mut px[..3] {
-                    *ch = ((*ch as u32 * k) >> 8) as u8;
-                }
-            }
-        }
-        Some(img)
-    })
-    .clone()
-}
 
 fn app_icon(app: App) -> Option<Image> {
     static ICONS: OnceLock<[Option<Image>; 3]> = OnceLock::new();
     let icons = ICONS.get_or_init(|| {
-        let px = (64.0 * crate::gfx::RENDER_SCALE) as u32;
+        let px = (64.0 * crate::gfx::render_scale()) as u32;
         [
             include_bytes!("../../assets/apps/youtube.png").as_slice(),
             include_bytes!("../../assets/apps/prime.png").as_slice(),
@@ -335,26 +303,14 @@ fn panel(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, focused: bool) 
     }
 }
 
-/// The Home background: the hero picture over the whole screen, darkened so
-/// text stays readable (darker towards the bottom). 8 MB on the Pi, once.
+/// The Home background: the same liquid-gold backdrop as Settings, once.
 fn scene() -> Option<Image> {
     static SCENE: OnceLock<Option<Image>> = OnceLock::new();
     SCENE
         .get_or_init(|| {
-            let s = crate::gfx::RENDER_SCALE;
+            let s = crate::gfx::render_scale();
             let (w, h) = ((1280.0 * s) as u32, (720.0 * s) as u32);
-            let img = image::load_from_memory(include_bytes!("../../assets/home/hero.jpg")).ok()?;
-            let img = img.resize_to_fill(w, h, image::imageops::FilterType::Triangle).to_rgb8();
-            let mut pm = tiny_skia::Pixmap::new(w, h)?;
-            let out = pm.data_mut();
-            for (i, (o, p)) in out.chunks_exact_mut(4).zip(img.pixels()).enumerate() {
-                let yy = (i as u32 / w) as f32 / h as f32;
-                let k = 0.70 - 0.26 * yy;
-                o[0] = (p[2] as f32 * k) as u8;
-                o[1] = (p[1] as f32 * k) as u8;
-                o[2] = (p[0] as f32 * k) as u8;
-                o[3] = 255;
-            }
+            let pm = crate::gfx::liquid_gold_frame(w, h)?;
             Some(std::sync::Arc::new(pm))
         })
         .clone()
@@ -374,7 +330,7 @@ fn make_frosted() {
         return;
     }
     let Some(bg) = scene() else { return };
-    let s = crate::gfx::RENDER_SCALE;
+    let s = crate::gfx::render_scale();
     let (w, h) = (bg.width() as usize, bg.height() as usize);
     let mut buf = bg.data().to_vec();
     blur(&mut buf, w, h, (12.0 * s) as usize);
@@ -397,7 +353,6 @@ pub fn prewarm() {
     std::thread::spawn(|| {
         let _ = scene();
         make_frosted();
-        let _ = hero_image();
     });
 }
 
@@ -559,12 +514,7 @@ impl Hub {
 
         // continue watching
         let (hx, hy, hw, hh) = (MAIN_X, Y0, MAIN_W, HERO_H);
-        c.rect(hx, hy, hw, hh, 22.0, Rgba(24, 18, 12, 255));
-        if let Some(img) = hero_image() {
-            // already at its display size: drawn as is, no scaled copy
-            c.image_native(&img, hx, hy);
-        }
-        c.vgradient(hx, hy + hh * 0.5, hw, hh * 0.5, 22.0, Rgba(0, 0, 0, 0), Rgba(0, 0, 0, 70));
+        panel(c, hx, hy, hw, hh, 22.0, false);
         c.stroke_rect(hx + 0.5, hy + 0.5, hw - 1.0, hh - 1.0, 22.0, 1.0, Rgba(255, 236, 200, 40));
         let (title, sub) = match resume_item(cx) {
             Resume::Film(f) => (
@@ -708,7 +658,7 @@ fn draw_films_preview(c: &mut Canvas, cx: &mut Ctx) {
         let x = PAD + i as f32 * (w + gap);
         let y = Y0;
         panel(c, x, y, w, h, 16.0, false);
-        let s = crate::gfx::RENDER_SCALE;
+        let s = crate::gfx::render_scale();
         if let Some(img) = (!f.icon.is_empty())
             .then(|| cx.images.get_cover(&f.icon, (w * s) as u32, (h * s) as u32))
             .flatten()
@@ -738,7 +688,7 @@ fn draw_news_preview(c: &mut Canvas, cx: &mut Ctx) {
     let lh = content_bottom - ly;
     panel(c, lx, ly, lw, lh, 22.0, false);
     let top = &items[0];
-    let s = crate::gfx::RENDER_SCALE;
+    let s = crate::gfx::render_scale();
     let (ix, iy, iw, ih) = (lx + 10.0, ly + 10.0, lw - 20.0, lh - 200.0);
     match (!top.image.is_empty())
         .then(|| cx.images.get_cover(&top.image, (iw * s) as u32, (ih * s) as u32))

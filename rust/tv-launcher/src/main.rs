@@ -495,8 +495,8 @@ fn main() {
         None
     } else {
         match platform::kms::Kms::open(
-            (gfx::W as f32 * gfx::RENDER_SCALE) as u32,
-            (gfx::H as f32 * gfx::RENDER_SCALE) as u32,
+            (gfx::W as f32 * gfx::render_scale()) as u32,
+            (gfx::H as f32 * gfx::render_scale()) as u32,
         ) {
             Ok(k) => Some(Arc::new(Mutex::new(k))),
             Err(e) => {
@@ -547,7 +547,7 @@ fn main() {
     let mut app = App {
         cx,
         stack: vec![home],
-        canvas: gfx::Canvas::new_scaled(gfx::W, gfx::H, gfx::RENDER_SCALE),
+        canvas: gfx::Canvas::new_scaled(gfx::W, gfx::H, gfx::render_scale()),
         dirty: true,
         fade: None,
         last_input: Instant::now(),

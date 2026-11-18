@@ -13,7 +13,45 @@ pub const W: u32 = 1280;
 pub const H: u32 = 720;
 /// Render at the Pi's native 1080p output size; other targets keep the
 /// 720p logical canvas used by the design.
-pub const RENDER_SCALE: f32 = if cfg!(target_arch = "arm") { 1.5 } else { 1.0 };
+pub fn render_scale() -> f32 {
+    static S: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        if let Some(v) = std::env::var("TV_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
+            return v.clamp(1.0, 1.5);
+        }
+        if !cfg!(target_arch = "arm") {
+            return 1.0;
+        }
+        if low_end() { 1.0 } else { 1.5 }
+    })
+}
+
+/// Low-end mode: one core or under 512 MB RAM. The UI then draws at 720p
+/// (the display plane scales it to the TV for free).
+pub fn low_end() -> bool {
+    static L: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let mem_mb = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|m| {
+                m.lines()
+                    .find(|l| l.starts_with("MemTotal:"))
+                    .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            })
+            .map(|kb| kb / 1024)
+            .unwrap_or(1024);
+        cores <= 1 || mem_mb < 512
+    })
+}
+
+/// The Settings gold backdrop as one full-screen picture (Home uses it too).
+pub fn liquid_gold_frame(w: u32, h: u32) -> Option<Pixmap> {
+    let mut pm = Pixmap::new(w, h)?;
+    Canvas::fill_backdrop(&mut pm, 1);
+    let small = ambient_small(&Ambient::LiquidGold)?;
+    Some(render_ambient(&pm, &small))
+}
 // The Pi CPU cannot blend 2880x1620 ambient frames cheaply. On ARM, swap the
 // already-rendered backdrop in one frame; focus and page transitions remain
 // animated. Desktop keeps the smoother crossfade.
@@ -219,7 +257,7 @@ pub fn decode_cover_image(bytes: &[u8], w: u32, h: u32) -> Option<Image> {
     }
     let img = image::load_from_memory(bytes).ok()?;
     let img = img.resize_to_fill(w, h, image::imageops::FilterType::Triangle);
-    image_to_rounded_pixmap(img, 22.0 * RENDER_SCALE)
+    image_to_rounded_pixmap(img, 22.0 * render_scale())
 }
 
 fn image_to_pixmap(img: image::DynamicImage) -> Option<Image> {
@@ -1729,6 +1767,7 @@ impl Canvas {
     /// Draws a picture that is already at its display size (physical px),
     /// top-left at (x, y): no scaling and no copy into the scaled-image
     /// cache, so any number of such pictures cost one blend each.
+    #[allow(dead_code)]
     pub fn image_native(&mut self, img: &Image, x: f32, y: f32) {
         let (w, h) = (img.width() as f32 / self.scale, img.height() as f32 / self.scale);
         let ox = ((x + self.offset.0) * self.scale).round() as i32;

@@ -8,10 +8,12 @@ use std::time::{Duration, Instant};
 
 /// The preview photo, decoded at the size it is shown (physical px): a
 /// picture that needs no resampling is copied, not filtered.
-const PREVIEW_PX: (u32, u32) = (
-    (544.0 * crate::gfx::RENDER_SCALE) as u32,
-    (306.0 * crate::gfx::RENDER_SCALE) as u32,
-);
+fn preview_px() -> (u32, u32) {
+    (
+        (544.0 * crate::gfx::render_scale()) as u32,
+        (306.0 * crate::gfx::render_scale()) as u32,
+    )
+}
 const X: f32 = 650.0;
 const RIGHT: f32 = 1220.0;
 const ROW_W: f32 = RIGHT - X;
@@ -322,7 +324,7 @@ impl NewsScreen {
             );
             return;
         };
-        if let Some(image) = cx.images.get_cover(&item.image, PREVIEW_PX.0, PREVIEW_PX.1) {
+        if let Some(image) = cx.images.get_cover(&item.image, preview_px().0, preview_px().1) {
             c.image_cover(&image, 64.0, 150.0, 544.0, 306.0, 18.0);
         } else {
             draw_editorial_placeholder(c);
@@ -635,8 +637,8 @@ impl Screen for NewsScreen {
             let image_revision = if source.is_empty() {
                 0
             } else {
-                cx.images.get_cover(source, PREVIEW_PX.0, PREVIEW_PX.1);
-                cx.images.cover_source_revision(source, PREVIEW_PX.0, PREVIEW_PX.1)
+                cx.images.get_cover(source, preview_px().0, preview_px().1);
+                cx.images.cover_source_revision(source, preview_px().0, preview_px().1)
             };
             let preview_key = (
                 self.data_revision,
@@ -668,8 +670,8 @@ impl Screen for NewsScreen {
                 .as_ref()
                 .filter(|item| !item.image.is_empty())
                 .map(|item| {
-                    cx.images.get_cover(&item.image, PREVIEW_PX.0, PREVIEW_PX.1);
-                    cx.images.cover_source_revision(&item.image, PREVIEW_PX.0, PREVIEW_PX.1)
+                    cx.images.get_cover(&item.image, preview_px().0, preview_px().1);
+                    cx.images.cover_source_revision(&item.image, preview_px().0, preview_px().1)
                 })
                 .unwrap_or(0);
             let preview_key = (
