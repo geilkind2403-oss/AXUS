@@ -174,6 +174,20 @@ fn pick_mode(modes: &[Mode]) -> Option<Mode> {
         }
         crate::log(&format!("TV_MODE={want} bietet der Fernseher nicht an"));
     }
+    // Weak hardware draws at 720p: run the TV at 720p too, so the menu
+    // plane needs no scaling. The Pi's scaler memory is small; a scaled menu
+    // plus a scaled video plane don't fit together (set_plane: No space left
+    // on device -- the missing Live TV picture). The TV scales instead.
+    if crate::gfx::low_end() {
+        let pick = |hz: std::ops::RangeInclusive<u32>| {
+            modes.iter().copied().find(|m| {
+                m.size() == (1280, 720) && hz.contains(&m.vrefresh()) && !interlaced(m)
+            })
+        };
+        if let Some(m) = pick(59..=61).or_else(|| pick(49..=51)) {
+            return Some(m);
+        }
+    }
     let score = |m: &Mode| -> u64 {
         let (w, h) = m.size();
         let fits = w <= 1920 && h <= 1080;
