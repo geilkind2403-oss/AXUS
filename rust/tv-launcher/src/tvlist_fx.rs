@@ -113,6 +113,21 @@ impl TvList {
         let raw = self.raw as usize;
         // a strip of rows is not worth waking four threads for
         let threads = if rows < 200 { 1 } else { threads.clamp(1, 4) };
+        if threads == 1 {
+            // no thread to start for one: draw right here
+            let fp = focus.as_ref().map(|f| f.as_ptr()).unwrap_or(std::ptr::null());
+            unsafe {
+                tvl_render_rows(
+                    raw as *const c_void,
+                    frame[stride * y0..].as_mut_ptr(),
+                    stride as i32,
+                    y0 as i32,
+                    y1 as i32,
+                    fp,
+                );
+            }
+            return;
+        }
         let per = rows.div_ceil(threads);
         std::thread::scope(|sc| {
             for (i, chunk) in frame[stride * y0..stride * y1]

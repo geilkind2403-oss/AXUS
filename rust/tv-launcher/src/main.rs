@@ -939,6 +939,45 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         shot(app, "02-home-arrange-target");
         return;
     }
+    if std::env::var_os("SHOT_LIVETV_TRACE").is_some() {
+        // a list as big as the real one: 2000 channels in 40 countries
+        let channels = (0..2000)
+            .map(|i| livetv::Channel {
+                number: i + 1,
+                name: format!("Sender {i} HD"),
+                group: format!("G{:02}", i % 40),
+                logo: String::new(),
+                url: format!("https://example.invalid/c{i}.m3u8"),
+            })
+            .collect();
+        app.cx
+            .channels
+            .set(Ok((Arc::new(channels), "Trace".into())));
+        app.stack.push(Box::new(ui::livetv::LiveTv::new(&mut app.cx)));
+        settle(app, 300);
+        let keys = [
+            Key::Ok, Key::Down, Key::Down, Key::Down, Key::Left, Key::Down, Key::Down,
+            Key::Up, Key::Right, Key::Down, Key::Back,
+        ];
+        for k in keys {
+            app.key(k);
+            let t0 = Instant::now();
+            let mut last = Instant::now();
+            let mut frames = Vec::new();
+            while t0.elapsed() < Duration::from_millis(500) {
+                let now = Instant::now();
+                ui::set_frame_dt(now.duration_since(last).as_secs_f32());
+                last = now;
+                let f = Instant::now();
+                if app.frame() {
+                    frames.push(format!("{:.1}", f.elapsed().as_secs_f64() * 1000.0));
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            log(&format!("LiveTV {k:?}: {}", frames.join(" ")));
+        }
+        return;
+    }
     if std::env::var_os("SHOT_LIVETV_ONLY").is_some() {
         let names = [
             ("Das Erste HD", "DE"),

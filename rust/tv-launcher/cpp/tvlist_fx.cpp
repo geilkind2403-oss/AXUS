@@ -374,7 +374,15 @@ void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0
             int a0 = s->text_span[y * 2], a1 = s->text_span[y * 2 + 1];
             const uint8_t *__restrict t = s->text + (ptrdiff_t)s->text_stride * y;
             for (int i = a0 * 4; i < a1 * 4; i += 4) {
-                uint32_t inv = 256 - t[i + 3];
+                // most of a text row is empty: skip clear pixels, and
+                // copy fully opaque ones
+                uint32_t ta = t[i + 3];
+                if (ta == 0) continue;
+                if (ta == 255) {
+                    d[i] = t[i]; d[i + 1] = t[i + 1]; d[i + 2] = t[i + 2]; d[i + 3] = 255;
+                    continue;
+                }
+                uint32_t inv = 256 - ta;
                 d[i] = (uint8_t)(t[i] + ((d[i] * inv) >> 8));
                 d[i + 1] = (uint8_t)(t[i + 1] + ((d[i + 1] * inv) >> 8));
                 d[i + 2] = (uint8_t)(t[i + 2] + ((d[i + 2] * inv) >> 8));
