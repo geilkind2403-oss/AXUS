@@ -621,3 +621,87 @@ pub fn network_details() -> NetworkDetails {
     }
     info
 }
+
+/// Remote login (SSH, AXOS's dropbear). Off unless switched on here.
+pub fn ssh_available() -> bool {
+    std::path::Path::new("/usr/sbin/dropbear").exists()
+}
+
+pub fn ssh_enabled() -> bool {
+    run("systemctl", &["is-enabled", "dropbear"])
+        .map(|s| s.trim() == "enabled")
+        .unwrap_or(false)
+}
+
+pub fn set_ssh(on: bool) -> Result<String, String> {
+    if !ssh_available() {
+        return Err("SSH gibt es nur unter AXOS".into());
+    }
+    let ok = Command::new("systemctl")
+        .args([if on { "enable" } else { "disable" }, "--now", "dropbear"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    match (ok, on) {
+        (true, true) => Ok("SSH eingeschaltet".into()),
+        (true, false) => Ok("SSH ausgeschaltet".into()),
+        (false, _) => Err("SSH ließ sich nicht umschalten".into()),
+    }
+}
+
+/// Whether root has a password (AXOS ships without one: login is locked).
+pub fn password_set() -> bool {
+    std::fs::read_to_string("/etc/shadow")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("root:"))
+                .map(|l| l.split(':').nth(1).unwrap_or("").to_string())
+        })
+        .map(|h| !h.is_empty() && !h.starts_with('!') && !h.starts_with('*'))
+        .unwrap_or(false)
+}
+
+/// Sets root's password; empty locks the login again.
+pub fn set_password(pw: &str) -> Result<String, String> {
+    use std::io::Write;
+    if pw.is_empty() {
+        let ok = Command::new("passwd")
+            .args(["-l", "root"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        return if ok {
+            Ok("Passwort entfernt – Anmeldung gesperrt".into())
+        } else {
+            Err("Passwort ließ sich nicht entfernen".into())
+        };
+    }
+    if pw.chars().count() < 6 {
+        return Err("Mindestens 6 Zeichen".into());
+    }
+    if pw.contains(':') || pw.contains('\n') {
+        return Err("Doppelpunkt und Zeilenumbruch gehen nicht".into());
+    }
+    let child = Command::new("chpasswd")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let ok = match child {
+        Ok(mut c) => {
+            let wrote = c
+                .stdin
+                .take()
+                .map(|mut i| i.write_all(format!("root:{pw}\n").as_bytes()).is_ok())
+                .unwrap_or(false);
+            wrote && c.wait().map(|s| s.success()).unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+    if ok {
+        Ok("Passwort gespeichert".into())
+    } else {
+        Err("Passwort ließ sich nicht speichern".into())
+    }
+}

@@ -24,6 +24,7 @@ enum Edit {
     WifiPass(Wifi),
     FilmServer,
     City,
+    RootPass,
 }
 
 pub struct Settings {
@@ -50,6 +51,8 @@ pub struct Settings {
     /// a chosen version being downloaded; asks to install once it is ready
     switching: Option<crate::updater::Release>,
     kb: Option<(Keyboard, Edit)>,
+    /// (SSH on, password set), asked when System opens and after a change
+    ssh: Slot<(bool, bool)>,
     confirm: Option<usize>,
     native_view: view::Animation,
 }
@@ -85,6 +88,7 @@ impl Settings {
             pick: 0,
             switching: None,
             kb: None,
+            ssh: Slot::empty(),
             confirm: None,
             native_view: view::Animation::default(),
         }
@@ -100,9 +104,9 @@ impl Settings {
             3 => 5,
             4 => 6,
             5 => 2,
-            6 => 1,
+            6 => 2,
             7 => 1,
-            8 => 9,
+            8 => 11,
             _ => {
                 let _ = cx;
                 0
@@ -124,7 +128,10 @@ impl Settings {
                 self.bt_requested = true;
                 self.bt = load(&cx.tx, || system::bt_devices(0));
             }
-            8 => self.refresh_system_stats(cx),
+            8 => {
+                self.refresh_system_stats(cx);
+                self.ssh = load(&cx.tx, ssh_state);
+            }
             _ => {}
         }
     }
@@ -285,6 +292,25 @@ impl Settings {
                 cx.toast("Messbericht gespeichert – am Handy herunterladen");
             }
             (8, 6) => self.confirm = Some(6),
+            (6, 1) => {
+                crate::remote::forget_all();
+                cx.toast("Alle Handys vergessen – sie müssen sich neu koppeln");
+            }
+            (8, 9) => {
+                let on = !self.ssh.get().map(|s| s.0).unwrap_or(false);
+                self.busy = load(&cx.tx, move || system::set_ssh(on));
+                self.ssh = load(&cx.tx, ssh_state_after_change);
+            }
+            (8, 10) => {
+                self.kb = Some((
+                    Keyboard::new(
+                        "Neues Passwort (mind. 6 Zeichen, leer = Anmeldung sperren)",
+                        "",
+                        true,
+                    ),
+                    Edit::RootPass,
+                ))
+            }
             (8, 7) => match self.releases.get() {
                 Some(Ok(list)) if !list.is_empty() => {
                     let r = list[self.pick.min(list.len() - 1)].clone();
@@ -437,6 +463,11 @@ impl Settings {
                     cx.cfg.positions.clone(),
                 );
                 cx.films.refresh(&cx.tx, &s, &d, &p);
+            }
+            Edit::RootPass => {
+                let pw = text;
+                self.busy = load(&cx.tx, move || system::set_password(&pw));
+                self.ssh = load(&cx.tx, ssh_state_after_change);
             }
             Edit::LiveUrl => {
                 cx.cfg.livetv_url = text.trim().to_string();
@@ -858,6 +889,14 @@ impl Screen for Settings {
                     }
                     .into(),
                 ));
+                rows.push((
+                    "Gekoppelte Handys".into(),
+                    match crate::remote::paired_count() {
+                        0 => "keins".to_string(),
+                        1 => "1 · OK vergisst es".to_string(),
+                        n => format!("{n} · OK vergisst alle"),
+                    },
+                ));
             }
             7 => {
                 rows.push((
@@ -901,6 +940,23 @@ impl Screen for Settings {
                 rows.push((
                     "Versionsliste neu laden".into(),
                     format!("läuft: {} · {}", crate::updater::running_version(), crate::updater::running_codename()),
+                ));
+                rows.push((
+                    "Fernzugriff (SSH)".into(),
+                    match self.ssh.get() {
+                        _ if !system::ssh_available() => "nur unter AXOS".into(),
+                        Some((true, _)) => "‹ Ein ›".into(),
+                        Some((false, _)) => "‹ Aus ›".into(),
+                        None => "…".into(),
+                    },
+                ));
+                rows.push((
+                    "Passwort für SSH".into(),
+                    match self.ssh.get() {
+                        Some((_, true)) => "festgelegt · OK ändert".into(),
+                        Some((_, false)) => "keins · OK legt fest".into(),
+                        None => "…".into(),
+                    },
                 ));
             }
         }
@@ -1135,6 +1191,15 @@ fn setting_help(section: usize, item: usize) -> &'static str {
         }
         (8, 8) => {
             "Fragt GitHub nach allen Versionen und speichert die Liste. Danach öffnet „Version wählen“ sie sofort, ohne Suche."
+        }
+        (6, 1) => {
+            "Jedes Handy muss sich einmal mit dem Code koppeln, den der Fernseher zeigt. Hier vergisst du alle gekoppelten Handys."
+        }
+        (8, 9) => {
+            "Erlaubt die Anmeldung per SSH im Heimnetz. Ab Werk aus. Ohne Passwort kann sich niemand anmelden."
+        }
+        (8, 10) => {
+            "Lege selbst ein Passwort fest (mindestens 6 Zeichen). Leer lassen sperrt die Anmeldung wieder."
         }
         (8, 6) => {
             "Löscht gespeicherte Millisekunden- und Animationsmessungen auf dem Pi. Die Erfassung läuft danach mit einem frischen Bericht weiter."
@@ -1752,4 +1817,14 @@ fn draw_qr(c: &mut Canvas, text: &str, x: f32, y: f32, size: f32) {
             }
         }
     }
+}
+
+fn ssh_state() -> (bool, bool) {
+    (system::ssh_enabled(), system::password_set())
+}
+
+/// The state once a change (running at the same time) has had time to land.
+fn ssh_state_after_change() -> (bool, bool) {
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    ssh_state()
 }

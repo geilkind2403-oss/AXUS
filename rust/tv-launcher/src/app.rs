@@ -457,6 +457,8 @@ impl Images {
 pub struct Toast {
     pub text: String,
     pub at: Instant,
+    /// seconds on screen
+    pub dur: f32,
 }
 
 /// Everything screens share.
@@ -518,6 +520,16 @@ impl Ctx {
         self.toast = Some(Toast {
             text: s.into(),
             at: Instant::now(),
+            dur: 4.5,
+        });
+    }
+    /// A notice that must be seen (a pairing code): shown even with "do not
+    /// disturb", for `secs` seconds.
+    pub fn notice(&mut self, s: impl Into<String>, secs: f32) {
+        self.toast = Some(Toast {
+            text: s.into(),
+            at: Instant::now(),
+            dur: secs,
         });
     }
     pub fn save(&self) {

@@ -311,7 +311,7 @@ pub fn clock_pill(c: &mut Canvas, cx: &Ctx, status_x: f32, focused: bool) {
 /// on even coordinates, so it lands on whole pixels at the Pi's 1.5x scale.
 pub fn toast_area(c: &mut Canvas, cx: &mut Ctx) -> Option<(f32, f32, f32, f32)> {
     let t = cx.toast.as_ref()?;
-    if t.at.elapsed().as_secs_f32() > 4.5 {
+    if t.at.elapsed().as_secs_f32() > t.dur {
         cx.toast = None;
         return None;
     }
@@ -324,11 +324,12 @@ pub fn toast_area(c: &mut Canvas, cx: &mut Ctx) -> Option<(f32, f32, f32, f32)> 
 pub fn toast(c: &mut Canvas, cx: &mut Ctx) {
     let Some(t) = &cx.toast else { return };
     let age = t.at.elapsed().as_secs_f32();
-    if age > 4.5 {
+    let dur = t.dur;
+    if age > dur {
         cx.toast = None;
         return;
     }
-    let a = (age / 0.25).min(1.0).min((4.5 - age) / 0.4);
+    let a = (age / 0.25).min(1.0).min((dur - age) / 0.4);
     let text = t.text.clone();
     let w = (c.fonts.width(&text, 20, Weight::Semi) + 56.0).min(1100.0);
     let x = (crate::gfx::W as f32 - w) / 2.0;
