@@ -92,6 +92,7 @@ struct Prepared {
     fx: Option<GlassFx>,
 }
 static PREPARED: OnceLock<Mutex<Option<Prepared>>> = OnceLock::new();
+static GLASS_BUILDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn prepared() -> &'static Mutex<Option<Prepared>> {
     PREPARED.get_or_init(|| Mutex::new(None))
@@ -225,17 +226,17 @@ impl Control {
         let stride = c.pm.width() as usize * 4;
         let print = region_print(c, rx, ry, pw, ph);
         {
-            let mut p = prepared().lock().unwrap_or_else(|e| e.into_inner());
+            let p = prepared().lock().unwrap_or_else(|e| e.into_inner());
             if matches!(&*p, Some(q) if q.print == print && q.minute == minute && q.size == size) {
                 return;
             }
-            // claimed: no second worker for the same picture
-            *p = Some(Prepared {
-                minute,
-                size,
-                print,
-                fx: None,
-            });
+            // One build at a time (a slow Pi got several at once, each
+            // started by a focus move). The last finished glass stays
+            // usable meanwhile: under the blur a slightly older Home looks
+            // the same.
+            if GLASS_BUILDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                return;
+            }
         }
         let mut back = Vec::with_capacity(pw as usize * ph as usize * 4);
         for y in 0..ph as usize {
@@ -254,7 +255,7 @@ impl Control {
                     glass.build().then_some(GlassFx { glass, tiles_key })
                 });
                 let mut p = prepared().lock().unwrap_or_else(|e| e.into_inner());
-                if matches!(&*p, Some(q) if q.print == print && q.size == size && q.fx.is_none()) {
+                if fx.is_some() {
                     *p = Some(Prepared {
                         minute,
                         size,
@@ -262,6 +263,7 @@ impl Control {
                         fx,
                     });
                 }
+                GLASS_BUILDING.store(false, std::sync::atomic::Ordering::Release);
             });
     }
 
@@ -273,10 +275,6 @@ impl Control {
         )
     }
 
-    /// Home changes: the prepared glass shows an old picture.
-    pub fn discard_glass() {
-        *prepared().lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
 
     pub fn prewarm_ready(cx: &Ctx, over_video: bool) -> bool {
         let key = current_panel_key(cx, over_video);
@@ -303,11 +301,9 @@ impl Control {
         } else {
             let mut p = prepared().lock().unwrap_or_else(|e| e.into_inner());
             match p.take() {
-                Some(Prepared {
-                    minute: m,
-                    fx: Some(fx),
-                    ..
-                }) if m == minute => Some(fx),
+                // any finished glass: a minute-old clock under the blur
+                // can't be told apart
+                Some(Prepared { fx: Some(fx), .. }) => Some(fx),
                 other => {
                     *p = other;
                     None

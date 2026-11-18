@@ -209,10 +209,9 @@ impl App {
         perf::key(&format!("{k:?}"), self.top().name());
         if self.top().name() == "home" && k != Key::LongOk {
             self.control_blur_cache = None;
-            // Home is about to change: the prepared glass shows the old picture
-            if k != Key::Ok {
-                ui::control::Control::discard_glass();
-            }
+            // the prepared quick-menu glass stays: under its blur a Home
+            // one focus move older looks the same, and a newer one is
+            // built when Home rests
         }
         if k == Key::LongBack {
             self.apply(Nav::Home);
