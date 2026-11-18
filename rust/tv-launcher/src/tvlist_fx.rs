@@ -1,7 +1,6 @@
 //! Safe wrapper around the C++ picture of the Live TV channel list
 //! (`cpp/tvlist_fx.cpp`): the black-gold wave, the glass rows, the gliding
 //! focus and the window the running channel plays in.
-use crate::gfx::Image;
 use std::os::raw::c_void;
 
 extern "C" {
@@ -11,12 +10,14 @@ extern "C" {
     fn tvl_set_rows(s: *mut c_void, rects: *const f32, flags: *const u8, n: i32, radius: f32);
     fn tvl_set_text(s: *mut c_void, px: *const u8, stride: i32);
     fn tvl_advance(s: *mut c_void, t: f32);
-    fn tvl_render_rows(
+    fn tvl_render_rect(
         s: *const c_void,
         dst: *mut u8,
         stride: i32,
         y0: i32,
         y1: i32,
+        x0: i32,
+        x1: i32,
         focus: *const f32,
     );
 }
@@ -25,8 +26,9 @@ pub struct TvList {
     raw: *mut c_void,
     w: u32,
     h: u32,
-    /// The text layer the C++ side reads, kept alive here.
-    text: Option<Image>,
+    /// The text layer the C++ side reads, owned here (drawn into in place:
+    /// no copy of a whole frame per key press).
+    text: Option<crate::gfx::Canvas>,
 }
 
 // Changed only through &mut self; rendering takes &self and writes disjoint
@@ -77,12 +79,21 @@ impl TvList {
     }
 
     /// The text layer: a full frame, transparent where there is no text.
-    pub fn set_text(&mut self, img: Image) {
-        if img.width() != self.w || img.height() != self.h {
+    /// Takes the text layer back to draw into it; the picture shows no
+    /// text until it is put back.
+    pub fn take_text(&mut self) -> Option<crate::gfx::Canvas> {
+        unsafe { tvl_set_text(self.raw, std::ptr::null(), 0) };
+        self.text.take()
+    }
+
+    /// The text layer (a frame-sized transparent canvas) to lay on top.
+    pub fn put_text(&mut self, c: crate::gfx::Canvas) {
+        if c.pm.width() != self.w || c.pm.height() != self.h {
             return;
         }
-        unsafe { tvl_set_text(self.raw, img.data().as_ptr(), img.width() as i32 * 4) };
-        self.text = Some(img);
+        // the pixels stay where they are while the canvas is kept here
+        unsafe { tvl_set_text(self.raw, c.pm.data().as_ptr(), c.pm.width() as i32 * 4) };
+        self.text = Some(c);
     }
 
     pub fn advance(&mut self, t: f32) {
@@ -104,6 +115,25 @@ impl TvList {
         focus: Option<[f32; 5]>,
         threads: usize,
     ) {
+        self.render_rect(frame, y0, y1, 0, self.w as usize, focus, threads)
+    }
+
+    /// Only rows [y0, y1) and columns [x0, x1) of the frame (physical px).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_rect(
+        &self,
+        frame: &mut [u8],
+        y0: usize,
+        y1: usize,
+        x0: usize,
+        x1: usize,
+        focus: Option<[f32; 5]>,
+        threads: usize,
+    ) {
+        let (x0, x1) = (
+            x0.min(self.w as usize) as i32,
+            x1.min(self.w as usize) as i32,
+        );
         let stride = self.w as usize * 4;
         let (y0, y1) = (y0.min(self.h as usize), y1.min(self.h as usize));
         if y0 >= y1 || frame.len() < stride * self.h as usize {
@@ -115,14 +145,19 @@ impl TvList {
         let threads = if rows < 200 { 1 } else { threads.clamp(1, 4) };
         if threads == 1 {
             // no thread to start for one: draw right here
-            let fp = focus.as_ref().map(|f| f.as_ptr()).unwrap_or(std::ptr::null());
+            let fp = focus
+                .as_ref()
+                .map(|f| f.as_ptr())
+                .unwrap_or(std::ptr::null());
             unsafe {
-                tvl_render_rows(
+                tvl_render_rect(
                     raw as *const c_void,
                     frame[stride * y0..].as_mut_ptr(),
                     stride as i32,
                     y0 as i32,
                     y1 as i32,
+                    x0,
+                    x1,
                     fp,
                 );
             }
@@ -141,12 +176,14 @@ impl TvList {
                         .map(|f| f.as_ptr())
                         .unwrap_or(std::ptr::null());
                     unsafe {
-                        tvl_render_rows(
+                        tvl_render_rect(
                             raw as *const c_void,
                             chunk.as_mut_ptr(),
                             stride as i32,
                             a as i32,
                             b as i32,
+                            x0,
+                            x1,
                             fp,
                         )
                     }
@@ -159,7 +196,6 @@ impl TvList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tiny_skia::Pixmap;
 
     /// Cost at the Pi's 1080p: cargo test --release -p tv-launcher
     /// tvlist_cost -- --ignored --nocapture
@@ -173,14 +209,19 @@ mod tests {
             .map(|i| (650.0, 154.0 + i as f32 * 55.0, 570.0, 43.0, i == 0))
             .collect();
         s.set_rows(&rows, 15.0);
-        let mut text = Pixmap::new(w, h).unwrap();
+        let mut text = crate::gfx::Canvas::new_scaled_with_threads(
+            crate::gfx::W,
+            crate::gfx::H,
+            w as f32 / crate::gfx::W as f32,
+            1,
+        );
         for y in (240..1000).step_by(3) {
             for x in 1000..1700 {
                 let i = (y * w as usize + x) * 4;
-                text.data_mut()[i..i + 4].copy_from_slice(&[200, 200, 200, 200]);
+                text.pm.data_mut()[i..i + 4].copy_from_slice(&[200, 200, 200, 200]);
             }
         }
-        s.set_text(std::sync::Arc::new(text));
+        s.put_text(text);
         let mut frame = vec![0u8; (w * h * 4) as usize];
         for threads in [1, 4] {
             let n = 60;
@@ -211,10 +252,15 @@ mod tests {
         let mut s = TvList::new(w, h, 0.25).unwrap();
         s.set_hole(Some((16.0, 40.0, 400.0, 225.0, 18.0)));
         s.set_rows(&[(650.0, 154.0, 570.0, 43.0, true)], 15.0);
-        let mut text = Pixmap::new(w, h).unwrap();
+        let mut text = crate::gfx::Canvas::new_scaled_with_threads(
+            crate::gfx::W,
+            crate::gfx::H,
+            w as f32 / crate::gfx::W as f32,
+            1,
+        );
         let i = ((10 * w + 300) * 4) as usize;
-        text.data_mut()[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
-        s.set_text(std::sync::Arc::new(text));
+        text.pm.data_mut()[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        s.put_text(text);
         s.advance(3.0);
         let mut one = vec![0u8; (w * h * 4) as usize];
         let mut four = vec![0u8; (w * h * 4) as usize];

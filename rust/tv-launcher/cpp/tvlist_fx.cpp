@@ -275,31 +275,33 @@ static inline bool box_span(const Box &b, float py, float &x0, float &x1, float 
     return x1 > x0;
 }
 
-// A straight colour over a span of the row, ends anti-aliased.
-static inline void fill_span(uint8_t *d, int W, float x0, float x1, uint32_t r, uint32_t g, uint32_t b, float a) {
-    int xa = maxi(0, floori(x0)), xb = mini(W, ceili(x1));
+// A straight colour over a span of the row, ends anti-aliased; only the
+// columns [lo, hi) are touched.
+static inline void fill_span(uint8_t *d, int lo, int hi, float x0, float x1, uint32_t r, uint32_t g, uint32_t b,
+                             float a) {
+    int xa = maxi(lo, floori(x0)), xb = mini(hi, ceili(x1));
     uint32_t af = (uint32_t)(a * 255.0f + 0.5f);
-    if (af == 0) return;
+    if (af == 0 || xa >= xb) return;
     uint32_t pr = r * af, pg = g * af, pb = b * af, inv = 255 - af;
-    for (int x = xa; x < xb; x++) {
-        float cov = clamp01(minf((float)x + 1.0f - x0, x1 - (float)x));
+    // the whole pixels in the middle: no coverage to work out
+    int ia = maxi(xa, ceili(x0)), ib = mini(xb, floori(x1));
+    if (ib < ia) ia = ib = xa;
+    for (int x = xa; x < ia; x++) over(d + x * 4, r, g, b, (uint32_t)(af * clamp01(minf((float)x + 1.0f - x0, x1 - (float)x))));
+    for (int x = ia; x < ib; x++) {
         uint8_t *o = d + x * 4;
-        if (cov >= 1.0f) {
-            o[0] = (uint8_t)div255(pb + o[0] * inv);
-            o[1] = (uint8_t)div255(pg + o[1] * inv);
-            o[2] = (uint8_t)div255(pr + o[2] * inv);
-            o[3] = (uint8_t)(af + div255(o[3] * inv));
-        } else {
-            over(o, r, g, b, (uint32_t)(af * cov));
-        }
+        o[0] = (uint8_t)div255(pb + o[0] * inv);
+        o[1] = (uint8_t)div255(pg + o[1] * inv);
+        o[2] = (uint8_t)div255(pr + o[2] * inv);
+        o[3] = (uint8_t)(af + div255(o[3] * inv));
     }
+    for (int x = maxi(ib, ia); x < xb; x++) over(d + x * 4, r, g, b, (uint32_t)(af * clamp01(minf((float)x + 1.0f - x0, x1 - (float)x))));
 }
 
 // A soft glow ring around a box (only the pixels near it are evaluated).
-static void glow_ring(uint8_t *d, int W, const Box &b, float py, float reach, uint32_t r, uint32_t g, uint32_t bl,
-                      float strength, float pw) {
+static void glow_ring(uint8_t *d, int lo, int hi, const Box &b, float py, float reach, uint32_t r, uint32_t g,
+                      uint32_t bl, float strength, float pw) {
     if (py < b.y - reach || py > b.y + b.h + reach) return;
-    int xa = maxi(0, floori(b.x - reach)), xb = mini(W, ceili(b.x + b.w + reach));
+    int xa = maxi(lo, floori(b.x - reach)), xb = mini(hi, ceili(b.x + b.w + reach));
     bool inside_rows = py > b.y + b.r && py < b.y + b.h - b.r;
     for (int x = xa; x < xb; x++) {
         // inside the straight middle of the box nothing to do: jump over it
@@ -315,13 +317,17 @@ static void glow_ring(uint8_t *d, int W, const Box &b, float py, float reach, ui
     }
 }
 
-// Composes rows [y0, y1) of the whole frame; dst points at row y0.
-// focus: x, y, w, h, r (logical) or null.
-void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0, int32_t y1, const float *focus) {
+// Composes rows [y0, y1), columns [lo, hi) of the whole frame; dst points
+// at row y0 (column 0). focus: x, y, w, h, r (logical) or null.
+void tvl_render_rect(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0, int32_t y1, int32_t lo, int32_t hi,
+                     const float *focus) {
     if (!s || !dst || !s->full) return;
     const int W = s->w;
     y0 = maxi(0, y0);
     y1 = mini(s->h, y1);
+    lo = maxi(0, lo);
+    hi = mini(W, hi);
+    if (lo >= hi) return;
     Box F{};
     bool has_focus = focus != nullptr;
     if (has_focus) F = Box{focus[0] * s->sc, focus[1] * s->sc, focus[2] * s->sc, focus[3] * s->sc, focus[4] * s->sc};
@@ -330,37 +336,45 @@ void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0
         uint8_t *__restrict d = dst + (ptrdiff_t)stride * (y - y0);
         float py = (float)y + 0.5f;
         // 1. the wave: two copies, the picture moved sideways by `o`
+        // (column x shows column x + o of the picture, wrapping)
         const uint8_t *src = s->full + (size_t)y * W * 4;
-        __builtin_memcpy(d, src + (size_t)o * 4, (size_t)(W - o) * 4);
-        __builtin_memcpy(d + (size_t)(W - o) * 4, src, (size_t)o * 4);
+        int split = W - o; // columns before it come from o.., after it from 0..
+        if (lo < split) {
+            int e = mini(hi, split);
+            __builtin_memcpy(d + (size_t)lo * 4, src + (size_t)(lo + o) * 4, (size_t)(e - lo) * 4);
+        }
+        if (hi > split) {
+            int b0 = maxi(lo, split);
+            __builtin_memcpy(d + (size_t)b0 * 4, src + (size_t)(b0 - split) * 4, (size_t)(hi - b0) * 4);
+        }
         // 2. the glass rows (as in Settings; the playing channel's is warmer)
         for (int n = 0; n < s->n_rows; n++) {
             float x0, x1, v;
             if (!box_span(s->rows[n], py, x0, x1, v)) continue;
             bool live = s->row_flags[n] != 0;
-            fill_span(d, W, x0, x1, live ? 46 : 9, live ? 36 : 9, live ? 18 : 8, 0.275f * v);
+            fill_span(d, lo, hi, x0, x1, live ? 46 : 9, live ? 36 : 9, live ? 18 : 8, 0.275f * v);
         }
         // 3. the focus: warm gold glass with a soft glow, no outline
         if (has_focus) {
-            glow_ring(d, W, F, py, 12.0f * s->sc, 214, 160, 70, 0.235f, 2.0f);
+            glow_ring(d, lo, hi, F, py, 12.0f * s->sc, 214, 160, 70, 0.235f, 2.0f);
             float x0, x1, v;
             if (box_span(F, py, x0, x1, v)) {
                 float k = clamp01((py - F.y) / F.h);
-                fill_span(d, W, x0, x1, (uint32_t)(140.0f - 40.0f * k), (uint32_t)(104.0f - 30.0f * k),
+                fill_span(d, lo, hi, x0, x1, (uint32_t)(140.0f - 40.0f * k), (uint32_t)(104.0f - 30.0f * k),
                           (uint32_t)(44.0f - 14.0f * k), 0.59f * v);
             }
         }
         // 4. the video window: transparent, a soft dark rim and gold glow
         if (s->has_hole) {
             const Box &Hb = s->hole;
-            glow_ring(d, W, Hb, py, 18.0f * s->sc, 0, 0, 0, 0.47f, 2.0f);
-            glow_ring(d, W, Hb, py, 18.0f * s->sc, 222, 172, 84, 0.16f, 3.0f);
+            glow_ring(d, lo, hi, Hb, py, 18.0f * s->sc, 0, 0, 0, 0.47f, 2.0f);
+            glow_ring(d, lo, hi, Hb, py, 18.0f * s->sc, 222, 172, 84, 0.16f, 3.0f);
             float x0, x1, v;
             if (box_span(Hb, py, x0, x1, v)) {
-                int xa = maxi(0, ceili(x0)), xb = mini(W, floori(x1));
+                int xa = maxi(lo, ceili(x0)), xb = mini(hi, floori(x1));
                 if (v >= 1.0f && xb > xa) __builtin_memset(d + xa * 4, 0, (size_t)(xb - xa) * 4);
                 // the anti-aliased ends (and the partial top/bottom row)
-                for (int x = maxi(0, floori(x0)); x < mini(W, ceili(x1)); x++) {
+                for (int x = maxi(lo, floori(x0)); x < mini(hi, ceili(x1)); x++) {
                     if (v >= 1.0f && x >= xa && x < xb) continue;
                     float cov = clamp01(minf((float)x + 1.0f - x0, x1 - (float)x)) * v;
                     uint32_t keep = (uint32_t)((1.0f - cov) * 256.0f);
@@ -371,7 +385,7 @@ void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0
         }
         // 5. the text over everything, only where it has pixels
         if (s->text) {
-            int a0 = s->text_span[y * 2], a1 = s->text_span[y * 2 + 1];
+            int a0 = maxi(lo, s->text_span[y * 2]), a1 = mini(hi, s->text_span[y * 2 + 1]);
             const uint8_t *__restrict t = s->text + (ptrdiff_t)s->text_stride * y;
             for (int i = a0 * 4; i < a1 * 4; i += 4) {
                 // most of a text row is empty: skip clear pixels, and
@@ -391,6 +405,10 @@ void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0
         }
     }
     (void)PI;
+}
+
+void tvl_render_rows(const TvlScene *s, uint8_t *dst, int32_t stride, int32_t y0, int32_t y1, const float *focus) {
+    tvl_render_rect(s, dst, stride, y0, y1, 0, s ? s->w : 0, focus);
 }
 
 } // extern "C"

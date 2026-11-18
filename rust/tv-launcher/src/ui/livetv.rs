@@ -39,7 +39,37 @@ struct GuideData {
     groups: Arc<Vec<(String, String, usize)>>,
     /// (group index, search) the channel rows were made for
     rows_for: Option<(usize, String)>,
-    rows: Arc<Vec<Channel>>,
+    rows: Arc<Rows>,
+}
+
+/// The channels of one group: positions in the whole list, not copies
+/// (2000 channels cost 8 KB instead of four strings each).
+#[derive(Default)]
+pub struct Rows {
+    all: Arc<Vec<Channel>>,
+    idx: Vec<u32>,
+}
+
+impl Rows {
+    pub fn len(&self) -> usize {
+        self.idx.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.idx.is_empty()
+    }
+    pub fn get(&self, i: usize) -> Option<&Channel> {
+        self.idx.get(i).and_then(|&j| self.all.get(j as usize))
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Channel> {
+        self.idx.iter().filter_map(|&j| self.all.get(j as usize))
+    }
+}
+
+impl std::ops::Index<usize> for Rows {
+    type Output = Channel;
+    fn index(&self, i: usize) -> &Channel {
+        &self.all[self.idx[i] as usize]
+    }
 }
 
 pub struct LiveTv {
@@ -80,9 +110,8 @@ pub struct LiveTv {
     wave_cost_ms: f32,
     /// the list's text layer (own canvas), the rows last handed to C++,
     /// and the pixel rows changed since the last composed frame
-    text_c: Option<Canvas>,
     last_rows: Vec<(f32, f32, f32, f32, bool)>,
-    text_dirty: Option<(usize, usize)>,
+    text_dirty: Option<(usize, usize, usize, usize)>,
     last_key: Instant,
     last_frame: Instant,
     /// What the frame shows now: the wave's step, the text, the focus.
@@ -169,7 +198,6 @@ impl LiveTv {
             guide_since: Instant::now(),
             wave_t: 0.0,
             wave_cost_ms: 10.0,
-            text_c: None,
             last_rows: Vec::new(),
             text_dirty: None,
             last_key: Instant::now(),
@@ -201,7 +229,7 @@ impl LiveTv {
         all: &Arc<Vec<Channel>>,
         favs: &[String],
         watch: &std::collections::HashMap<String, u64>,
-    ) -> (Arc<Vec<(String, String, usize)>>, Arc<Vec<Channel>>) {
+    ) -> (Arc<Vec<(String, String, usize)>>, Arc<Rows>) {
         let g = &mut self.guide_data;
         let list = (Arc::as_ptr(all) as usize, all.len());
         if g.list != list || g.favs != favs || g.groups.is_empty() {
@@ -226,17 +254,20 @@ impl LiveTv {
                 .map(|x| x.0.as_str())
                 .unwrap_or("all");
             let query = self.query.to_lowercase();
-            g.rows = Arc::new(
-                in_group(all, gid, favs, watch)
+            let base = all.as_ptr() as usize;
+            let size = std::mem::size_of::<Channel>().max(1);
+            g.rows = Arc::new(Rows {
+                all: all.clone(),
+                idx: in_group(all, gid, favs, watch)
                     .into_iter()
                     .filter(|ch| {
                         query.is_empty()
                             || ch.name.to_lowercase().contains(&query)
                             || ch.number.to_string().contains(&query)
                     })
-                    .cloned()
+                    .map(|ch| ((ch as *const Channel as usize - base) / size) as u32)
                     .collect(),
-            );
+            });
             g.rows_for = Some((self.group, self.query.clone()));
         }
         (g.groups.clone(), g.rows.clone())
@@ -305,10 +336,11 @@ impl LiveTv {
             .get(self.group)
             .map(|g| g.0.clone())
             .unwrap_or_else(|| "all".into());
-        let mut list: Vec<Channel> = in_group(&all, &gid, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch)
-            .into_iter()
-            .cloned()
-            .collect();
+        let mut list: Vec<Channel> =
+            in_group(&all, &gid, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch)
+                .into_iter()
+                .cloned()
+                .collect();
         if list.is_empty() {
             list = all.to_vec();
         }
@@ -353,10 +385,8 @@ impl LiveTv {
         #[cfg(target_os = "linux")]
         crate::platform::kms::set_video_window(None);
         self.text_key = None;
-        if let Some(t) = self.tvl.as_mut() {
-            // the text layer is a whole frame: not kept while unused
-            t.set_text(std::sync::Arc::new(tiny_skia::Pixmap::new(1, 1).unwrap()));
-        }
+        // the list's picture and its text layer are whole frames each: not
+        // kept while the channel plays full screen
         self.tvl = None;
     }
 
@@ -380,7 +410,6 @@ impl LiveTv {
             t.set_hole(Some(PIP));
             self.tvl = Some(t);
             self.text_key = None;
-            self.text_c = None;
             self.last_rows.clear();
             self.wave_step = None;
         }
@@ -442,7 +471,7 @@ impl LiveTv {
             self.text_key = Some(key);
             // the text has its own layer: only the tiles whose text changed
             // are drawn again, and only their rows are composed again below
-            let mut tc = self.text_c.take().unwrap_or_else(|| {
+            let mut tc = self.tvl.as_mut().unwrap().take_text().unwrap_or_else(|| {
                 Canvas::new_scaled_with_threads(
                     crate::gfx::W,
                     crate::gfx::H,
@@ -458,14 +487,16 @@ impl LiveTv {
             tc.finish();
             let d = tc.damage();
             let h = tc.pm.height() as usize;
-            let mut dirty: Option<(usize, usize)> = if d.full {
-                Some((0, h))
+            let w = tc.pm.width() as usize;
+            let mut dirty: Option<(usize, usize, usize, usize)> = if d.full {
+                Some((0, h, 0, w))
             } else {
                 d.rects[..d.len].iter().fold(None, |acc, r| {
                     let (a, b) = (r.1 as usize, (r.1 + r.3) as usize);
+                    let (l, rt) = (r.0 as usize, (r.0 + r.2) as usize);
                     Some(match acc {
-                        Some((x, y)) => (a.min(x), b.max(y)),
-                        None => (a, b),
+                        Some((y0, y1, x0, x1)) => (a.min(y0), b.max(y1), l.min(x0), rt.max(x1)),
+                        None => (a, b, l, rt),
                     })
                 })
             };
@@ -480,18 +511,24 @@ impl LiveTv {
                 let sc = h as f32 / crate::gfx::H as f32;
                 let a = ((ROW_Y - 16.0).max(0.0) * sc) as usize;
                 let b = (((ROW_Y + VISIBLE as f32 * ROW_STEP + 16.0) * sc) as usize).min(h);
-                dirty = Some(dirty.map(|(x, y)| (x.min(a), y.max(b))).unwrap_or((a, b)));
+                let l = ((ROW_X - 2.0) * sc) as usize;
+                let r = (((ROW_X + ROW_W + 2.0) * sc).ceil() as usize).min(w);
+                dirty = Some(
+                    dirty
+                        .map(|(y0, y1, x0, x1)| (y0.min(a), y1.max(b), x0.min(l), x1.max(r)))
+                        .unwrap_or((a, b, l, r)),
+                );
             }
             self.text_dirty = match (self.text_dirty, dirty) {
-                (Some((a, b)), Some((x, y))) => Some((a.min(x), b.max(y))),
+                (Some((a, b, l, r)), Some((y0, y1, x0, x1))) => {
+                    Some((a.min(y0), b.max(y1), l.min(x0), r.max(x1)))
+                }
                 (d, None) | (None, d) => d,
             };
-            let snap = tc.snapshot();
-            self.text_c = Some(tc);
             let t = self.tvl.as_mut().unwrap();
             t.set_rows(&rows, ROW_R);
             self.last_rows = rows;
-            t.set_text(snap);
+            t.put_text(tc);
         }
         // The wave drifts in steps of 1/15 s: a whole new frame 15 times a
         // second. In between only the strip the focus moved through.
@@ -512,17 +549,27 @@ impl LiveTv {
         let full = self.wave_step != Some(step);
         if !full && self.text_dirty.is_some() {
             // only the rows whose text (or row boxes) changed, plus the focus
-            let (mut a, mut b) = self.text_dirty.unwrap();
+            // only the rows and columns whose text (or row boxes) changed,
+            // plus the focus
+            let (mut a, mut b, mut l, mut r) = self.text_dirty.unwrap();
             if self.drawn_focus != Some(self.focus_y) {
                 let glow = 14.0;
                 let fa = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
                 let fb = self.drawn_focus.unwrap_or(self.focus_y).max(self.focus_y) + ROW_H + glow;
                 a = a.min((fa.max(0.0) * scale) as usize);
                 b = b.max((fb * scale).ceil() as usize);
+                l = l.min(((ROW_X - glow) * scale) as usize);
+                r = r.max(((ROW_X + ROW_W + glow) * scale).ceil() as usize);
             }
             let b = b.min(c.pm.height() as usize);
-            t.render_rows(c.pm.data_mut(), a, b, focus, threads);
-            c.mark_damage_rect(0.0, a as f32 / scale, crate::gfx::W as f32, (b - a) as f32 / scale + 1.0);
+            let r = r.min(c.pm.width() as usize);
+            t.render_rect(c.pm.data_mut(), a, b, l, r, focus, threads);
+            c.mark_damage_rect(
+                l as f32 / scale,
+                a as f32 / scale,
+                (r - l) as f32 / scale + 1.0,
+                (b - a) as f32 / scale + 1.0,
+            );
         } else if full {
             t.advance(self.wave_t);
             let t0 = Instant::now();
@@ -534,14 +581,18 @@ impl LiveTv {
             let glow = 14.0;
             let a = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
             let b = self.drawn_focus.unwrap_or(self.focus_y).max(self.focus_y) + ROW_H + glow;
-            t.render_rows(
+            // the focus moves only inside the list column
+            let (l, r) = (ROW_X - glow, ROW_X + ROW_W + glow);
+            t.render_rect(
                 c.pm.data_mut(),
                 (a.max(0.0) * scale) as usize,
                 (b * scale).ceil() as usize,
+                (l * scale) as usize,
+                (r * scale).ceil() as usize,
                 focus,
                 threads,
             );
-            c.mark_damage_rect(0.0, a, crate::gfx::W as f32, b - a);
+            c.mark_damage_rect(l, a, r - l, b - a);
         } else {
             return true; // nothing moved
         }
@@ -785,7 +836,8 @@ impl Screen for LiveTv {
                         (self.group + 1) % n
                     };
                     self.group_list.sel = self.group;
-                    let (_, rows) = self.guide_rows(&all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
+                    let (_, rows) =
+                        self.guide_rows(&all, &cx.cfg.livetv_favs, &cx.cfg.livetv_watch);
                     self.list.sel = self
                         .current
                         .as_ref()
@@ -1126,8 +1178,23 @@ impl Screen for LiveTv {
                     Rgba(0, 0, 0, 200),
                 );
                 // warm black glass with a soft gold glow, as in the list
-                c.rect(bx - 6.0, by - 6.0, bw + 12.0, bh + 12.0, 26.0, Rgba(214, 160, 70, 18));
-                c.vgradient(bx, by, bw, bh, 20.0, Rgba(30, 24, 14, 232), Rgba(12, 10, 7, 238));
+                c.rect(
+                    bx - 6.0,
+                    by - 6.0,
+                    bw + 12.0,
+                    bh + 12.0,
+                    26.0,
+                    Rgba(214, 160, 70, 18),
+                );
+                c.vgradient(
+                    bx,
+                    by,
+                    bw,
+                    bh,
+                    20.0,
+                    Rgba(30, 24, 14, 232),
+                    Rgba(12, 10, 7, 238),
+                );
                 let channel_label = match self.standalone_app_id {
                     Some("zdf") => "ZDF".into(),
                     Some("arte") => "ARTE".into(),
@@ -1259,7 +1326,7 @@ fn draw_list_text(
     c: &mut Canvas,
     cx: &mut Ctx,
     gs: &Arc<Vec<(String, String, usize)>>,
-    chs: &Arc<Vec<Channel>>,
+    chs: &Arc<Rows>,
     sel: usize,
 ) {
     let cream = Rgba(250, 247, 239, 255);
@@ -1829,4 +1896,3 @@ fn draw_guide(s: &mut LiveTv, c: &mut Canvas, cx: &mut Ctx, all: &Arc<Vec<Channe
         Align::Left,
     );
 }
-

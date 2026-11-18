@@ -315,19 +315,19 @@ bool make_sprite(Sprite &s, int w, int h, Density density, Shade shade) {
             grid[(j * gw + i) * 2] = density(nx, ny, n);
             grid[(j * gw + i) * 2 + 1] = n;
         }
+    const float iw = 1.0f / (float)w, ih = 1.0f / (float)h;
     for (int y = 0; y < h; y++) {
-        float gy = (float)y / STEP;
-        int j = (int)gy;
-        float fy = gy - (float)j;
+        int j = y / STEP;
+        float fy = (float)(y % STEP) * (1.0f / STEP);
+        float sy = (float)y * ih;
         for (int x = 0; x < w; x++) {
-            float gx = (float)x / STEP;
-            int i = (int)gx;
-            float fx = gx - (float)i;
+            int i = x / STEP;
+            float fx = (float)(x % STEP) * (1.0f / STEP);
             const float *a = grid + (j * gw + i) * 2, *b = a + gw * 2;
             float dens = lerp(lerp(a[0], a[2], fx), lerp(b[0], b[2], fx), fy);
             float n = lerp(lerp(a[1], a[3], fx), lerp(b[1], b[3], fx), fy);
             float al;
-            Rgb c = shade((float)x / (float)w, (float)y / (float)h, dens, n, al);
+            Rgb c = shade((float)x * iw, sy, dens, n, al);
             uint8_t *p = s.px + ((size_t)y * w + x) * 4;
             uint32_t a8 = (uint32_t)(clamp01(al) * 255.0f + 0.5f);
             p[0] = (uint8_t)div255((uint32_t)c.b * a8);
@@ -918,10 +918,93 @@ extern "C" void wfx_render_sky_rows(const WfxScene *s, uint8_t *dst, int32_t str
     if (!s || !dst) return;
     y0 = maxi(0, y0);
     y1 = mini(s->p.height, y1);
+    const WfxParams &p = s->p;
+    const int W = p.width;
+    // The same picture as sky_pixel, with everything that depends on the
+    // row alone worked out once per row, and the vignette's column factor
+    // once per column.
+    float *vxs = (float *)malloc(sizeof(float) * (size_t)W);
+    if (!vxs) {
+        for (int y = y0; y < y1; y++) {
+            uint8_t *row = dst + (ptrdiff_t)(y - y0) * stride;
+            for (int x = 0; x < W; x++) sky_pixel(s, x, y, row + x * 4);
+        }
+        return;
+    }
+    for (int x = 0; x < W; x++) {
+        float fx = (float)x / (float)(W - 1);
+        vxs[x] = fx * (1.0f - fx) * 4.0f;
+    }
+    static const uint8_t bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+    const float light = s->look.sun ? 0.22f : (s->look.moon ? 0.10f : 0.05f);
+    const Rgb warm = rgb(0xff9a5c);
+    const float reach = 1100.0f * p.scale;
+    const float ray_k = p.sky == WFX_CLEAR ? 34.0f : 20.0f;
     for (int y = y0; y < y1; y++) {
         uint8_t *row = dst + (ptrdiff_t)(y - y0) * stride;
-        for (int x = 0; x < s->p.width; x++) sky_pixel(s, x, y, row + x * 4);
+        float fy = (float)y / (float)(p.height - 1);
+        float g = fy * fy * (3.0f - 2.0f * fy) * 0.65f + fy * 0.35f;
+        const Rgb c0 = mix(s->top, s->bottom, g);
+        float dy = ((float)y - s->sun_y) / (float)W;
+        float dy2 = dy * dy;
+        // the columns the sun's light reaches on this row
+        int la = W, lb = W;
+        float q = (1.0f / 3.2f - dy2);
+        if (q > 0.0f) {
+            float half = sqrtf_(q) * (float)W;
+            la = maxi(0, floori(s->sun_x - half) - 1);
+            lb = mini(W, ceili(s->sun_x + half) + 2);
+        }
+        float kg = p.golden > 0.0f ? p.golden * smooth(0.25f, 1.0f, fy) * 0.38f : 0.0f;
+        bool rays = s->look.rays && y < p.band_h + p.band_h / 2;
+        float ry = (float)y - s->sun_y;
+        float vy = 0.55f + 0.45f * (1.0f - fy * fy);
+        const uint8_t *bay = bayer + (y & 3) * 4;
+        for (int x = 0; x < W; x++) {
+            Rgb c = c0;
+            if (x >= la && x < lb) {
+                float dx = ((float)x - s->sun_x) / (float)W;
+                float f = 1.0f - (dx * dx + dy2) * 3.2f;
+                if (f > 0.0f) {
+                    float k = f * f * light;
+                    c.r += (s->sun_col.r - c.r) * k;
+                    c.g += (s->sun_col.g - c.g) * k;
+                    c.b += (s->sun_col.b - c.b) * k;
+                }
+            }
+            if (kg > 0.0f) c = mix(c, warm, kg);
+            if (rays) {
+                float rx = (float)x - s->sun_x;
+                float d = sqrtf_(rx * rx + ry * ry);
+                if (d < reach) {
+                    float a = (atan2f_(ry, rx) + PI) / TAU * 1024.0f;
+                    int ia = (int)a & 1023;
+                    float pr = ((float)s->ray_a[ia] + (float)s->ray_b[(ia * 7 / 5 + 300) & 1023]) * (1.0f / 510.0f);
+                    float fall = clamp01(1.0f - d / reach) * smooth(30.0f * p.scale, 170.0f * p.scale, d);
+                    float k = pr * fall * fall * ray_k;
+                    c.r += s->sun_col.r / 255.0f * k;
+                    c.g += s->sun_col.g / 255.0f * k;
+                    c.b += s->sun_col.b / 255.0f * k;
+                }
+            }
+            float v = 0.82f + 0.18f * minf(1.0f, vxs[x] * vy * 1.15f);
+            float dth = ((float)bay[x & 3] + 0.5f) / 16.0f;
+            uint8_t *d = row + x * 4;
+            float vb = c.b * v + dth, vg = c.g * v + dth, vr = c.r * v + dth;
+            d[0] = (uint8_t)(vb < 0.0f ? 0 : (vb > 255.0f ? 255 : (int)vb));
+            d[1] = (uint8_t)(vg < 0.0f ? 0 : (vg > 255.0f ? 255 : (int)vg));
+            d[2] = (uint8_t)(vr < 0.0f ? 0 : (vr > 255.0f ? 255 : (int)vr));
+            d[3] = 255;
+        }
     }
+    free(vxs);
+}
+
+// The plain per-pixel sky, kept to check the fast one against (tests).
+extern "C" void wfx_render_sky_ref(const WfxScene *s, uint8_t *dst, int32_t stride) {
+    if (!s || !dst) return;
+    for (int y = 0; y < s->p.height; y++)
+        for (int x = 0; x < s->p.width; x++) sky_pixel(s, x, y, dst + (ptrdiff_t)y * stride + x * 4);
 }
 
 extern "C" int32_t wfx_set_layers(WfxScene *s, const uint8_t *sky, int32_t sky_stride, const uint8_t *ui,
@@ -951,9 +1034,11 @@ extern "C" int32_t wfx_set_layers(WfxScene *s, const uint8_t *sky, int32_t sky_s
     size_t runs = 0, pixels = 0;
     for (int y = 0; y < h; y++) {
         bool in = false;
+        const uint8_t *ur = ui ? ui + (ptrdiff_t)y * ui_stride + 3 : nullptr;
+        bool srow = s->scrim && y >= s->scrim_y0 && y < s->scrim_y0 + s->scrim_h;
         for (int x = 0; x < w; x++) {
-            bool t = touched(x, y);
-            if (t && !in) runs++;
+            bool t = (ur && ur[x * 4] != 0) || (srow && scrim_k(x, y) != 0);
+            runs += t && !in;
             pixels += t;
             in = t;
         }
@@ -988,12 +1073,13 @@ extern "C" int32_t wfx_set_layers(WfxScene *s, const uint8_t *sky, int32_t sky_s
                 float m = mu * ms;
                 uint32_t m8 = (uint32_t)(m * 256.0f + 0.5f);
                 if (m8 > 255) m8 = 255;
+                // b = sp + q (FROST (256-sa) / 65536 + mu ks dk / 256): one
+                // factor per pixel, the same for the three colours
+                bool glass = sp && sa > 0.0f;
+                float qk = (glass ? (float)FROST * (256.0f - sa) * (1.0f / 65536.0f) : 0.0f) +
+                           mu * ks * dk * (1.0f / 256.0f);
                 for (int ch = 0; ch < 3; ch++) {
-                    float qv = (float)q[x * 4 + ch];
-                    float bs = qv * ks / 256.0f * dk;
-                    float bu = sp && sa > 0.0f ? (float)sp[ch] + qv * (float)FROST / 256.0f * (256.0f - sa) / 256.0f
-                                               : 0.0f;
-                    float b = bu + mu * bs;
+                    float b = (glass ? (float)sp[ch] : 0.0f) + (float)q[x * 4 + ch] * qk;
                     s->post_base[at * 4 + ch] = (uint8_t)(b > 255.0f ? 255 : (int)(b + 0.5f));
                     s->post_mul[at * 4 + ch] = (uint8_t)m8;
                 }

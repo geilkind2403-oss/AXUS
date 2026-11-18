@@ -76,6 +76,155 @@ pub struct WeatherScreen {
     threads: usize,
 }
 
+fn scene_key(w: &Weather, size: (u32, u32)) -> SceneKey {
+    let (hour, minute, _) = crate::app::local_hms();
+    let golden = if w.day {
+        w.days
+            .first()
+            .map(|d| crate::weather::golden_hour(d, hour * 60 + minute))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    SceneKey {
+        // what the sky is made from, not which download it came from:
+        // fetching the same weather again keeps the scene
+        data: (
+            (w.code as usize) << 1 | w.day as usize,
+            w.wind.round() as i64 as u64,
+        ),
+        golden: (golden * 10.0).round() as i32,
+        size,
+    }
+}
+
+/// Starts making the scene (sky, clouds, rays and the band's text) on a
+/// worker; the result appears in the returned slot.
+fn start_build(
+    key: SceneKey,
+    w: &Weather,
+    city: String,
+    tx: std::sync::mpsc::Sender<crate::app::Msg>,
+    threads: usize,
+) -> Building {
+    let (sky, _) = crate::weather::describe(w.code);
+    let (top, bottom, _) = palette(sky, w.day);
+    let scale = key.size.0 as f32 / crate::gfx::W as f32;
+    let rgb = |c: Rgba| (c.0 as u32) << 16 | (c.1 as u32) << 8 | c.2 as u32;
+    let params = Params {
+        width: key.size.0 as i32,
+        height: key.size.1 as i32,
+        band_h: (BAND * scale).round() as i32,
+        scale,
+        sky: sky as i32,
+        day: w.day as i32,
+        intensity: crate::weather::intensity(w.code),
+        wind: w.wind,
+        golden: key.golden as f32 / 10.0,
+        sky_top: rgb(top),
+        sky_bottom: rgb(bottom),
+        seed: 0x5eed + sky as u32 * 7919,
+        icon_x: ICON.0 * scale,
+        icon_y: ICON.1 * scale,
+        icon_size: ICON.2 * scale,
+        scrim: TITLE.map(|v| v * scale),
+    };
+    let building: Building = Default::default();
+    let out = building.clone();
+    let day = w.day;
+    // the band's text goes into the scene on the worker as well:
+    // putting the layers together cost the Pi ~0.5 s on the UI thread
+    let w2 = w.clone();
+    let (_, desc) = crate::weather::describe(w.code);
+    let (_, _, accent) = palette(sky, w.day);
+    std::thread::spawn(move || {
+        crate::app::background_priority();
+        let started = Instant::now();
+        let fx = Scene::new(params).and_then(|scene| {
+            let sky = scene.render_sky(threads)?;
+            let side = (ICON.2 * 1.6 * scale).ceil() as u32;
+            let icon = scene.icon_sprite(side, 0.0);
+            let mut fx = Fx {
+                scene,
+                sky,
+                icon,
+                layered: false,
+            };
+            let band_h = (BAND * scale).ceil() as u32;
+            let mut band = crate::gfx::Canvas::new_scaled_with_threads(
+                crate::gfx::W,
+                (band_h as f32 / scale).ceil() as u32,
+                scale,
+                threads.clamp(1, 4),
+            );
+            band.clear(Rgba(0, 0, 0, 0));
+            draw_band(&mut band, &w2, desc, accent, &city);
+            band.finish();
+            let ui = band.snapshot();
+            fx.layered = fx.scene.set_layers(fx.sky.clone(), &ui);
+            Some(fx)
+        });
+        crate::log(&format!(
+            "Wetter-Szene {:?} {}: {:.1} ms{}",
+            sky,
+            if day { "Tag" } else { "Nacht" },
+            started.elapsed().as_secs_f64() * 1000.0,
+            if fx.is_some() {
+                ""
+            } else {
+                " (fehlgeschlagen)"
+            }
+        ));
+        *out.lock().unwrap() = Some(fx);
+        let _ = tx.send(crate::app::Msg::Redraw);
+    });
+    building
+}
+
+/// A scene started ahead of time (key, slot, when), see `prewarm`.
+#[allow(clippy::type_complexity)]
+static EARLY: std::sync::Mutex<Option<(SceneKey, Building, Instant)>> = std::sync::Mutex::new(None);
+
+/// The weather tile has the focus on Home: start making its scene now, so
+/// the living sky is there (or nearly) when OK opens it.
+pub fn prewarm(cx: &Ctx) {
+    let Some(Ok(w)) = cx.weather.get() else {
+        return;
+    };
+    let scale = crate::gfx::render_scale();
+    let size = (
+        (crate::gfx::W as f32 * scale).round() as u32,
+        (crate::gfx::H as f32 * scale).round() as u32,
+    );
+    let key = scene_key(&w, size);
+    let Ok(mut e) = EARLY.lock() else {
+        return;
+    };
+    if e.as_ref().map(|e| e.0 == key).unwrap_or(false) {
+        e.as_mut().unwrap().2 = Instant::now();
+        return;
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 4);
+    let b = start_build(key, &w, cx.cfg.city.clone(), cx.tx.clone(), threads);
+    *e = Some((key, b, Instant::now()));
+}
+
+/// The focus went elsewhere: a scene made ahead and not used for a while
+/// gives its memory back.
+pub fn forget_prewarm() {
+    if let Ok(mut e) = EARLY.lock() {
+        if e.as_ref()
+            .map(|e| e.2.elapsed().as_secs() >= 20)
+            .unwrap_or(false)
+        {
+            *e = None;
+        }
+    }
+}
+
 impl WeatherScreen {
     pub fn new() -> WeatherScreen {
         WeatherScreen {
@@ -100,97 +249,18 @@ impl WeatherScreen {
     /// hundred milliseconds, too long for the UI thread -- and picks it up
     /// when it is done.
     fn prepare(&mut self, c: &Canvas, cx: &Ctx, w: &Weather) {
-        let (sky, _) = crate::weather::describe(w.code);
-        let (top, bottom, _) = palette(sky, w.day);
-        let (hour, minute, _) = crate::app::local_hms();
-        let golden = if w.day {
-            w.days
-                .first()
-                .map(|d| crate::weather::golden_hour(d, hour * 60 + minute))
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let key = SceneKey {
-            // what the sky is made from, not which download it came from:
-            // fetching the same weather again keeps the scene
-            data: (
-                (w.code as usize) << 1 | w.day as usize,
-                w.wind.round() as i64 as u64,
-            ),
-            golden: (golden * 10.0).round() as i32,
-            size: (c.pm.width(), c.pm.height()),
-        };
+        let key = scene_key(w, (c.pm.width(), c.pm.height()));
         if self.key != Some(key) {
             self.key = Some(key);
-            let scale = c.pm.width() as f32 / crate::gfx::W as f32;
-            let rgb = |c: Rgba| (c.0 as u32) << 16 | (c.1 as u32) << 8 | c.2 as u32;
-            let params = Params {
-                width: c.pm.width() as i32,
-                height: c.pm.height() as i32,
-                band_h: (BAND * scale).round() as i32,
-                scale,
-                sky: sky as i32,
-                day: w.day as i32,
-                intensity: crate::weather::intensity(w.code),
-                wind: w.wind,
-                golden: key.golden as f32 / 10.0,
-                sky_top: rgb(top),
-                sky_bottom: rgb(bottom),
-                seed: 0x5eed + sky as u32 * 7919,
-                icon_x: ICON.0 * scale,
-                icon_y: ICON.1 * scale,
-                icon_size: ICON.2 * scale,
-                scrim: TITLE.map(|v| v * scale),
-            };
-            let building: Building = Default::default();
-            let out = building.clone();
-            let (tx, threads, day) = (cx.tx.clone(), self.threads, w.day);
-            // the band's text goes into the scene on the worker as well:
-            // putting the layers together cost the Pi ~0.5 s on the UI thread
-            let (w2, city) = (w.clone(), cx.cfg.city.clone());
-            let (_, desc) = crate::weather::describe(w.code);
-            let (_, _, accent) = palette(sky, w.day);
-            std::thread::spawn(move || {
-                crate::app::background_priority();
-                let started = Instant::now();
-                let fx = Scene::new(params).and_then(|scene| {
-                    let sky = scene.render_sky(threads)?;
-                    let side = (ICON.2 * 1.6 * scale).ceil() as u32;
-                    let icon = scene.icon_sprite(side, 0.0);
-                    let mut fx = Fx {
-                        scene,
-                        sky,
-                        icon,
-                        layered: false,
-                    };
-                    let band_h = (BAND * scale).ceil() as u32;
-                    let mut band = crate::gfx::Canvas::new_scaled_with_threads(
-                        crate::gfx::W,
-                        (band_h as f32 / scale).ceil() as u32,
-                        scale,
-                        threads.clamp(1, 4),
-                    );
-                    band.clear(Rgba(0, 0, 0, 0));
-                    draw_band(&mut band, &w2, desc, accent, &city);
-                    band.finish();
-                    let ui = band.snapshot();
-                    fx.layered = fx.scene.set_layers(fx.sky.clone(), &ui);
-                    Some(fx)
-                });
-                crate::log(&format!(
-                    "Wetter-Szene {:?} {}: {:.1} ms{}",
-                    sky,
-                    if day { "Tag" } else { "Nacht" },
-                    started.elapsed().as_secs_f64() * 1000.0,
-                    if fx.is_some() {
-                        ""
-                    } else {
-                        " (fehlgeschlagen)"
-                    }
-                ));
-                *out.lock().unwrap() = Some(fx);
-                let _ = tx.send(crate::app::Msg::Redraw);
+            // made ahead while the weather tile had the focus on Home?
+            let early = EARLY
+                .lock()
+                .ok()
+                .and_then(|mut e| e.take())
+                .filter(|e| e.0 == key)
+                .map(|e| e.1);
+            let building = early.unwrap_or_else(|| {
+                start_build(key, w, cx.cfg.city.clone(), cx.tx.clone(), self.threads)
             });
             // an older scene still shows until the new one is there
             self.building = Some(building);

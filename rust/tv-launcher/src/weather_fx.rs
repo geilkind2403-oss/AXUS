@@ -33,6 +33,8 @@ extern "C" {
     fn wfx_create(p: *const Params) -> *mut c_void;
     fn wfx_destroy(s: *mut c_void);
     fn wfx_render_sky_rows(s: *const c_void, dst: *mut u8, stride: i32, y0: i32, y1: i32);
+    #[cfg(test)]
+    fn wfx_render_sky_ref(s: *const c_void, dst: *mut u8, stride: i32);
     fn wfx_set_layers(
         s: *mut c_void,
         sky: *const u8,
@@ -257,6 +259,39 @@ mod tests {
             }
         }
         std::sync::Arc::new(pm)
+    }
+
+    #[test]
+    fn fast_sky_matches_plain_sky() {
+        for sky in 0..8 {
+            for day in [true, false] {
+                for golden in [0.0, 0.6] {
+                    let mut p = params(sky, day);
+                    p.golden = golden;
+                    p.width = 1280;
+                    p.height = 720;
+                    p.band_h = 430;
+                    p.scale = 1.0;
+                    p.icon_x = 1000.0;
+                    p.icon_y = 120.0;
+                    let s = Scene::new(p).expect("scene");
+                    let fast = s.render_sky(1).unwrap();
+                    let mut plain = Pixmap::new(1280, 720).unwrap();
+                    unsafe { wfx_render_sky_ref(s.raw, plain.data_mut().as_mut_ptr(), 1280 * 4) };
+                    let worst = fast
+                        .data()
+                        .iter()
+                        .zip(plain.data())
+                        .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                        .max()
+                        .unwrap();
+                    assert!(
+                        worst <= 1,
+                        "sky {sky} day {day} golden {golden}: differs by {worst}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

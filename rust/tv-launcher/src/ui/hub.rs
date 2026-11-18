@@ -259,6 +259,12 @@ impl Screen for Hub {
             (_, Key::Back) => self.focus = Bar(self.tab),
             _ => {}
         }
+        // the weather tile has the focus: its scene is made ahead
+        match self.focus {
+            Weather => super::weather::prewarm(cx),
+            Grid(i) if ALL_APPS.get(i) == Some(&App::Weather) => super::weather::prewarm(cx),
+            _ => super::weather::forget_prewarm(),
+        }
         Nav::None
     }
 
