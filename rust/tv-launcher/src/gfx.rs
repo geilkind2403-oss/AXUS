@@ -116,7 +116,7 @@ pub struct Fonts {
     regular: Font,
     semi: Font,
     bold: Font,
-    cache: HashMap<(Weight, char, u32), Glyph>,
+    cache: HashMap<(Weight, char, u32), Glyph, std::hash::BuildHasherDefault<Fx>>,
 }
 
 impl Fonts {
@@ -135,7 +135,7 @@ impl Fonts {
             regular: f(include_bytes!("../assets/fonts/Inter-Regular.otf")),
             semi: f(include_bytes!("../assets/fonts/Inter-SemiBold.otf")),
             bold: f(include_bytes!("../assets/fonts/Inter-Bold.otf")),
-            cache: HashMap::new(),
+            cache: HashMap::default(),
         }
     }
     fn font(&self, w: Weight) -> &Font {
@@ -1712,7 +1712,7 @@ impl Canvas {
         self.ambients = Vec::new();
         self.scaled = Vec::new();
         self.region_scratch = Vec::new();
-        self.fonts.cache = HashMap::new();
+        self.fonts.cache = HashMap::default();
     }
 
     /// The next frame is drawn even if it looks the same (the screen was given away).
@@ -1834,6 +1834,8 @@ impl Canvas {
         let ox = (self.offset.0 * self.scale).round() as i32;
         let oy = (self.offset.1 * self.scale).round() as i32;
         let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u32;
+        // 256: an opaque picture at full strength -- rows are plain copies
+        let alpha = if alpha == 255 { 256 } else { alpha };
         self.spans(x, y, w, h, r, Fill::Image { src: img.clone(), ox, oy, alpha });
     }
 
@@ -2477,7 +2479,7 @@ fn span_fill(
                         return None;
                     }
                     let q = &srow[sx as usize * 4..sx as usize * 4 + 4];
-                    Some(if *alpha == 255 {
+                    Some(if *alpha >= 255 {
                         [q[0] as u32, q[1] as u32, q[2] as u32, q[3] as u32]
                     } else {
                         [
@@ -2511,7 +2513,9 @@ fn span_fill(
                 }
                 let dst = &mut band[line + a as usize * 4..line + b as usize * 4];
                 let s = &srow[(a - ox) as usize * 4..(b - ox) as usize * 4];
-                if *alpha == 255 {
+                if *alpha == 256 {
+                    dst.copy_from_slice(s);
+                } else if *alpha == 255 {
                     for (d, q) in dst.chunks_exact_mut(4).zip(s.chunks_exact(4)) {
                         if q[3] == 255 {
                             d.copy_from_slice(q);

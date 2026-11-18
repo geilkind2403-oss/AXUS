@@ -248,6 +248,11 @@ impl Screen for WeatherScreen {
         }
     }
     fn animating(&self, cx: &Ctx) -> bool {
+        // low-end: the sky stands still once drawn (the moving band cost
+        // ~60 ms a frame on one 400 MHz core)
+        if crate::gfx::low_end() && self.last_fx.is_some() {
+            return false;
+        }
         self.fx.is_some() && cx.weather.with(|w| matches!(w, Some(Ok(_))))
     }
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {

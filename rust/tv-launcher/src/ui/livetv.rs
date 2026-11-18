@@ -445,7 +445,10 @@ impl LiveTv {
         // second. In between only the strip the focus moved through.
         // The wave holds still while keys come in (and briefly after), so a
         // press never waits for a whole new 1080p wave picture.
-        if now.duration_since(self.last_key).as_secs_f32() > 0.8 {
+        // low-end: the wave stands still (a new wave picture is a whole
+        // frame); only the rows that change are drawn again
+        let low = crate::gfx::low_end();
+        if !low && now.duration_since(self.last_key).as_secs_f32() > 0.8 {
             self.wave_t += dt;
         }
         let step = (self.wave_t * 15.0).floor() as u64;
@@ -454,8 +457,22 @@ impl LiveTv {
             .map(|n| n.get())
             .unwrap_or(1);
         let t = self.tvl.as_mut().unwrap();
-        let full = self.wave_step != Some(step) || self.drawn_key != self.text_key;
-        if full {
+        let full = self.wave_step != Some(step)
+            || (!low && self.drawn_key != self.text_key);
+        if !full && low && self.drawn_key != self.text_key {
+            // only the list's rows (text changed there)
+            let a = ROW_Y - 16.0;
+            let b = ROW_Y + VISIBLE as f32 * ROW_STEP + 16.0;
+            let ph = c.pm.height() as usize;
+            t.render_rows(
+                c.pm.data_mut(),
+                (a.max(0.0) * scale) as usize,
+                ((b * scale).ceil() as usize).min(ph),
+                focus,
+                threads,
+            );
+            c.mark_damage_rect(0.0, a, crate::gfx::W as f32, b - a);
+        } else if full {
             t.advance(step as f32 / 15.0);
             t.render(c.pm.data_mut(), focus, threads);
             c.mark_damage_rect(0.0, 0.0, crate::gfx::W as f32, crate::gfx::H as f32);
@@ -555,7 +572,7 @@ impl Screen for LiveTv {
     }
     fn motion_over_video(&self) -> bool {
         // the list's wave moves: 30 pictures a second while it is open
-        (self.guide && self.standalone_app_id.is_none())
+        (self.guide && self.standalone_app_id.is_none() && !crate::gfx::low_end())
             || self.guide_in.moving()
             || self.banner_in.moving()
             || (self.guide && (self.list.moving() || self.group_list.moving()))
