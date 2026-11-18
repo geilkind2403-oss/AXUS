@@ -210,7 +210,9 @@ impl Decoder {
         ioctl(fd, S_FMT, f.as_mut_ptr()).map_err(|e| format!("Decoder-Format: {e}"))?;
 
         let mut rb = [0u8; 20];
-        w32(&mut rb, 0, 6);
+        // 4 input buffers are plenty to keep the decoder fed; every buffer
+        // is video memory (CMA), which a 64 MB Pi runs out of
+        w32(&mut rb, 0, 4);
         w32(&mut rb, 4, self.out_type);
         w32(&mut rb, 8, MEM_MMAP);
         ioctl(fd, REQBUFS, rb.as_mut_ptr()).map_err(|e| format!("Decoder-Puffer: {e}"))?;
@@ -425,7 +427,9 @@ impl Decoder {
             4
         };
         let mut rb = [0u8; 20];
-        w32(&mut rb, 0, min + 4);
+        // what the decoder needs + 3 (shown, on its way, one spare): a 1080p
+        // picture is 3 MB of video memory each
+        w32(&mut rb, 0, min + 3);
         w32(&mut rb, 4, self.cap_type);
         w32(&mut rb, 8, MEM_MMAP);
         ioctl(fd, REQBUFS, rb.as_mut_ptr()).map_err(|e| format!("Bildpuffer: {e}"))?;

@@ -59,7 +59,7 @@ const AMBIENT_FADE: f32 = if cfg!(target_arch = "arm") { 0.0 } else { 0.35 };
 // Each cached backdrop is a whole frame: 8 MB at the Pi's 1080p. Four cover
 // going back and forth between neighbours; a missing one is made again in
 // the background within a few frames.
-const AMBIENT_KEEP: usize = if cfg!(target_arch = "arm") { 4 } else { 8 };
+const AMBIENT_KEEP: usize = if cfg!(target_arch = "arm") { 2 } else { 8 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
