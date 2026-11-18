@@ -4,6 +4,7 @@ members = ["tvcore", "tv-server", "tv-launcher"]
 
 [workspace.package]
 version = "0.0.3+12"
+license = "GPL-3.0-or-later"
 edition = "2021"
 
 [workspace.dependencies]
@@ -16,5 +17,7 @@ tiny_http = "0.12"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# unwind: a panic in a side thread (player, download, decoder) ends only
+# that thread -- it is logged in crash.log and the TV keeps running
+panic = "unwind"
 strip = true

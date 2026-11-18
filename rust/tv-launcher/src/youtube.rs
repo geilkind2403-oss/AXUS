@@ -303,10 +303,15 @@ pub fn stream(id: &str) -> Result<Stream, String> {
             .as_str()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);
+        // a changed answer from YouTube must never crash the TV
+        let url = |x: &serde_json::Value| x["url"].as_str().map(String::from);
         if let (Some(v), Some(a)) = (videos.last(), audio) {
+            let (Some(vu), Some(au)) = (url(v), url(a)) else {
+                return Err("YouTube: unerwartete Antwort".into());
+            };
             return Ok(Stream {
-                video: v["url"].as_str().unwrap().into(),
-                audio: a["url"].as_str().unwrap().into(),
+                video: vu,
+                audio: au,
                 muxed,
                 title: details["title"].as_str().unwrap_or("").into(),
                 duration,

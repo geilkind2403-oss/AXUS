@@ -122,7 +122,9 @@ or endorsement by the people named.
 
 ## Credits
 
-There is no open-source license yet, so all rights are reserved for now.
+AXUS is free software under the **GNU General Public License v3.0** (see [LICENSE](LICENSE)):
+use it, study it, change it and share it — and whoever passes on a changed version passes
+on its source too. Made by humans, for humans.
 
 Fonts: Inter (SIL Open Font License, see `rust/tv-launcher/assets/fonts/OFL.txt`).
 Weather data: [Open-Meteo](https://open-meteo.com). Live TV default list:

@@ -1,6 +1,7 @@
 [package]
 name = "tvcore"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 description = "Library scanning shared by the TV server (PC) and the launcher (Pi): films, tracks, durations"
 

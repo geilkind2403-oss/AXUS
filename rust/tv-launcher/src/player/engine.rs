@@ -429,12 +429,12 @@ fn demux_thread(
         let next = (0..dm.len())
             .filter(|i| ahead[*i].is_some())
             .min_by(|a, b| {
+                // total_cmp: a broken stream's NaN time must not crash
                 ahead[*a]
                     .as_ref()
-                    .unwrap()
-                    .pts
-                    .partial_cmp(&ahead[*b].as_ref().unwrap().pts)
-                    .unwrap()
+                    .map(|p| p.pts)
+                    .unwrap_or(0.0)
+                    .total_cmp(&ahead[*b].as_ref().map(|p| p.pts).unwrap_or(0.0))
             });
         let Some(i) = next else {
             if !eof_sent {
