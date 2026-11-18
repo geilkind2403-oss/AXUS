@@ -242,6 +242,7 @@ pub fn load<T: Clone + Send + 'static>(
     let s = slot.clone();
     let tx = tx.clone();
     std::thread::spawn(move || {
+        background_priority();
         s.set(f());
         let _ = tx.send(Msg::Redraw);
     });
@@ -261,6 +262,7 @@ pub fn refresh<T: Clone + Send + 'static>(
     let slot = slot.clone();
     let tx = tx.clone();
     std::thread::spawn(move || {
+        background_priority();
         let new = f();
         let keep_old = !good(&new) && slot.with(|old| old.map(&good).unwrap_or(false));
         if !keep_old {
@@ -575,3 +577,14 @@ pub const MONTHS: [&str; 12] = [
     "November",
     "Dezember",
 ];
+
+/// Background jobs (decoding, building scenes, fetching) step aside for
+/// drawing: on a one-core Pi they otherwise take the CPU from the frames
+/// (the weather opened at 400+ ms per frame while its scene was built).
+pub fn background_priority() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        libc::setpriority(libc::PRIO_PROCESS, tid, 10);
+    }
+}

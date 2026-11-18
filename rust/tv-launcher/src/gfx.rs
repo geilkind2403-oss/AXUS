@@ -1057,6 +1057,7 @@ impl Canvas {
             let done = self.ambient_done.clone();
             self.ambient_pending.push(key);
             std::thread::spawn(move || {
+                crate::app::background_priority();
                 let pm = ambient_small(&src).map(|small| Arc::new(render_ambient(&bd, &small)));
                 done.lock().unwrap().push((key, pm));
             });

@@ -847,6 +847,7 @@ impl Screen for LiveTv {
             let _ = std::thread::Builder::new()
                 .name("tvlist-warm".into())
                 .spawn(move || {
+                    crate::app::background_priority();
                     if let Some(mut t) = crate::tvlist_fx::TvList::new(pw, ph, scale) {
                         t.advance(0.0);
                         if let Ok(mut w) = slot.lock() {

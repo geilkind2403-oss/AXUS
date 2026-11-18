@@ -152,6 +152,7 @@ impl WeatherScreen {
             let (_, desc) = crate::weather::describe(w.code);
             let (_, _, accent) = palette(sky, w.day);
             std::thread::spawn(move || {
+                crate::app::background_priority();
                 let started = Instant::now();
                 let fx = Scene::new(params).and_then(|scene| {
                     let sky = scene.render_sky(threads)?;

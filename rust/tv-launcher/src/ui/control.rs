@@ -192,6 +192,7 @@ impl Control {
         let result = std::thread::Builder::new()
             .name("control-panel-prewarm".into())
             .spawn(move || {
+                crate::app::background_priority();
                 let mut canvas = content_canvas(2);
                 let image = Control::render_content(&mut canvas, &key);
                 let mut state = panel_cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -245,6 +246,7 @@ impl Control {
         let _ = std::thread::Builder::new()
             .name("control-glass".into())
             .spawn(move || {
+                crate::app::background_priority();
                 let panel = local(PANEL, PANEL_R, glass_fx::TILE);
                 let fx = Glass::new(pw, ph, scale, false, panel).and_then(|mut glass| {
                     glass.set_backdrop(Some((&back[..], pw as usize * 4)));

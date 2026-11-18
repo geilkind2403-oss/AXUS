@@ -351,6 +351,7 @@ fn make_frosted() {
 /// worker at start: Home's first frame does no image work.
 pub fn prewarm() {
     std::thread::spawn(|| {
+        crate::app::background_priority();
         let _ = scene();
         make_frosted();
     });
