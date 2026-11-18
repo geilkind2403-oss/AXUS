@@ -330,10 +330,10 @@ fn make_frosted() {
         return;
     }
     let Some(bg) = scene() else { return };
-    let s = crate::gfx::render_scale();
     let (w, h) = (bg.width() as usize, bg.height() as usize);
+    // the gold backdrop is already soft: no blur needed (saves seconds
+    // at start on a single slow core)
     let mut buf = bg.data().to_vec();
-    blur(&mut buf, w, h, (12.0 * s) as usize);
     // tint: darker and warmer, so text on the glass reads (BGRA)
     for px in buf.chunks_exact_mut(4) {
         px[0] = (px[0] as f32 * 0.62 + 6.0) as u8;
@@ -356,30 +356,6 @@ pub fn prewarm() {
     });
 }
 
-/// Box blur, three passes (close to a gaussian), on a BGRA buffer.
-fn blur(buf: &mut [u8], w: usize, h: usize, radius: usize) {
-    fn pass(from: &[u8], to: &mut [u8], len: usize, stride: usize, lines: usize, step: usize, r: usize) {
-        let r = r.min(len.saturating_sub(1)).max(1);
-        let div = (2 * r + 1) as u32;
-        for line in 0..lines {
-            let base = line * step;
-            let at = |i: isize| base + (i.clamp(0, len as isize - 1) as usize) * stride;
-            for ch in 0..4 {
-                let mut sum: u32 = (-(r as isize)..=(r as isize)).map(|i| from[at(i) + ch] as u32).sum();
-                for i in 0..len as isize {
-                    to[base + i as usize * stride + ch] = (sum / div) as u8;
-                    sum += from[at(i + r as isize + 1) + ch] as u32;
-                    sum -= from[at(i - r as isize) + ch] as u32;
-                }
-            }
-        }
-    }
-    let mut tmp = vec![0u8; buf.len()];
-    for _ in 0..3 {
-        pass(buf, &mut tmp, w, 4, h, w * 4, radius);
-        pass(&tmp, buf, h, w * 4, w, 4, radius);
-    }
-}
 
 impl Hub {
     fn draw_bar(&self, c: &mut Canvas) {

@@ -184,7 +184,7 @@ pub struct LayerCache(Option<(u64, u64)>);
 #[derive(Clone, Copy, Debug)]
 pub struct Damage {
     pub full: bool,
-    pub rects: [(u32, u32, u32, u32); 24],
+    pub rects: [(u32, u32, u32, u32); 64],
     pub len: usize,
 }
 
@@ -192,7 +192,7 @@ impl Default for Damage {
     fn default() -> Self {
         Self {
             full: false,
-            rects: [(0, 0, 0, 0); 24],
+            rects: [(0, 0, 0, 0); 64],
             len: 0,
         }
     }
@@ -403,13 +403,58 @@ pub struct Canvas {
 /// The frame is compared in this many horizontal strips: a frame that only
 /// differs in a few of them (the clock, a moved selection, the OSD's time)
 /// is drawn and sent to the TV only there.
-const STRIPS: usize = 18;
+const STRIPS: usize = 24;
+/// Columns per strip: damage is tracked in tiles, not full-width strips.
+const COLS: usize = 16;
 
 /// Fingerprint of one recorded command: everything that decides its pixels.
+/// A fast non-cryptographic hasher (FxHash): fingerprints are taken of
+/// every command every frame, SipHash was a noticeable part of a frame.
+#[derive(Default)]
+struct Fx(u64);
+impl std::hash::Hasher for Fx {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(b));
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7cc1_b727_220a_95);
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64)
+    }
+    #[inline]
+    fn write_i32(&mut self, v: i32) {
+        self.write_u64(v as u32 as u64)
+    }
+    #[inline]
+    fn write_u8(&mut self, v: u8) {
+        self.write_u64(v as u64)
+    }
+    #[inline]
+    fn write_u16(&mut self, v: u16) {
+        self.write_u64(v as u64)
+    }
+    #[inline]
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64)
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 fn cmd_hash(c: &Cmd) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    let f = |v: f32, h: &mut std::collections::hash_map::DefaultHasher| v.to_bits().hash(h);
+    let mut h = Fx::default();
+    let f = |v: f32, h: &mut Fx| v.to_bits().hash(h);
     match c {
         Cmd::Clear(p) => (0u8, p).hash(&mut h),
         Cmd::Backdrop => 1u8.hash(&mut h),
@@ -1284,7 +1329,7 @@ impl Canvas {
     /// A fingerprint of the recorded frame: same fingerprint = same picture.
     fn signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut h = Fx::default();
         for c in &self.cmds {
             cmd_hash(c).hash(&mut h);
         }
@@ -1297,26 +1342,39 @@ impl Canvas {
         let h = self.pm.height() as usize;
         let rows = h.div_ceil(STRIPS).max(1);
         let n = h.div_ceil(rows);
-        let mut sigs = vec![0xcbf2_9ce4_8422_2325u64; n];
+        let wpx = self.pm.width() as i32;
+        let colw = (wpx as usize).div_ceil(COLS).max(1) as i32;
+        let mut sigs = vec![0xcbf2_9ce4_8422_2325u64; n * COLS];
         let mut clip: Option<(i32, i32)> = None;
         for c in &self.cmds {
-            let (mut top, mut bottom) = match c {
+            let (mut top, mut bottom, left, right) = match c {
                 Cmd::ClipY(rows) => {
                     clip = *rows;
                     continue;
                 }
-                Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..) => (0, h as i32),
+                Cmd::Clear(_) | Cmd::Backdrop | Cmd::Screen(..) => (0, h as i32, 0, wpx),
                 Cmd::Path { path, stroke, .. } => {
                     let b = path.bounds();
                     let pad = stroke.as_ref().map(|s| s.width).unwrap_or(0.0) + 2.0;
                     (
                         (b.top() - pad).floor() as i32,
                         (b.bottom() + pad).ceil() as i32,
+                        (b.left() - pad).floor() as i32,
+                        (b.right() + pad).ceil() as i32,
                     )
                 }
-                Cmd::Spans { y, h, .. } => (*y, *y + *h),
-                Cmd::Glyph { y, g, .. } => (*y, *y + g.0.height as i32),
+                Cmd::Spans { x, y, w, h, .. } => (*y, *y + *h, *x, *x + *w),
+                Cmd::Glyph { x, y, g, .. } => (
+                    *y,
+                    *y + g.0.height as i32,
+                    *x,
+                    *x + g.0.width as i32,
+                ),
             };
+            let (left, right) = (left.max(0), right.min(wpx));
+            if left >= right {
+                continue;
+            }
             if let Some((a, b)) = clip {
                 top = top.max(a);
                 bottom = bottom.min(b);
@@ -1330,8 +1388,11 @@ impl Canvas {
                 ^ clip
                     .map(|(a, b)| (a as u64) << 32 | b as u32 as u64)
                     .unwrap_or(0);
-            for sig in &mut sigs[top as usize / rows..=(bottom as usize - 1) / rows] {
-                *sig = (sig.rotate_left(5) ^ ch).wrapping_mul(0x0000_0100_0000_01b3);
+            let (c0, c1) = ((left / colw) as usize, ((right - 1) / colw) as usize);
+            for strip in top as usize / rows..=(bottom as usize - 1) / rows {
+                for sig in &mut sigs[strip * COLS + c0..=strip * COLS + c1] {
+                    *sig = (sig.rotate_left(5) ^ ch).wrapping_mul(0x0000_0100_0000_01b3);
+                }
             }
         }
         (sigs, rows)
@@ -1377,63 +1438,75 @@ impl Canvas {
             self.strip_sigs = sigs;
             return self.damage.len > 0;
         }
-        self.raster_strips(&changed, rows);
+        self.raster_tiles(&changed, rows);
         self.strip_sigs = sigs;
         true
     }
 
-    /// Draws only the given strips of the recorded frame (ascending indices)
-    /// and reports them as the damage.
-    fn raster_strips(&mut self, strips: &[usize], rows: usize) {
+    /// Draws only the changed tiles (indices strip * COLS + col, ascending):
+    /// each strip's changed columns become runs, the same runs in
+    /// neighbouring strips one box. Only those boxes are drawn and copied.
+    fn raster_tiles(&mut self, tiles: &[usize], rows: usize) {
         let (w, h) = (self.pm.width() as usize, self.pm.height() as usize);
-        // neighbouring strips become one run of rows
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        for &i in strips {
-            let (a, b) = (i * rows, ((i + 1) * rows).min(h));
-            match runs.last_mut() {
-                Some(last) if last.1 == a => last.1 = b,
-                _ => runs.push((a, b)),
+        let colw = w.div_ceil(COLS).max(1);
+        // per strip: runs of columns (a gap of one tile is bridged)
+        let mut boxes: Vec<(usize, usize, usize, usize)> = Vec::new(); // x0,x1,y0,y1
+        let mut i = 0;
+        while i < tiles.len() {
+            let strip = tiles[i] / COLS;
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            while i < tiles.len() && tiles[i] / COLS == strip {
+                let col = tiles[i] % COLS;
+                match runs.last_mut() {
+                    Some(r) if col <= r.1 + 1 => r.1 = col + 1,
+                    _ => runs.push((col, col + 1)),
+                }
+                i += 1;
+            }
+            let (y0, y1) = (strip * rows, ((strip + 1) * rows).min(h));
+            for (c0, c1) in runs {
+                let (x0, x1) = (c0 * colw, (c1 * colw).min(w));
+                if let Some(b) = boxes
+                    .iter_mut()
+                    .find(|b| b.0 == x0 && b.1 == x1 && b.3 == y0)
+                {
+                    b.3 = y1;
+                } else {
+                    boxes.push((x0, x1, y0, y1));
+                }
             }
         }
-        for &(a, b) in &runs {
+        for b in &boxes {
             self.damage
-                .add_rect((0, a as u32, w as u32, (b - a) as u32));
-        }
-        // share the rows between the cores: long runs are cut up (a strip or
-        // two is quicker done here than a thread is started)
-        let total: usize = runs.iter().map(|r| r.1 - r.0).sum();
-        let piece = total.div_ceil(self.threads).max(rows * 2);
-        let mut pieces: Vec<(usize, usize)> = Vec::new();
-        for (mut a, b) in runs {
-            while a < b {
-                let end = (a + piece).min(b);
-                pieces.push((a, end));
-                a = end;
-            }
+                .add_rect((b.0 as u32, b.2 as u32, (b.1 - b.0) as u32, (b.3 - b.2) as u32));
         }
         let cmds = &self.cmds;
         let bd = self.backdrop.as_deref();
-        let row_bytes = w * 4;
-        let mut rest = self.pm.data_mut();
-        let mut at = 0usize;
-        if pieces.len() <= 2 {
-            for (a, b) in pieces {
-                let band = &mut rest[a * row_bytes..b * row_bytes];
-                raster(cmds, band, w as i32, a as i32, bd);
-            }
-        } else {
+        let draw = |b: &(usize, usize, usize, usize)| -> Vec<u8> {
+            let bw = b.1 - b.0;
+            let mut buf = vec![0u8; bw * (b.3 - b.2) * 4];
+            raster_x(cmds, &mut buf, bw as i32, b.2 as i32, bd, b.0 as i32, w as i32);
+            buf
+        };
+        let done: Vec<Vec<u8>> = if self.threads > 1 && boxes.len() > 1 {
             std::thread::scope(|sc| {
-                for (a, b) in pieces {
-                    let (_, tail) = std::mem::take(&mut rest).split_at_mut((a - at) * row_bytes);
-                    let (band, tail) = tail.split_at_mut((b - a) * row_bytes);
-                    rest = tail;
-                    at = b;
-                    sc.spawn(move || raster(cmds, band, w as i32, a as i32, bd));
-                }
-            });
+                let hs: Vec<_> = boxes.iter().map(|b| sc.spawn(move || draw(b))).collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            })
+        } else {
+            boxes.iter().map(draw).collect()
+        };
+        let data = self.pm.data_mut();
+        for (b, buf) in boxes.iter().zip(done) {
+            let bw = (b.1 - b.0) * 4;
+            for (r, src) in buf.chunks_exact(bw).enumerate() {
+                let at = ((b.2 + r) * w + b.0) * 4;
+                data[at..at + bw].copy_from_slice(src);
+            }
         }
         self.cmds.clear();
     }
+
 
 
 
@@ -2074,6 +2147,20 @@ fn div255(x: u32) -> u32 {
 
 /// Draws the recorded commands into one band of rows [y0, y0 + band height).
 fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixmap>) {
+    raster_x(cmds, band, w, y0, backdrop, 0, w)
+}
+
+/// Draws the columns [xa, xa + w) of rows starting at y0 into `band`
+/// (w pixels wide); `full_w` is the screen width (backdrop rows).
+fn raster_x(
+    cmds: &[Cmd],
+    band: &mut [u8],
+    w: i32,
+    y0: i32,
+    backdrop: Option<&Pixmap>,
+    xa: i32,
+    full_w: i32,
+) {
     let row_bytes = w as usize * 4;
     let (band_y0, band_y1) = (y0, y0 + (band.len() / row_bytes) as i32);
     if band_y1 == band_y0 {
@@ -2107,14 +2194,19 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
             Cmd::Backdrop => {
                 if let Some(bd) = backdrop {
                     let row = w as usize * 4;
-                    let start = y0 as usize * row;
-                    band.copy_from_slice(&bd.data()[start..start + band.len()]);
+                    let full = full_w as usize * 4;
+                    for (r, d) in band.chunks_exact_mut(row).enumerate() {
+                        let start = (y0 as usize + r) * full + xa as usize * 4;
+                        d.copy_from_slice(&bd.data()[start..start + row]);
+                    }
                 }
             }
             Cmd::Screen(pm, a) => {
                 let row = w as usize * 4;
-                let start = y0 as usize * row;
-                let src = &pm.data()[start..start + band.len()];
+                let full = full_w as usize * 4;
+                for (r, band) in band.chunks_exact_mut(row).enumerate() {
+                let start = (y0 as usize + r) * full + xa as usize * 4;
+                let src = &pm.data()[start..start + row];
                 if *a >= 255 {
                     band.copy_from_slice(src);
                 } else if *a > 0 {
@@ -2134,6 +2226,7 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                         d.copy_from_slice(&(rb | (ga << 8)).to_ne_bytes());
                     }
                 }
+                }
             }
             Cmd::Path {
                 path,
@@ -2142,7 +2235,11 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
             } => {
                 let b = path.bounds();
                 let pad = stroke.as_ref().map(|s| s.width).unwrap_or(0.0) + 2.0;
-                if b.bottom() + pad < y0 as f32 || b.top() - pad > y1 as f32 {
+                if b.bottom() + pad < y0 as f32
+                    || b.top() - pad > y1 as f32
+                    || b.right() + pad < xa as f32
+                    || b.left() - pad > (xa + w) as f32
+                {
                     continue;
                 }
                 let Some(mut pm) = tiny_skia::PixmapMut::from_bytes(band, w as u32, bh as u32)
@@ -2152,7 +2249,7 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                 let mut paint = Paint::default();
                 paint.set_color(*color);
                 paint.anti_alias = true;
-                let t = Transform::from_translate(0.0, -y0 as f32);
+                let t = Transform::from_translate(-xa as f32, -y0 as f32);
                 match stroke {
                     Some(s) => pm.stroke_path(path, &paint, s, t, None),
                     None => pm.fill_path(path, &paint, FillRule::Winding, t, None),
@@ -2165,12 +2262,34 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                 h: bhh,
                 r,
                 fill,
-            } => span_fill(band, w, y0, y1, *x, *y, *bw, *bhh, *r, fill),
+            } => {
+                if *x + *bw <= xa || *x >= xa + w {
+                    continue;
+                }
+                if xa == 0 {
+                    span_fill(band, w, y0, y1, *x, *y, *bw, *bhh, *r, fill)
+                } else {
+                    let shifted;
+                    let f = match fill {
+                        Fill::Image { src, ox, oy, alpha } => {
+                            shifted = Fill::Image {
+                                src: src.clone(),
+                                ox: *ox - xa,
+                                oy: *oy,
+                                alpha: *alpha,
+                            };
+                            &shifted
+                        }
+                        other => other,
+                    };
+                    span_fill(band, w, y0, y1, *x - xa, *y, *bw, *bhh, *r, f)
+                }
+            }
             Cmd::Glyph { x, y, g, c } => {
                 let (m, bmp) = (&g.0, &g.1);
                 let gh = m.height as i32;
                 let gw = m.width as i32;
-                if *y + gh <= y0 || *y >= y1 {
+                if *y + gh <= y0 || *y >= y1 || *x + gw <= xa || *x >= xa + w {
                     continue;
                 }
                 for row in 0..gh {
@@ -2179,7 +2298,7 @@ fn raster(cmds: &[Cmd], band: &mut [u8], w: i32, y0: i32, backdrop: Option<&Pixm
                         continue;
                     }
                     for col in 0..gw {
-                        let px = *x + col;
+                        let px = *x + col - xa;
                         if px < 0 || px >= w {
                             continue;
                         }
