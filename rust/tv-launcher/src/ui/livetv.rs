@@ -78,6 +78,11 @@ pub struct LiveTv {
     wave_t: f32,
     /// what one whole wave picture costs here (ms, smoothed)
     wave_cost_ms: f32,
+    /// the list's text layer (own canvas), the rows last handed to C++,
+    /// and the pixel rows changed since the last composed frame
+    text_c: Option<Canvas>,
+    last_rows: Vec<(f32, f32, f32, f32, bool)>,
+    text_dirty: Option<(usize, usize)>,
     last_key: Instant,
     last_frame: Instant,
     /// What the frame shows now: the wave's step, the text, the focus.
@@ -164,6 +169,9 @@ impl LiveTv {
             guide_since: Instant::now(),
             wave_t: 0.0,
             wave_cost_ms: 10.0,
+            text_c: None,
+            last_rows: Vec::new(),
+            text_dirty: None,
             last_key: Instant::now(),
             last_frame: Instant::now(),
             wave_step: None,
@@ -372,6 +380,8 @@ impl LiveTv {
             t.set_hole(Some(PIP));
             self.tvl = Some(t);
             self.text_key = None;
+            self.text_c = None;
+            self.last_rows.clear();
             self.wave_step = None;
         }
         #[cfg(target_os = "linux")]
@@ -430,10 +440,35 @@ impl LiveTv {
         };
         if self.text_key != Some(key) {
             self.text_key = Some(key);
-            c.invalidate();
-            c.clear(Rgba(0, 0, 0, 0));
-            draw_list_text(self, c, cx, &gs, &chs, sel);
-            c.finish();
+            // the text has its own layer: only the tiles whose text changed
+            // are drawn again, and only their rows are composed again below
+            let mut tc = self.text_c.take().unwrap_or_else(|| {
+                Canvas::new_scaled_with_threads(
+                    crate::gfx::W,
+                    crate::gfx::H,
+                    c.pm.width() as f32 / crate::gfx::W as f32,
+                    1,
+                )
+            });
+            tc.opacity = c.opacity;
+            tc.offset = c.offset;
+            tc.reset_damage();
+            tc.clear(Rgba(0, 0, 0, 0));
+            draw_list_text(self, &mut tc, cx, &gs, &chs, sel);
+            tc.finish();
+            let d = tc.damage();
+            let h = tc.pm.height() as usize;
+            let mut dirty: Option<(usize, usize)> = if d.full {
+                Some((0, h))
+            } else {
+                d.rects[..d.len].iter().fold(None, |acc, r| {
+                    let (a, b) = (r.1 as usize, (r.1 + r.3) as usize);
+                    Some(match acc {
+                        Some((x, y)) => (a.min(x), b.max(y)),
+                        None => (a, b),
+                    })
+                })
+            };
             let rows: Vec<(f32, f32, f32, f32, bool)> = (self.first
                 ..(self.first + VISIBLE).min(chs.len()))
                 .map(|i| {
@@ -441,9 +476,21 @@ impl LiveTv {
                     (ROW_X, y, ROW_W, ROW_H, chs[i].url == playing)
                 })
                 .collect();
-            let snap = c.snapshot();
+            if rows != self.last_rows {
+                let sc = h as f32 / crate::gfx::H as f32;
+                let a = ((ROW_Y - 16.0).max(0.0) * sc) as usize;
+                let b = (((ROW_Y + VISIBLE as f32 * ROW_STEP + 16.0) * sc) as usize).min(h);
+                dirty = Some(dirty.map(|(x, y)| (x.min(a), y.max(b))).unwrap_or((a, b)));
+            }
+            self.text_dirty = match (self.text_dirty, dirty) {
+                (Some((a, b)), Some((x, y))) => Some((a.min(x), b.max(y))),
+                (d, None) | (None, d) => d,
+            };
+            let snap = tc.snapshot();
+            self.text_c = Some(tc);
             let t = self.tvl.as_mut().unwrap();
             t.set_rows(&rows, ROW_R);
+            self.last_rows = rows;
             t.set_text(snap);
         }
         // The wave drifts in steps of 1/15 s: a whole new frame 15 times a
@@ -462,10 +509,21 @@ impl LiveTv {
             .map(|n| n.get())
             .unwrap_or(1);
         let t = self.tvl.as_mut().unwrap();
-        // the text layer is drawn in the shown picture itself: after a text
-        // change the whole picture is composed again
-        let full = self.wave_step != Some(step) || self.drawn_key != self.text_key;
-        if full {
+        let full = self.wave_step != Some(step);
+        if !full && self.text_dirty.is_some() {
+            // only the rows whose text (or row boxes) changed, plus the focus
+            let (mut a, mut b) = self.text_dirty.unwrap();
+            if self.drawn_focus != Some(self.focus_y) {
+                let glow = 14.0;
+                let fa = self.drawn_focus.unwrap_or(self.focus_y).min(self.focus_y) - glow;
+                let fb = self.drawn_focus.unwrap_or(self.focus_y).max(self.focus_y) + ROW_H + glow;
+                a = a.min((fa.max(0.0) * scale) as usize);
+                b = b.max((fb * scale).ceil() as usize);
+            }
+            let b = b.min(c.pm.height() as usize);
+            t.render_rows(c.pm.data_mut(), a, b, focus, threads);
+            c.mark_damage_rect(0.0, a as f32 / scale, crate::gfx::W as f32, (b - a) as f32 / scale + 1.0);
+        } else if full {
             t.advance(self.wave_t);
             let t0 = Instant::now();
             t.render(c.pm.data_mut(), focus, threads);
@@ -488,6 +546,7 @@ impl LiveTv {
             return true; // nothing moved
         }
         self.wave_step = Some(step);
+        self.text_dirty = None;
         self.drawn_key = self.text_key;
         self.drawn_focus = Some(self.focus_y);
         c.request_present();

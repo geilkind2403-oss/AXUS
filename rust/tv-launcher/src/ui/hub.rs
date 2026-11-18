@@ -88,6 +88,10 @@ pub struct Hub {
     /// whether the last frame had the frosted glass (it arrives once, from
     /// the start worker)
     glass_drawn: bool,
+    /// the tab whose content is shown: it follows `tab` once the bar has
+    /// rested 140 ms, so running through the tabs only moves the bar
+    shown: usize,
+    tab_at: std::time::Instant,
 }
 
 
@@ -141,6 +145,8 @@ impl Hub {
             tab: 0,
             focus: HubFocus::Bar(0),
             glass_drawn: false,
+            shown: 0,
+            tab_at: std::time::Instant::now(),
         }
     }
 
@@ -202,17 +208,22 @@ impl Screen for Hub {
                 self.focus = Bar(i - 1);
                 if i - 1 < 5 {
                     self.tab = i - 1;
+                    self.tab_at = std::time::Instant::now();
                 }
             }
             (Bar(i), Key::Right) if i < 6 => {
                 self.focus = Bar(i + 1);
                 if i + 1 < 5 {
                     self.tab = i + 1;
+                    self.tab_at = std::time::Instant::now();
                 }
             }
             (Bar(5), Key::Ok) => return Self::open_app(App::YouTube, cx),
             (Bar(6), Key::Ok) => return Self::open_app(App::Settings, cx),
-            (Bar(i), Key::Down | Key::Ok) if i < 5 => match self.tab {
+            (Bar(i), Key::Down | Key::Ok) if i < 5 => match {
+                self.shown = self.tab;
+                self.tab
+            } {
                 0 => self.focus = Resume,
                 3 => self.focus = Grid(0),
                 _ => return self.open_tab(cx),
@@ -252,8 +263,9 @@ impl Screen for Hub {
     }
 
     fn animating(&self, _cx: &Ctx) -> bool {
-        // only until the frosted layer has arrived and been drawn once
-        !self.glass_drawn
+        // until the frosted layer has arrived and been drawn once, and while
+        // a tab change waits to be shown
+        !self.glass_drawn || self.shown != self.tab
     }
 
     fn draw(&mut self, c: &mut Canvas, cx: &mut Ctx) {
@@ -263,7 +275,10 @@ impl Screen for Hub {
             None => c.ambient(crate::gfx::Ambient::LiquidGold),
         }
         self.draw_bar(c);
-        match self.tab {
+        if self.shown != self.tab && self.tab_at.elapsed().as_millis() >= 140 {
+            self.shown = self.tab;
+        }
+        match self.shown {
             0 => self.draw_for_you(c, cx),
             1 => draw_livetv_preview(c, cx),
             2 => draw_films_preview(c, cx),

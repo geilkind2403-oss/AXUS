@@ -975,6 +975,7 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
                 std::thread::sleep(Duration::from_millis(16));
             }
             log(&format!("LiveTV {k:?}: {}", frames.join(" ")));
+            gfx::save_png(&app.canvas.pm, &format!("{dir}/lt-{k:?}-{}.png", frames.len())).ok();
         }
         return;
     }
