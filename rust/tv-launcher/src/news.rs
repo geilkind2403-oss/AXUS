@@ -204,10 +204,6 @@ pub fn article(details_url: &str) -> Vec<(bool, String)> {
     out
 }
 
-/// "2026-11-08T07:41:12.437+01:00" -> "07:41"
-pub fn time_of(date: &str) -> String {
-    date.get(11..16).unwrap_or("").to_string()
-}
 
 #[cfg(test)]
 mod tests {

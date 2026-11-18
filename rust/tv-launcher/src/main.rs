@@ -6,7 +6,6 @@
 //!   tv-launcher --shot DIR      development: render every screen as PNG
 mod app;
 mod films;
-mod focus_fx;
 mod gfx;
 mod glass_fx;
 mod livetv;
@@ -100,26 +99,6 @@ const FADE: f32 = if cfg!(target_arch = "arm") {
 // included a wide margin around the panel and added avoidable work per key.
 const CONTROL_DAMAGE: (f32, f32, f32, f32) = ui::control::REGION;
 
-fn feather_transition_edge(mut image: gfx::Image) -> gfx::Image {
-    let width = image.width() as usize;
-    let height = image.height() as usize;
-    let pixels = Arc::make_mut(&mut image).data_mut();
-    let fade_height = (height / 10).max(1);
-    for y in height - fade_height..height {
-        let t = if fade_height <= 1 {
-            0.0
-        } else {
-            (height - 1 - y) as f32 / (fade_height - 1) as f32
-        };
-        let opacity = t * t * (3.0 - 2.0 * t);
-        for pixel in pixels[y * width * 4..(y + 1) * width * 4].chunks_exact_mut(4) {
-            for channel in pixel {
-                *channel = (*channel as f32 * opacity).round() as u8;
-            }
-        }
-    }
-    image
-}
 
 impl App {
     fn top(&mut self) -> &mut Box<dyn Screen> {
@@ -183,10 +162,7 @@ impl App {
         };
         match nav {
             Nav::None => return,
-            Nav::Push(mut s) => {
-                if self.top().name() == "home" && s.name() == "apps" {
-                    s.set_transition_backdrop(feather_transition_edge(self.canvas.snapshot()));
-                }
+            Nav::Push(s) => {
                 self.stack.push(s);
             }
             Nav::Pop => {
@@ -239,14 +215,6 @@ impl App {
         }
         if k == Key::LongBack {
             self.apply(Nav::Home);
-            self.dirty = true;
-            return;
-        }
-        if k == Key::LongOk && self.top().name() == "home" {
-            let mut s = self.stack.pop().unwrap();
-            let nav = s.key(k, &mut self.cx);
-            self.stack.push(s);
-            self.apply(nav);
             self.dirty = true;
             return;
         }
@@ -505,7 +473,6 @@ fn prepare_control_blur(app: &mut App, top_name: &str, idle: Duration) {
             // Prepare both quick-menu layers as soon as Home settles. The
             // workers keep opening the panel from doing image work on input.
             ui::control::Control::prewarm(&app.cx, false);
-            ui::apps::prewarm(&app.cx);
             if idle >= Duration::from_millis(150) {
                 ui::control::Control::prewarm_glass(&app.canvas, &app.cx);
             }
@@ -576,10 +543,7 @@ fn main() {
     }
 
     cx.reload_channels();
-    let home = Box::new(ui::home::Home::new(
-        cx.cfg.last_media_tile,
-        cx.cfg.home_order,
-    ));
+    let home = Box::new(ui::hub::Hub::new());
     let mut app = App {
         cx,
         stack: vec![home],
@@ -599,7 +563,8 @@ fn main() {
 
     // The App-Kreis textures (glass ring, badges) are built once, at start,
     // on a worker: the first open never waits for them.
-    ui::apps::prewarm(&app.cx);
+    // Home's glass panes are made on a worker, not on the first frame
+    ui::hub::prewarm();
 
     if let Some(dir) = shot_dir {
         screenshots(&mut app, &dir, &rx);
@@ -1039,13 +1004,6 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
     if std::env::var_os("SHOT_TOAST_ONLY").is_some() {
         // a notification over the retained Home (and Apps) picture must
         // leave nothing behind once it has faded
-        if std::env::var_os("SHOT_TOAST_APPS").is_some() {
-            app.apply(Nav::Push(Box::new(ui::apps::Apps::wheel(
-                &app.cx,
-                &app.cx.cfg.last_app_id,
-            ))));
-            settle(app, 600);
-        }
         app.key(Key::VolUp);
         settle(app, 1000);
         shot(app, "01-toast-visible");
@@ -1379,6 +1337,35 @@ fn screenshots(app: &mut App, dir: &str, rx: &std::sync::mpsc::Receiver<Msg>) {
         }
         settle(app, 4000);
         gfx::save_png(&app.canvas.pm, &format!("{dir}/news.png")).ok();
+        return;
+    }
+    if std::env::var_os("SHOT_HUB").is_some() {
+        // the new Home: every tab, and the focus on the main parts
+        app.stack.clear();
+        app.stack.push(Box::new(ui::hub::Hub::new()));
+        app.canvas.invalidate();
+        settle(app, 1500);
+        let steps: &[(&str, &[Key])] = &[
+            ("hub-1-for-you", &[]),
+            ("hub-2-resume", &[Key::Down]),
+            ("hub-3-app-row", &[Key::Down, Key::Right]),
+            ("hub-4-weather", &[Key::Up, Key::Left]),
+            ("hub-5-live-tv", &[Key::Up, Key::Right]),
+            ("hub-6-films", &[Key::Right]),
+            ("hub-7-apps", &[Key::Right, Key::Down, Key::Right]),
+            ("hub-8-news", &[Key::Up, Key::Right]),
+        ];
+        for (name, keys) in steps {
+            for k in *keys {
+                app.key(*k);
+                let f = Instant::now();
+                app.frame();
+                log(&format!("Home {k:?}: {:.1} ms", f.elapsed().as_secs_f64() * 1000.0));
+                settle(app, 120);
+            }
+            settle(app, 900);
+            gfx::save_png(&app.canvas.pm, &format!("{dir}/{name}.png")).ok();
+        }
         return;
     }
     if std::env::var_os("SHOT_SETTINGS_SYSTEM").is_some() {

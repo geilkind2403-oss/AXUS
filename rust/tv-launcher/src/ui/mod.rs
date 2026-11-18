@@ -1,10 +1,8 @@
 //! Screens and the widgets they share.
-pub mod apps;
-mod apps_wheel;
 pub mod browser;
 pub mod control;
 pub mod films;
-pub mod home;
+pub mod hub;
 pub mod livetv;
 pub mod news;
 pub mod player;
@@ -71,16 +69,6 @@ pub fn glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32) {
     );
 }
 
-/// "Guten Morgen" etc. by the time of day.
-pub fn greeting() -> &'static str {
-    match crate::app::local_hms().0 {
-        5..=10 => "Guten Morgen",
-        11..=13 => "Mahlzeit",
-        14..=17 => "Guten Tag",
-        18..=22 => "Guten Abend",
-        _ => "Gute Nacht",
-    }
-}
 
 static FRAME_DT_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16_000);
 
@@ -243,7 +231,7 @@ pub fn status_with_phone_accent(c: &mut Canvas, cx: &Ctx, _phone_accent: Rgba) {
 /// gold ring when it is selected there.
 pub fn clock_pill(c: &mut Canvas, cx: &Ctx, status_x: f32, focused: bool) {
     let y = 20.0;
-    home::header_glass(c, status_x, y, 224.0, 46.0, focused);
+    header_glass(c, status_x, y, 224.0, 46.0, focused);
 
     let (hour, minute, _) = crate::app::local_hms();
     c.text(
@@ -252,7 +240,7 @@ pub fn clock_pill(c: &mut Canvas, cx: &Ctx, status_x: f32, focused: bool) {
         y + 12.0,
         17,
         Weight::Semi,
-        if focused { home::GOLD } else { color::TEXT },
+        if focused { GOLD } else { color::TEXT },
         Align::Left,
     );
     c.line(
@@ -300,7 +288,7 @@ pub fn clock_pill(c: &mut Canvas, cx: &Ctx, status_x: f32, focused: bool) {
         Rgba(255, 244, 220, 34),
     );
     let phone = if cx.cfg.remote_enabled {
-        home::GOLD
+        GOLD
     } else {
         color::MUTED
     };
@@ -899,4 +887,61 @@ impl ListView {
         }
         c.clip_y(None);
     }
+}
+
+/// The launcher's gold.
+pub(crate) const GOLD: Rgba = Rgba(226, 187, 116, 255);
+
+/// The weather and clock buttons in the glass of the big cards: a soft lift
+/// shadow, the warm translucent pane, a light top and a faint rim; focused,
+/// a gold wash and ring like the card focus.
+pub(crate) fn header_glass(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, focused: bool) {
+    let r = h / 2.0;
+    c.rect(x - 2.0, y + 2.0, w + 4.0, h, r + 2.0, Rgba(0, 0, 0, 34));
+    c.rect(x, y, w, h, r, Rgba(30, 27, 25, 150));
+    c.vgradient(
+        x + 1.0,
+        y + 1.0,
+        w - 2.0,
+        h * 0.6,
+        r - 1.0,
+        Rgba(255, 247, 226, 46),
+        Rgba(255, 236, 201, 0),
+    );
+    c.vgradient(
+        x + 1.0,
+        y + h * 0.55,
+        w - 2.0,
+        h * 0.44,
+        r - 1.0,
+        Rgba(226, 187, 116, 0),
+        Rgba(255, 231, 180, 16),
+    );
+    if focused {
+        c.rect(x, y, w, h, r, Rgba(GOLD.0, GOLD.1, GOLD.2, 34));
+        c.stroke_rect(
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            r,
+            2.0,
+            Rgba(GOLD.0, GOLD.1, GOLD.2, 220),
+        );
+    } else {
+        c.stroke_rect(
+            x + 0.5,
+            y + 0.5,
+            w - 1.0,
+            h - 1.0,
+            r,
+            1.0,
+            Rgba(255, 244, 220, 40),
+        );
+    }
+    c.line(
+        &[(x + r, y + 1.5), (x + w - r - 24.0, y + 1.5)],
+        1.4,
+        Rgba(255, 249, 232, if focused { 150 } else { 96 }),
+    );
 }

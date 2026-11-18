@@ -12,14 +12,12 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/glass_fx.cpp");
     println!("cargo:rerun-if-changed=cpp/glass_fx.h");
     println!("cargo:rerun-if-changed=cpp/tvlist_fx.cpp");
-    println!("cargo:rerun-if-changed=cpp/focus_fx.cpp");
     let mut fx = cc::Build::new();
     fx.cpp(true)
         .cpp_link_stdlib(None)
         .file("cpp/weather_fx.cpp")
         .file("cpp/glass_fx.cpp")
         .file("cpp/tvlist_fx.cpp")
-        .file("cpp/focus_fx.cpp")
         .include("cpp")
         // the effects run every frame: optimised even in debug builds
         .opt_level(3)
@@ -44,11 +42,9 @@ fn main() {
 
     // The Settings view (C++ presentation layer).
     println!("cargo:rerun-if-changed=src/ui/native/settings_view.cpp");
-    println!("cargo:rerun-if-changed=src/ui/native/apps_wheel.cpp");
     let mut cpp = cc::Build::new();
     cpp.cpp(true)
         .file("src/ui/native/settings_view.cpp")
-        .file("src/ui/native/apps_wheel.cpp")
         .flag_if_supported("-std=c++17")
         .flag("-ffreestanding")
         .flag("-nostdinc")

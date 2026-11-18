@@ -566,24 +566,6 @@ impl Canvas {
         }
     }
 
-    /// Changes the logical canvas size while preserving its font and scaled
-    /// image caches. Used to reuse one small raster canvas for home tiles.
-    pub fn resize(&mut self, w: u32, h: u32) {
-        let (pw, ph) = (
-            (w as f32 * self.scale).round() as u32,
-            (h as f32 * self.scale).round() as u32,
-        );
-        if self.pm.width() == pw && self.pm.height() == ph {
-            return;
-        }
-        self.pm = Pixmap::new(pw, ph).unwrap();
-        self.strip_sigs.clear();
-        self.cmds.clear();
-        self.backdrop = None;
-        self.last_sig = 0;
-        self.layer_generation = self.layer_generation.wrapping_add(1);
-        self.presented_directly = false;
-    }
 
     /// Takes an immutable copy of the rendered pixels for use as a cached layer.
     pub fn snapshot(&self) -> Image {
@@ -1415,24 +1397,8 @@ impl Canvas {
         self.cmds.clear();
     }
 
-    /// Draws or skips a static layer based on its own signature, independently
-    /// of any transient overlay drawn over the retained pixels afterwards.
-    /// Fingerprint of the commands drawn so far (to recognise a picture).
-    pub fn layer_signature(&self) -> u64 {
-        self.signature()
-    }
 
-    /// Whether `finish_cached` would find this picture already drawn.
-    pub fn layer_is_cached(&self, cache: &LayerCache) -> bool {
-        cache.0 == Some((self.layer_generation, self.signature()))
-    }
 
-    /// The caller restores a kept image of exactly these commands itself:
-    /// take them as drawn instead of rasterizing them again.
-    pub fn accept_layer(&mut self, cache: &mut LayerCache) {
-        cache.0 = Some((self.layer_generation, self.signature()));
-        self.cmds.clear();
-    }
 
     pub fn finish_cached(&mut self, cache: &mut LayerCache) -> bool {
         let sig = self.signature();
@@ -1447,6 +1413,7 @@ impl Canvas {
     }
 
     /// Draws the pending transient overlay over retained canvas pixels.
+    #[cfg(test)]
     pub fn finish_pending(&mut self) {
         self.mark_full_damage();
         self.raster_pending_single();
@@ -1744,6 +1711,44 @@ impl Canvas {
     ) -> f32 {
         let t = self.ellipsize(s, px, w, max);
         self.text(&t, x, y, px, w, c, Align::Left)
+    }
+
+    /// Draws a picture that is already at its display size (physical px),
+    /// top-left at (x, y): no scaling and no copy into the scaled-image
+    /// cache, so any number of such pictures cost one blend each.
+    pub fn image_native(&mut self, img: &Image, x: f32, y: f32) {
+        let (w, h) = (img.width() as f32 / self.scale, img.height() as f32 / self.scale);
+        let ox = ((x + self.offset.0) * self.scale).round() as i32;
+        let oy = ((y + self.offset.1) * self.scale).round() as i32;
+        let alpha = (self.opacity * 255.0).round().clamp(0.0, 255.0) as u32;
+        self.spans(
+            x,
+            y,
+            w,
+            h,
+            0.0,
+            Fill::Image {
+                src: img.clone(),
+                ox,
+                oy,
+                alpha,
+            },
+        );
+    }
+
+    /// A full-screen picture (at the canvas' pixel size) as the background:
+    /// like an ambient, it starts the frame, so only changed strips redraw.
+    pub fn screen(&mut self, img: &Image) {
+        self.backdrop();
+        self.cmds.clear();
+        if img.width() == self.pm.width() && img.height() == self.pm.height() {
+            self.cmds.push(Cmd::Screen(img.clone(), 255));
+        }
+    }
+
+    /// Width of a line of text in logical pixels.
+    pub fn text_width(&mut self, s: &str, px: u32, w: Weight) -> f32 {
+        self.fonts.width(s, px, w)
     }
 
     pub fn ellipsize(&mut self, s: &str, px: u32, w: Weight, max: f32) -> String {
