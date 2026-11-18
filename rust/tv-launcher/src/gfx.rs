@@ -113,28 +113,42 @@ pub enum Weight {
 pub type Glyph = Arc<(fontdue::Metrics, Vec<u8>)>;
 
 pub struct Fonts {
-    regular: Font,
-    semi: Font,
-    bold: Font,
+    regular: Arc<Font>,
+    semi: Arc<Font>,
+    bold: Arc<Font>,
     cache: HashMap<(Weight, char, u32), Glyph, std::hash::BuildHasherDefault<Fx>>,
 }
 
 impl Fonts {
+    /// The fonts are parsed once per run and shared by every canvas
+    /// (parsing them took a large part of a second on a slow Pi).
     pub fn load() -> Fonts {
-        let f = |b: &[u8]| {
-            Font::from_bytes(
-                b,
-                FontSettings {
-                    scale: 48.0,
-                    ..Default::default()
-                },
-            )
-            .expect("font")
-        };
+        static PARSED: std::sync::OnceLock<[Arc<Font>; 3]> = std::sync::OnceLock::new();
+        let [regular, semi, bold] = PARSED
+            .get_or_init(|| {
+                let f = |b: &[u8]| {
+                    Arc::new(
+                        Font::from_bytes(
+                            b,
+                            FontSettings {
+                                scale: 48.0,
+                                ..Default::default()
+                            },
+                        )
+                        .expect("font"),
+                    )
+                };
+                [
+                    f(include_bytes!("../assets/fonts/Inter-Regular.otf")),
+                    f(include_bytes!("../assets/fonts/Inter-SemiBold.otf")),
+                    f(include_bytes!("../assets/fonts/Inter-Bold.otf")),
+                ]
+            })
+            .clone();
         Fonts {
-            regular: f(include_bytes!("../assets/fonts/Inter-Regular.otf")),
-            semi: f(include_bytes!("../assets/fonts/Inter-SemiBold.otf")),
-            bold: f(include_bytes!("../assets/fonts/Inter-Bold.otf")),
+            regular,
+            semi,
+            bold,
             cache: HashMap::default(),
         }
     }
